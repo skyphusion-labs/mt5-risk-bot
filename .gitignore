@@ -1,0 +1,16 @@
+.venv/
+src/*.egg-info/
+__pycache__/
+*.pyc
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+.coverage
+htmlcov/
+config.toml
+journal.jsonl
+HALT
+.env
+*.log
+.DS_Store

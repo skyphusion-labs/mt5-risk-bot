@@ -1,0 +1,59 @@
+# Copy to config.toml (gitignored). Secrets belong in the environment:
+#   export MT5_LOGIN=12345678
+#   export MT5_PASSWORD=...
+#   export MT5_SERVER=YourBroker-Demo
+
+[account]
+mode = "paper"              # paper | mt5
+initial_balance = 10000.0
+
+[mt5]
+terminal_path = ""
+timeout_ms = 60000
+# login / password / server: leave empty, use env vars
+
+[risk]
+risk_pct = 0.005            # 0.5% of equity per trade
+daily_loss_pct = 0.02       # flatten + halt for the UTC day
+max_drawdown_pct = 0.10     # flatten + halt until restart after you inspect
+max_positions = 3
+max_currency_exposure = 2   # net |count| per currency across open trades
+min_rr = 1.5
+max_spread_atr_frac = 0.15
+min_free_margin_pct = 0.50
+magic = 20260909
+halt_file = "HALT"          # create this file to flatten immediately
+deviation_points = 20
+
+[strategy]
+timeframe = "H1"
+fast_ema = 21
+slow_ema = 55
+adx_period = 14
+adx_min = 20.0
+atr_period = 14
+atr_stop_mult = 1.5
+atr_tp_mult = 2.5
+breakeven_r = 1.0
+trail_r = 1.5
+trail_atr_mult = 1.2
+
+[symbols]
+names = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
+
+[session]
+enabled = true
+start_utc = "07:00"
+end_utc = "17:00"
+skip_friday_after_utc = "16:00"
+
+[engine]
+poll_seconds = 15
+comment = "mt5-risk-bot"
+journal_path = "journal.jsonl"
+
+# Secrets from the environment only:
+#   export TELEGRAM_BOT_TOKEN=...
+#   export TELEGRAM_CHAT_ID=...
+[telegram]
+notify_events = ["start", "stop", "open", "close", "halt", "order_check_fail"]

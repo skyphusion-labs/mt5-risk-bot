@@ -1,0 +1,54 @@
+[build-system]
+requires = ["setuptools>=68"]
+build-backend = "setuptools.build_meta"
+
+[project]
+name = "mt5-risk-bot"
+version = "0.1.0"
+description = "Risk-first MetaTrader 5 trading bot. Paper by default. No profit guarantee."
+readme = "README.md"
+requires-python = ">=3.12"
+license = { text = "MIT" }
+authors = [{ name = "Conrad Rockenhaus", email = "conrad@skyphusion.org" }]
+keywords = ["metatrader", "mt5", "trading", "risk"]
+classifiers = [
+  "Development Status :: 3 - Alpha",
+  "License :: OSI Approved :: MIT License",
+  "Programming Language :: Python :: 3",
+  "Programming Language :: Python :: 3.12",
+  "Programming Language :: Python :: 3.13",
+  "Programming Language :: Python :: 3.14",
+]
+dependencies = []
+
+[project.optional-dependencies]
+dev = ["pytest>=8.0", "pytest-cov>=5.0"]
+mt5-win = ["MetaTrader5>=5.0.45"]
+mt5-mac = ["mt5-mac>=0.3.0"]
+
+[project.scripts]
+mt5-risk-bot = "mt5_risk_bot.__main__:main"
+
+[project.urls]
+Documentation = "docs/MT5-API.md"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+addopts = "--cov=mt5_risk_bot --cov-report=term-missing --cov-fail-under=80"
+
+[tool.coverage.run]
+branch = true
+source = ["mt5_risk_bot"]
+omit = ["*/broker/base.py"]
+
+[tool.coverage.report]
+fail_under = 80
+show_missing = true
+exclude_lines = [
+  "pragma: no cover",
+  "if TYPE_CHECKING:",
+]
