@@ -23,6 +23,7 @@
 - `step_all` calls `ensure_connected` before `account`.
 - `getUpdates` offset is persisted as `journal.tg_offset` after each handled or skipped update. Restart does not replay or drop commands.
 - `journal.jsonl` and `journal.tg_offset` are chmod 0600.
+- HALT file is chmod 0600. umask 077 at process start.
 - Journal, `loop_error` stderr, and Telegram chat echoes redact BotFather tokens (`[REDACTED]`).
 - Staged `/confirm` is journaled (`confirm_stage`) and restored on `start` if the TTL has not expired.
 - Grok (xAI) and Claude (Anthropic) via env keys. Last 6 turns kept. Advice never auto-sends.
