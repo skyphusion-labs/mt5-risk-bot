@@ -1,7 +1,13 @@
 from types import SimpleNamespace
 
 from mt5_risk_bot.broker.mt5_live import Mt5Broker
-from mt5_risk_bot.constants import ORDER_FILLING_IOC, TRADE_RETCODE_DONE, TRADE_RETCODE_INVALID_FILL
+from mt5_risk_bot.constants import (
+    ORDER_FILLING_IOC,
+    ORDER_TYPE_BUY_LIMIT,
+    ORDER_TYPE_SELL_LIMIT,
+    TRADE_RETCODE_DONE,
+    TRADE_RETCODE_INVALID_FILL,
+)
 from mt5_risk_bot.models import Side
 
 
@@ -17,6 +23,33 @@ class FakeMt5:
         self.inited = False
         self.sends: list[dict] = []
         self.fill_fail_once = False
+        self.order_rows: list | None = [
+            _nt(
+                ticket=11,
+                symbol="EURUSD",
+                type=ORDER_TYPE_BUY_LIMIT,
+                volume_current=0.2,
+                volume_initial=0.2,
+                price_open=1.08,
+                sl=1.07,
+                tp=1.10,
+                magic=20260909,
+                comment="lim",
+                time_setup=99,
+            ),
+            _nt(
+                ticket=12,
+                symbol="GBPUSD",
+                type=ORDER_TYPE_SELL_LIMIT,
+                volume_current=0.1,
+                price_open=1.27,
+                sl=1.28,
+                tp=1.25,
+                magic=1,
+                comment="",
+                time=50,
+            ),
+        ]
 
     def initialize(self, *args, **kwargs) -> bool:
         del args, kwargs
@@ -93,6 +126,9 @@ class FakeMt5:
             for i in range(count)
         ]
 
+    def orders_get(self):
+        return self.order_rows
+
     def positions_get(self):
         return [
             _nt(
@@ -160,6 +196,39 @@ def test_adapter_maps_account_and_positions() -> None:
     assert pos[0].side is Side.BUY
     broker.disconnect()
     assert fake.inited is False
+
+
+def test_adapter_maps_orders() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    ours = broker.orders(magic=20260909)
+    assert len(ours) == 1
+    order = ours[0]
+    assert order.ticket == 11
+    assert order.symbol == "EURUSD"
+    assert order.side is Side.BUY
+    assert order.volume == 0.2
+    assert order.price == 1.08
+    assert order.sl == 1.07
+    assert order.tp == 1.10
+    assert order.type_code == ORDER_TYPE_BUY_LIMIT
+    assert order.time == 99
+    all_orders = broker.orders()
+    assert len(all_orders) == 2
+    assert all_orders[1].side is Side.SELL
+    assert all_orders[1].ticket == 12
+    fake.order_rows = []
+    assert broker.orders() == []
+    fake.order_rows = None
+    assert broker.orders() == []
+    broker.disconnect()
+
+
+def test_orders_without_orders_get() -> None:
+    assert Mt5Broker().orders() == []
+    broker = Mt5Broker(mt5=object())
+    assert broker.orders() == []
 
 
 def test_invalid_fill_retries() -> None:
