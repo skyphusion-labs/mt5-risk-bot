@@ -10,6 +10,7 @@ from mt5_risk_bot.constants import (
     TRADE_ACTION_CLOSE_BY,
     TRADE_ACTION_DEAL,
     TRADE_ACTION_SLTP,
+    TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID,
     TRADE_RETCODE_INVALID_STOPS,
 )
@@ -838,21 +839,21 @@ def test_computer_ask_posts_session(tmp_path) -> None:
 
 
 def _fail_send(broker, *, opens: bool = False, closes: bool = False, sltp: bool = False) -> None:
-    orig = broker.order_send
-
-    def wrapped(request: dict) -> OrderResult:
-        action = int(request.get("action", 0))
-        if opens and action == TRADE_ACTION_DEAL and not request.get("position"):
-            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="nope", request=request)
-        if closes and action == TRADE_ACTION_DEAL and request.get("position"):
-            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="nope", request=request)
-        if sltp and action == TRADE_ACTION_SLTP:
-            return OrderResult(
-                retcode=TRADE_RETCODE_INVALID_STOPS, comment="stops_level", request=request
-            )
-        return orig(request)
-
-    broker.order_send = wrapped  # type: ignore[method-assign]
+    if opens:
+        broker.market = lambda order: OrderResult(  # type: ignore[method-assign]
+            retcode=TRADE_RETCODE_INVALID, comment="nope"
+        )
+        broker.check_market = lambda order: OrderResult(  # type: ignore[method-assign]
+            retcode=TRADE_RETCODE_DONE, comment="ok"
+        )
+    if closes:
+        broker.close_position = lambda *a, **k: OrderResult(  # type: ignore[method-assign]
+            retcode=TRADE_RETCODE_INVALID, comment="nope"
+        )
+    if sltp:
+        broker.modify_position = lambda *a, **k: OrderResult(  # type: ignore[method-assign]
+            retcode=TRADE_RETCODE_INVALID_STOPS, comment="stops_level"
+        )
 
 
 def test_confirm_repreview_halt_file_refuses(tmp_path) -> None:
@@ -1098,14 +1099,9 @@ def test_closeby_refuses_bad_pairs(tmp_path) -> None:
     assert "remainder below volume_min" in engine.handle_command(
         TgCommand("1", 1, f"/closeby {tiny_buy} {tiny_sell}", 6)
     )
-    orig = engine.broker.order_send
-
-    def wrapped(request: dict) -> OrderResult:
-        if int(request.get("action", 0)) == TRADE_ACTION_CLOSE_BY:
-            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="nope", request=request)
-        return orig(request)
-
-    engine.broker.order_send = wrapped  # type: ignore[method-assign]
+    engine.broker.close_by = lambda *a, **k: OrderResult(  # type: ignore[method-assign]
+        retcode=TRADE_RETCODE_INVALID, comment="nope"
+    )
     failed = engine.handle_command(TgCommand("1", 1, f"/closeby {buy} {sell}", 7))
     assert "closeby failed" in failed
     engine.stop()

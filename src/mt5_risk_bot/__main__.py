@@ -255,7 +255,7 @@ def _cmd_run_locked(args: argparse.Namespace, cfg: BotConfig) -> int:
             live.connect()
             for name in cfg.symbols:
                 live.select_symbol(name)
-                rates = live.rates(name, cfg.strategy.timeframe_id, 400)
+                rates = live.rates(name, cfg.strategy.timeframe, 400)
                 broker.seed_bars(name, rates)
             live.disconnect()
             print("paper broker seeded from MT5 history; orders stay local")

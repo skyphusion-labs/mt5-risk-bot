@@ -172,6 +172,7 @@ Send `/help` for the rest.
 ## Docs
 
 `docs/CONTRACT.md` is the behaviour that tests enforce.
+`docs/VENUE.md` is the provider-agnostic execution API.
 `docs/RUNBOOK.md` is paper, live, HALT, confirm-on-restart, lock, heartbeat, journal rotate, and launchd.
 `docs/launchd.plist.example` is a user LaunchAgent.
 It uses paper `--loop`, `KeepAlive`, and `Umask` 63.

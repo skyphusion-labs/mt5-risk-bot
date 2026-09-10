@@ -12,6 +12,7 @@ The risk engine is the sizer in the bot (`RiskManager.evaluate`).
 You trade and ask for advice from one chat.
 MetaTrader 5 is the execution venue.
 The risk engine is the only thing that can size or refuse an order.
+The venue API is `Broker` (`MarketOrder`, `WorkingOrder`). Engine does not send MT5 request dicts.
 Auto EMA trading is off until `/auto on`.
 
 ## Allowed claims

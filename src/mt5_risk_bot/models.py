@@ -35,6 +35,37 @@ class SignalKind(str, Enum):
 
 
 @dataclass(frozen=True)
+class MarketOrder:
+    """Venue-neutral market send. Adapters map this to MT5, IBKR, etc."""
+
+    symbol: str
+    side: Side
+    volume: float
+    sl: float = 0.0
+    tp: float = 0.0
+    comment: str = ""
+    magic: int = 0
+    deviation: int = 20
+    ticket: int | None = None
+
+
+@dataclass(frozen=True)
+class WorkingOrder:
+    """Venue-neutral working (limit/stop) send."""
+
+    symbol: str
+    side: Side
+    kind: str
+    volume: float
+    price: float
+    sl: float = 0.0
+    tp: float = 0.0
+    comment: str = ""
+    magic: int = 0
+    ticket: int | None = None
+
+
+@dataclass(frozen=True)
 class Bar:
     time: int
     open: float

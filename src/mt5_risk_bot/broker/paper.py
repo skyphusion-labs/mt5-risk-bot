@@ -35,7 +35,18 @@ from mt5_risk_bot.constants import (
     TRADE_RETCODE_POSITION_CLOSED,
     TRADE_RETCODE_TRADE_DISABLED,
 )
-from mt5_risk_bot.models import Account, Bar, OrderResult, PendingOrder, Position, Side, SymbolSpec, Tick
+from mt5_risk_bot.models import (
+    Account,
+    Bar,
+    MarketOrder,
+    OrderResult,
+    PendingOrder,
+    Position,
+    Side,
+    SymbolSpec,
+    Tick,
+    WorkingOrder,
+)
 from mt5_risk_bot.sizing import ticks_between
 
 _PENDING_SIDE = {
@@ -146,7 +157,7 @@ class PaperBroker:
         t = bar.time if bar else self._clock
         return Tick(time=t, bid=mid - half, ask=mid + half, last=mid)
 
-    def rates(self, name: str, timeframe: int, count: int) -> list[Bar]:
+    def rates(self, name: str, timeframe: str | int, count: int) -> list[Bar]:
         del timeframe
         bars = self._bars.get(name.upper(), [])
         if count <= 0:
@@ -212,6 +223,88 @@ class PaperBroker:
 
     def order_send(self, request: dict) -> OrderResult:
         return self._apply(request, commit=True)
+
+    def check_market(self, order: MarketOrder) -> OrderResult:
+        return self._apply(_market_req(order), commit=False)
+
+    def market(self, order: MarketOrder) -> OrderResult:
+        return self._apply(_market_req(order), commit=True)
+
+    def check_working(self, order: WorkingOrder) -> OrderResult:
+        return self._apply(_working_req(order), commit=False)
+
+    def working(self, order: WorkingOrder) -> OrderResult:
+        return self._apply(_working_req(order), commit=True)
+
+    def modify_position(self, ticket: int, sl: float, tp: float, symbol: str = "") -> OrderResult:
+        req = {"action": TRADE_ACTION_SLTP, "position": ticket, "sl": sl, "tp": tp}
+        if symbol:
+            req["symbol"] = symbol
+        return self._apply(req, commit=True)
+
+    def modify_working(
+        self,
+        ticket: int,
+        *,
+        price: float | None = None,
+        sl: float | None = None,
+        tp: float | None = None,
+        symbol: str = "",
+        volume: float = 0.0,
+        side: str = "",
+        kind: str = "",
+    ) -> OrderResult:
+        req: dict = {"action": TRADE_ACTION_MODIFY, "order": ticket}
+        if price is not None:
+            req["price"] = price
+        if sl is not None:
+            req["sl"] = sl
+        if tp is not None:
+            req["tp"] = tp
+        if symbol:
+            req["symbol"] = symbol
+        if volume:
+            req["volume"] = volume
+        return self._apply(req, commit=True)
+
+    def cancel(self, ticket: int) -> OrderResult:
+        return self._apply({"action": TRADE_ACTION_REMOVE, "order": ticket}, commit=True)
+
+    def close_position(
+        self,
+        ticket: int,
+        *,
+        symbol: str,
+        side: str,
+        volume: float,
+        price: float,
+        comment: str = "",
+        magic: int = 0,
+        deviation: int = 20,
+    ) -> OrderResult:
+        from mt5_risk_bot.models import Side as SideT
+
+        close_side = SideT.SELL if side == "buy" else SideT.BUY
+        return self._apply(
+            {
+                "action": TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": close_side.order_type,
+                "position": ticket,
+                "price": price,
+                "comment": comment[:31],
+                "magic": magic,
+                "deviation": deviation,
+            },
+            commit=True,
+        )
+
+    def close_by(self, ticket: int, other: int, symbol: str = "") -> OrderResult:
+        req = {"action": TRADE_ACTION_CLOSE_BY, "position": ticket, "position_by": other}
+        if symbol:
+            req["symbol"] = symbol
+        return self._apply(req, commit=True)
 
     def _apply(self, request: dict, *, commit: bool) -> OrderResult:
         if not self._trade_allowed:
@@ -583,3 +676,49 @@ class PaperBroker:
         if tp_hit:
             return tp
         return None
+
+
+def _market_req(order: MarketOrder) -> dict:
+    if order.ticket is not None:
+        close_side = Side.SELL if order.side is Side.BUY else Side.BUY
+        return {
+            "action": TRADE_ACTION_DEAL,
+            "symbol": order.symbol,
+            "volume": order.volume,
+            "type": close_side.order_type,
+            "position": order.ticket,
+            "sl": order.sl,
+            "tp": order.tp,
+            "comment": order.comment[:31],
+            "magic": order.magic,
+            "deviation": order.deviation,
+        }
+    return {
+        "action": TRADE_ACTION_DEAL,
+        "symbol": order.symbol,
+        "volume": order.volume,
+        "type": order.side.order_type,
+        "sl": order.sl,
+        "tp": order.tp,
+        "comment": order.comment[:31],
+        "magic": order.magic,
+        "deviation": order.deviation,
+    }
+
+
+def _working_req(order: WorkingOrder) -> dict:
+    if order.kind == "limit":
+        typ = ORDER_TYPE_BUY_LIMIT if order.side is Side.BUY else ORDER_TYPE_SELL_LIMIT
+    else:
+        typ = ORDER_TYPE_BUY_STOP if order.side is Side.BUY else ORDER_TYPE_SELL_STOP
+    return {
+        "action": TRADE_ACTION_PENDING,
+        "symbol": order.symbol,
+        "volume": order.volume,
+        "type": typ,
+        "price": order.price,
+        "sl": order.sl,
+        "tp": order.tp,
+        "comment": order.comment[:31],
+        "magic": order.magic,
+    }

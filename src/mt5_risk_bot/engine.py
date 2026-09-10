@@ -8,38 +8,32 @@ from typing import Any
 
 from mt5_risk_bot.broker.base import Broker
 from mt5_risk_bot.config import BotConfig
-from mt5_risk_bot.constants import (
-    ORDER_TIME_GTC,
-    ORDER_TYPE_BUY_LIMIT,
-    ORDER_TYPE_BUY_STOP,
-    ORDER_TYPE_SELL_LIMIT,
-    ORDER_TYPE_SELL_STOP,
-    TRADE_ACTION_CLOSE_BY,
-    TRADE_ACTION_DEAL,
-    TRADE_ACTION_MODIFY,
-    TRADE_ACTION_PENDING,
-    TRADE_ACTION_REMOVE,
-    TRADE_ACTION_SLTP,
-    TRADE_RETCODE_DONE,
-    TRADE_RETCODE_INVALID_STOPS,
-    choose_filling,
-)
+from mt5_risk_bot.constants import TRADE_RETCODE_DONE, TRADE_RETCODE_INVALID_STOPS
 from mt5_risk_bot.desk import Desk
 from mt5_risk_bot.indicators import adx, ema, last_closed
 from mt5_risk_bot.indicators import atr as atr_bars
 from mt5_risk_bot.journal import Journal, redact_text
 from mt5_risk_bot.llm import Advisor, advice_path_for
-from mt5_risk_bot.models import Bar, OrderResult, PendingOrder, Position, Signal, SignalKind
+from mt5_risk_bot.models import (
+    Bar,
+    MarketOrder,
+    OrderResult,
+    PendingOrder,
+    Position,
+    Signal,
+    SignalKind,
+    WorkingOrder,
+)
 from mt5_risk_bot.risk import RiskDecision, RiskManager, day_key
 from mt5_risk_bot.sizing import money_per_lot_at_stop, normalize_volume
 from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.telegram import TelegramClient, TgCommand
 
 _ORDER_TYPE_NAME = {
-    ORDER_TYPE_BUY_LIMIT: "BUY_LIMIT",
-    ORDER_TYPE_SELL_LIMIT: "SELL_LIMIT",
-    ORDER_TYPE_BUY_STOP: "BUY_STOP",
-    ORDER_TYPE_SELL_STOP: "SELL_STOP",
+    2: "BUY_LIMIT",
+    3: "SELL_LIMIT",
+    4: "BUY_STOP",
+    5: "SELL_STOP",
 }
 
 
@@ -119,7 +113,7 @@ class Engine:
             else:
                 desk.pending = None
         for order in list(self.broker.orders(magic=self.cfg.risk.magic)):
-            self.broker.order_send({"action": TRADE_ACTION_REMOVE, "order": order.ticket})
+            self.broker.cancel(order.ticket)
         for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
             self._close(pos, reason)
         self._scale_outs.clear()
@@ -139,22 +133,17 @@ class Engine:
 
     def _close(self, pos: Position, reason: str, volume: float | None = None) -> OrderResult:
         tick = self.broker.tick(pos.symbol)
-        spec = self.broker.symbol(pos.symbol)
         vol = pos.volume if volume is None else volume
-        request = {
-            "action": TRADE_ACTION_DEAL,
-            "symbol": pos.symbol,
-            "volume": vol,
-            "type": pos.side.close_type,
-            "position": pos.ticket,
-            "price": tick.bid if pos.side.value == "buy" else tick.ask,
-            "deviation": self.cfg.risk.deviation_points,
-            "magic": self.cfg.risk.magic,
-            "comment": reason[:31],
-            "type_time": ORDER_TIME_GTC,
-            "type_filling": choose_filling(spec.filling_mode),
-        }
-        result = self.broker.order_send(request)
+        result = self.broker.close_position(
+            pos.ticket,
+            symbol=pos.symbol,
+            side=pos.side.value,
+            volume=vol,
+            price=tick.bid if pos.side.value == "buy" else tick.ask,
+            comment=reason[:31],
+            magic=self.cfg.risk.magic,
+            deviation=self.cfg.risk.deviation_points,
+        )
         self._closed_this_step.add(pos.ticket)
         if result.ok:
             self._scale_outs.pop(pos.ticket, None)
@@ -175,15 +164,7 @@ class Engine:
     def _modify(self, pos: Position, sl: float, tp: float) -> OrderResult:
         if abs(sl - pos.sl) < 1e-12 and abs((tp or 0) - (pos.tp or 0)) < 1e-12:
             return OrderResult(retcode=TRADE_RETCODE_DONE, comment="unchanged")
-        result = self.broker.order_send(
-            {
-                "action": TRADE_ACTION_SLTP,
-                "symbol": pos.symbol,
-                "position": pos.ticket,
-                "sl": sl,
-                "tp": tp,
-            }
-        )
+        result = self.broker.modify_position(pos.ticket, sl, tp, symbol=pos.symbol)
         self.journal.write(
             "modify",
             ticket=pos.ticket,
@@ -196,27 +177,19 @@ class Engine:
         return result
 
     def _open(self, signal: Signal, volume: float) -> OrderResult:
-        spec = self.broker.symbol(signal.symbol)
-        tick = self.broker.tick(signal.symbol)
         side = signal.side
         assert side is not None
-        price = tick.ask if side.value == "buy" else tick.bid
-        request = {
-            "action": TRADE_ACTION_DEAL,
-            "symbol": signal.symbol,
-            "volume": volume,
-            "type": side.order_type,
-            "price": price,
-            "sl": signal.sl,
-            "tp": signal.tp,
-            "deviation": self.cfg.risk.deviation_points,
-            "magic": self.cfg.risk.magic,
-            "comment": self.cfg.comment[:31],
-            "type_time": ORDER_TIME_GTC,
-            "type_filling": choose_filling(spec.filling_mode),
-        }
-        check = self.broker.order_check(request)
-        # Live order_check success is retcode 0; paper returns DONE (10009).
+        order = MarketOrder(
+            symbol=signal.symbol,
+            side=side,
+            volume=volume,
+            sl=signal.sl,
+            tp=signal.tp,
+            comment=self.cfg.comment[:31],
+            magic=self.cfg.risk.magic,
+            deviation=self.cfg.risk.deviation_points,
+        )
+        check = self.broker.check_market(order)
         if check.retcode not in (0,) and not check.ok:
             self._emit(
                 "order_check_fail",
@@ -225,7 +198,7 @@ class Engine:
                 comment=check.comment,
             )
             return check
-        result = self.broker.order_send(request)
+        result = self.broker.market(order)
         if result.ok:
             ticket = int(result.order or result.deal or 0)
             if ticket:
@@ -240,7 +213,7 @@ class Engine:
             ok=result.ok,
             retcode=result.retcode,
             order=result.order,
-            price=result.price or price,
+            price=result.price,
             reason=signal.reason,
             adx=signal.adx,
             atr=signal.atr,
@@ -251,7 +224,7 @@ class Engine:
         if self.halted:
             return
         need = self.strategy.needed_bars() + 2
-        bars = self.broker.rates(symbol, self.cfg.strategy.timeframe_id, need)
+        bars = self.broker.rates(symbol, self.cfg.strategy.timeframe, need)
         if not bars:
             return
         last_t = bars[-1].time
@@ -331,7 +304,7 @@ class Engine:
         if limit is not None and stop is not None:
             raise RuntimeError("use limit= or stop=, not both")
         bars = self.broker.rates(
-            symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+            symbol, self.cfg.strategy.timeframe, self.strategy.needed_bars()
         )
         a0 = 0.0
         if bars:
@@ -421,7 +394,7 @@ class Engine:
             raise RuntimeError(f"no tick for {pos.symbol}")
         entry = tick.ask if kind is SignalKind.BUY else tick.bid
         bars = self.broker.rates(
-            pos.symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+            pos.symbol, self.cfg.strategy.timeframe, self.strategy.needed_bars()
         )
         a0 = 0.0
         if bars:
@@ -463,26 +436,18 @@ class Engine:
     def _place_pending(self, signal: Signal, volume: float) -> OrderResult:
         side = signal.side
         assert side is not None
-        if signal.pending_kind == "limit":
-            type_code = ORDER_TYPE_BUY_LIMIT if side.value == "buy" else ORDER_TYPE_SELL_LIMIT
-        else:
-            type_code = ORDER_TYPE_BUY_STOP if side.value == "buy" else ORDER_TYPE_SELL_STOP
-        spec = self.broker.symbol(signal.symbol)
-        request = {
-            "action": TRADE_ACTION_PENDING,
-            "symbol": signal.symbol,
-            "volume": volume,
-            "type": type_code,
-            "price": signal.entry,
-            "sl": signal.sl,
-            "tp": signal.tp,
-            "deviation": self.cfg.risk.deviation_points,
-            "magic": self.cfg.risk.magic,
-            "comment": self.cfg.comment[:31],
-            "type_time": ORDER_TIME_GTC,
-            "type_filling": choose_filling(spec.filling_mode),
-        }
-        check = self.broker.order_check(request)
+        order = WorkingOrder(
+            symbol=signal.symbol,
+            side=side,
+            kind=signal.pending_kind or "limit",
+            volume=volume,
+            price=signal.entry,
+            sl=signal.sl,
+            tp=signal.tp,
+            comment=self.cfg.comment[:31],
+            magic=self.cfg.risk.magic,
+        )
+        check = self.broker.check_working(order)
         if check.retcode not in (0,) and not check.ok:
             self._emit(
                 "order_check_fail",
@@ -491,7 +456,7 @@ class Engine:
                 comment=check.comment,
             )
             return check
-        result = self.broker.order_send(request)
+        result = self.broker.working(order)
         self._emit(
             "pending",
             symbol=signal.symbol,
@@ -520,9 +485,7 @@ class Engine:
     def cancel_order(self, ticket: int) -> str:
         for order in self.broker.orders(magic=self.cfg.risk.magic):
             if order.ticket == ticket:
-                result = self.broker.order_send(
-                    {"action": TRADE_ACTION_REMOVE, "order": ticket}
-                )
+                result = self.broker.cancel(ticket)
                 if not result.ok:
                     return f"cancel failed retcode={result.retcode} {result.comment}".strip()
                 return f"cancelled #{ticket}"
@@ -539,7 +502,7 @@ class Engine:
     def _manage_open(self) -> None:
         for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
             bars = self.broker.rates(
-                pos.symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+                pos.symbol, self.cfg.strategy.timeframe, self.strategy.needed_bars()
             )
             spec = self.broker.symbol(pos.symbol)
             new_sl, new_tp = self.strategy.manage(pos, bars, spec)
@@ -632,7 +595,7 @@ class Engine:
         symbol = symbol.upper()
         tick = self.broker.tick(symbol)
         parts = [f"{symbol} bid={tick.bid} ask={tick.ask} spread={tick.spread:.6f}"]
-        bars = self.broker.rates(symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars())
+        bars = self.broker.rates(symbol, self.cfg.strategy.timeframe, self.strategy.needed_bars())
         if bars:
             closes = [b.close for b in bars]
             f0 = last_closed(ema(closes, self.cfg.strategy.fast_ema))
@@ -671,16 +634,7 @@ class Engine:
             return "remainder below volume_min"
         if rem_b > 1e-12 and rem_b < spec.volume_min - 1e-12:
             return "remainder below volume_min"
-        request = {
-            "action": TRADE_ACTION_CLOSE_BY,
-            "position": ticket,
-            "position_by": other,
-            "symbol": a.symbol,
-            "volume": vol,
-            "magic": self.cfg.risk.magic,
-            "comment": "closeby",
-        }
-        result = self.broker.order_send(request)
+        result = self.broker.close_by(ticket, other, symbol=a.symbol)
         if result.ok:
             self._closed_this_step.add(ticket)
             self._closed_this_step.add(other)
@@ -819,13 +773,13 @@ class Engine:
         tick = self.broker.tick(order.symbol)
         px = spec.normalize_price(price)
         kind = order.type_code
-        if kind == ORDER_TYPE_BUY_LIMIT and not (px < tick.ask):
+        if kind == 2 and not (px < tick.ask):
             return "buy limit must be below ask"
-        if kind == ORDER_TYPE_SELL_LIMIT and not (px > tick.bid):
+        if kind == 3 and not (px > tick.bid):
             return "sell limit must be above bid"
-        if kind == ORDER_TYPE_BUY_STOP and not (px > tick.ask):
+        if kind == 4 and not (px > tick.ask):
             return "buy stop must be above ask"
-        if kind == ORDER_TYPE_SELL_STOP and not (px < tick.bid):
+        if kind == 5 and not (px < tick.bid):
             return "sell stop must be below bid"
         sl, tp = order.sl, order.tp
         if order.side.value == "buy" and not (sl < px and (tp <= 0 or px < tp)):
@@ -858,19 +812,17 @@ class Engine:
             return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="buy needs sl < entry < tp")
         if order.side.value == "sell" and not (sl_n > entry and (tp_n <= 0 or tp_n < entry)):
             return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="sell needs tp < entry < sl")
-        request = {
-            "action": TRADE_ACTION_MODIFY,
-            "order": order.ticket,
-            "symbol": order.symbol,
-            "volume": order.volume,
-            "type": order.type_code,
-            "price": entry,
-            "sl": sl_n,
-            "tp": tp_n,
-            "type_time": ORDER_TIME_GTC,
-            "magic": order.magic,
-        }
-        result = self.broker.order_send(request)
+        kind = "stop" if order.type_code in (4, 5) else "limit"
+        result = self.broker.modify_working(
+            order.ticket,
+            price=entry,
+            sl=sl_n,
+            tp=tp_n,
+            symbol=order.symbol,
+            volume=order.volume,
+            side=order.side.value,
+            kind=kind,
+        )
         self.journal.write(
             "modify",
             ticket=order.ticket,
@@ -910,7 +862,7 @@ class Engine:
         if pos is None:
             return "no such ticket"
         bars = self.broker.rates(
-            pos.symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+            pos.symbol, self.cfg.strategy.timeframe, self.strategy.needed_bars()
         )
         spec = self.broker.symbol(pos.symbol)
         new_sl, new_tp = self.strategy.manage(pos, bars, spec)
