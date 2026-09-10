@@ -1,5 +1,10 @@
 # Changelog
 
+## 0.3.0
+
+- Development Status Beta. Production bar holds: Telegram 429/5xx retry and persisted `getUpdates` offset, MT5 reconnect, journaled confirm restore, secret redaction and chat_id lock, doctor paper plus `--connect` fail-closed, launchd, HALT, `--i-accept-risk`, `run --loop` survives a bad `step_all`, config validation on start, pytest and CI coverage >= 80%, journal and offset chmod 0600, close-by hedge-only with a netting fake.
+- Paper is still the default. No profit guarantee.
+
 ## 0.2.0
 
 - Telegram is the desk: /buy /sell /close /sl /tp /be /trail /history /risk /confirm.
