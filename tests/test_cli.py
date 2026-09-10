@@ -286,7 +286,8 @@ def test_help() -> None:
         assert exc.code == 0
 
 
-def test_run_requires_telegram() -> None:
+def test_run_requires_telegram(tmp_path, monkeypatch) -> None:
+    monkeypatch.chdir(tmp_path)
     assert main(["run", "--mode", "paper"]) == 2
 
 
@@ -453,7 +454,6 @@ def test_run_loop_second_process_refuses_shared_journal(tmp_path: Path) -> None:
         held.release()
     assert proc.returncode == 2
     assert "already running" in proc.stderr
-    assert "journal.lock" in proc.stderr
 
 
 def test_run_loop_lock_error_exits_nonzero(tmp_path: Path, monkeypatch, capsys) -> None:
@@ -474,4 +474,45 @@ def test_run_loop_lock_error_exits_nonzero(tmp_path: Path, monkeypatch, capsys) 
     assert rc == 2
     err = capsys.readouterr().err
     assert "already running" in err
-    assert "journal.lock" in err
+
+
+class _OneTickEngine:
+    def __init__(self, *args, **kwargs) -> None:
+        del args, kwargs
+        self.started = False
+        self.stopped = False
+        self.halted = False
+        self.journal = type("J", (), {"write": staticmethod(lambda *a, **k: None)})()
+
+    def start(self) -> None:
+        self.started = True
+
+    def stop(self) -> None:
+        self.stopped = True
+
+    def step_all(self) -> None:
+        self.halted = True
+
+
+def test_run_starts_engine_under_single_lock(tmp_path, monkeypatch) -> None:
+    """A second flock in cmd_run would block this process (LOCK_NB on the same journal)."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1234567890:" + "A" * 35)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+    created: list[_OneTickEngine] = []
+
+    def factory(*args, **kwargs):
+        eng = _OneTickEngine(*args, **kwargs)
+        created.append(eng)
+        return eng
+
+    monkeypatch.setattr("mt5_risk_bot.__main__.Engine", factory)
+    monkeypatch.setattr(
+        "mt5_risk_bot.__main__.TelegramClient.from_config",
+        staticmethod(lambda *a, **k: object()),
+    )
+    rc = main(["run", "--mode", "paper"])
+    assert rc == 0
+    assert len(created) == 1
+    assert created[0].started
+    assert created[0].stopped

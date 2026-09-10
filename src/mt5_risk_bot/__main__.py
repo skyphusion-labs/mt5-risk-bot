@@ -267,23 +267,14 @@ def _cmd_run_locked(args: argparse.Namespace, cfg: BotConfig) -> int:
     if tg is None:
         print("telegram is the front door: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
         return 2
-    try:
-        lock = InstanceLock(cfg.journal_path)
-        lock.acquire()
-    except InstanceLockError as exc:
-        print(str(exc), file=sys.stderr)
-        return 2
     engine = Engine(cfg, broker, halt_dir=halt_dir, telegram=tg)
+    engine.start()
     try:
-        engine.start()
         run_loop(engine, loop=bool(args.loop), keep_on_halt=True)
     except KeyboardInterrupt:
         print("interrupt")
     finally:
-        try:
-            engine.stop()
-        finally:
-            lock.release()
+        engine.stop()
     return 0
 
 
