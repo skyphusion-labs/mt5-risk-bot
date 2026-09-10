@@ -67,6 +67,9 @@ Host: a fleet box that is not dischord. Example: jello.
 6. Send `/help` in Telegram.
 
 Data is `./data` (journal, lock, heartbeat). Stop: `docker compose down`.
+Host data dir owner must be uid 10001.
+
+Live MT5 is not this image. See `deploy/LIVE.md`.
 
 ## Production long-run (macOS)
 
