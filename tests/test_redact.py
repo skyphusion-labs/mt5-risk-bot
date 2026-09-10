@@ -73,3 +73,9 @@ def test_redact_text_strips_botfather_token() -> None:
     assert secret not in out
     assert "leftover" in out
     assert "[REDACTED]" in out
+
+
+def test_journal_file_is_0600_after_write(tmp_path: Path) -> None:
+    path = tmp_path / "journal.jsonl"
+    Journal(path).write("ping")
+    assert path.stat().st_mode & 0o777 == 0o600
