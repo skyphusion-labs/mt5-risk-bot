@@ -14,12 +14,14 @@ npx wrangler secret put CF_AIG_TOKEN
 npx wrangler secret put ADVICE_TOKEN
 ```
 
-Create an AI Gateway named `mt5-risk-bot` (matches `vars.AI_GATEWAY_ID`) on account
-`fabcb25d9c7eb087110ec474a03e50d2`. Unified Billing, no provider keys in the Worker.
+Inference uses the AI Gateway REST API (docs, not `/compat`):
 
-Compat chat model must be `grok/grok-4.3` (not `xai/grok-*`; the gateway 400s that
-prefix). `grok-4.5` is not on this HTTP path (needs Workers AI binding). Prompts
-are not stored (`cf-aig-collect-log-payload: false`).
+`POST https://api.cloudflare.com/client/v4/accounts/{id}/ai/v1/chat/completions`
+with `Authorization: Bearer CF_AIG_TOKEN` and `cf-aig-gateway-id: mt5-risk-bot`.
+Model: `xai/grok-4.6`. Unified Billing, no provider BYOK. Prompts are not stored
+(`cf-aig-collect-log-payload: false`).
+
+Create gateway `mt5-risk-bot` on account `fabcb25d9c7eb087110ec474a03e50d2` if missing.
 
 ## Desk
 

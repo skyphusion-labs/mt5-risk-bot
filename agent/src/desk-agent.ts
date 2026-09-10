@@ -74,11 +74,14 @@ export class DeskAgent extends DurableObject<Env> {
       `${prev}## ${stamp} user\n\n${question}\n\n`,
     );
 
+    // Docs: REST API at api.cloudflare.com, Authorization + cf-aig-gateway-id.
+    // Unified Billing: do not send a provider key. Model ids are author/model (xai/grok-4.6).
+    // https://developers.cloudflare.com/ai-gateway/usage/rest-api/
     const openai = createOpenAI({
       apiKey: token,
-      baseURL: `https://gateway.ai.cloudflare.com/v1/${account}/${gateway}/compat`,
+      baseURL: `https://api.cloudflare.com/client/v4/accounts/${account}/ai/v1`,
       headers: {
-        "cf-aig-authorization": `Bearer ${token}`,
+        "cf-aig-gateway-id": gateway,
         "cf-aig-collect-log-payload": "false",
         "cf-aig-metadata": JSON.stringify({
           bot: "mt5-risk-bot",
@@ -86,7 +89,7 @@ export class DeskAgent extends DurableObject<Env> {
         }),
       },
     });
-    const model = openai.chat(modelId || this.env.ADVICE_MODEL || "grok/grok-4.3");
+    const model = openai.chat(modelId || this.env.ADVICE_MODEL || "xai/grok-4.6");
     const tools = createAITools({
       workspace: this.workspace,
       read: { maxBytes: 32 * 1024, maxLines: 800 },
