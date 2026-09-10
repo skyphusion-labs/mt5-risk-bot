@@ -509,6 +509,32 @@ class Engine:
             self._emit("close", fill=True, ticket=ticket, reason="fill", ok=True)
         self._seen_pos = now
 
+    def symbols_text(self) -> str:
+        return " ".join(self.cfg.symbols) if self.cfg.symbols else "no symbols"
+
+    def add_symbol(self, name: str) -> str:
+        name = name.upper()
+        if name in self.cfg.symbols:
+            return f"already in book: {name}"
+        if not self.broker.select_symbol(name):
+            return f"broker rejected {name}"
+        self.cfg.symbols.append(name)
+        return f"added {name}\n{self.symbols_text()}"
+
+    def remove_symbol(self, name: str) -> str:
+        name = name.upper()
+        if name not in self.cfg.symbols:
+            return f"not in book: {name}"
+        if len(self.cfg.symbols) <= 1:
+            return "cannot remove the last symbol"
+        magic = self.cfg.risk.magic
+        if any(p.symbol == name for p in self.broker.positions(magic=magic)):
+            return f"{name} has open positions; /close first"
+        if any(o.symbol == name for o in self.broker.orders(magic=magic)):
+            return f"{name} has working orders; /cancel first"
+        self.cfg.symbols = [s for s in self.cfg.symbols if s != name]
+        return f"removed {name}\n{self.symbols_text()}"
+
     def quote_text(self, symbol: str) -> str:
         symbol = symbol.upper()
         tick = self.broker.tick(symbol)

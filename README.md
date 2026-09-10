@@ -41,7 +41,8 @@ Real accounts (`trade_mode=2`) also need `--i-accept-risk`.
 order. `/confirm` sends it. `/orders` lists working orders; `/cancel TICKET`
 drops one. Bare `/cancel` drops a staged confirm.
 
-`/quote` with no symbol lists the book. `/risk` shows daily-loss and
+`/quote` with no symbol lists the book. `/symbols list|add|remove`
+edits that book at runtime. `/risk` shows daily-loss and
 drawdown room. `/sl` `/tp` TICKET work on positions and working orders.
 `/trail TICKET` moves SL using the ATR trail and never loosens.
 `/trail on` does that every tick for open positions and does not enable

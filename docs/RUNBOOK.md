@@ -98,6 +98,9 @@ Stage a working order, then confirm:
 /trail on
 /sl TICKET PRICE
 /tp TICKET PRICE
+/symbols
+/symbols add NZDUSD
+/symbols remove NZDUSD
 ```
 
 `stop=` is the same shape (`/sell EURUSD stop=... sl=... tp=...`). Do not

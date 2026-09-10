@@ -250,6 +250,52 @@ def test_parse_advice_limit_stop_ticket() -> None:
     assert stop.limit is None
 
 
+def test_symbols_list_add_remove(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    listed = engine.handle_command(TgCommand("1", 1, "/symbols", 1))
+    assert "EURUSD" in listed
+    assert listed == engine.handle_command(TgCommand("1", 1, "/symbols list", 2))
+    added = engine.handle_command(TgCommand("1", 1, "/symbols add nzdusd", 3))
+    assert "added NZDUSD" in added
+    assert "NZDUSD" in engine.cfg.symbols
+    assert "already" in engine.handle_command(TgCommand("1", 1, "/symbols add NZDUSD", 4))
+    assert "NZDUSD" in engine.handle_command(TgCommand("1", 1, "/quote", 5))
+    removed = engine.handle_command(TgCommand("1", 1, "/symbols remove NZDUSD", 6))
+    assert "removed NZDUSD" in removed
+    assert "NZDUSD" not in engine.cfg.symbols
+    assert "not in book" in engine.handle_command(TgCommand("1", 1, "/symbols remove NZDUSD", 7))
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/symbols nope", 8))
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/symbols add", 9))
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/symbols remove", 17))
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 10))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 11))
+    assert "open positions" in engine.handle_command(
+        TgCommand("1", 1, "/symbols remove EURUSD", 12)
+    )
+    pos = engine.broker.positions()[0]
+    engine.handle_command(TgCommand("1", 1, f"/close {pos.ticket}", 13))
+    tick = engine.broker.tick("EURUSD")
+    spec = engine.broker.symbol("EURUSD")
+    limit = spec.normalize_price(tick.ask - 0.002)
+    engine.handle_command(TgCommand("1", 1, f"/buy EURUSD limit={limit}", 14))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 15))
+    assert "working orders" in engine.handle_command(
+        TgCommand("1", 1, "/symbols remove EURUSD", 16)
+    )
+    engine.stop()
+
+
+def test_symbols_cannot_drop_last(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.cfg.symbols = ["EURUSD"]
+    engine.start()
+    reply = engine.handle_command(TgCommand("1", 1, "/symbols remove EURUSD", 1))
+    assert "last symbol" in reply
+    assert engine.cfg.symbols == ["EURUSD"]
+    engine.stop()
+
+
 def test_quote_usage(tmp_path) -> None:
     engine = _engine(tmp_path)
     engine.start()

@@ -69,6 +69,7 @@ class Desk:
                 "cancel": lambda: self._cancel(cmd.args),
                 "orders": lambda: self.engine.orders_text(),
                 "history": self._history,
+                "symbols": lambda: self._symbols(cmd.args),
                 "ask": lambda: self._ask(cmd.args),
                 "model": lambda: self._model(cmd.args),
                 "auto": lambda: self._auto(cmd.args),
@@ -232,6 +233,22 @@ class Desk:
 
     def _history(self) -> str:
         return self.engine.history_text()
+
+    def _symbols(self, args: str) -> str:
+        parts = args.split()
+        action = parts[0].lower() if parts else "list"
+        name = parts[1] if len(parts) > 1 else ""
+        if action == "list":
+            return self.engine.symbols_text()
+        if action == "add":
+            if not name:
+                return "usage: /symbols add SYMBOL"
+            return self.engine.add_symbol(name)
+        if action == "remove":
+            if not name:
+                return "usage: /symbols remove SYMBOL"
+            return self.engine.remove_symbol(name)
+        return "usage: /symbols list|add|remove [SYMBOL]"
 
     def _stop(self, args: str, which: str) -> str:
         parts = args.split()

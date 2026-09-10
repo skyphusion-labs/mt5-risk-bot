@@ -122,6 +122,7 @@ HELP = (
     "/sl TICKET PRICE   /tp TICKET PRICE   /be TICKET\n"
     "/trail on|off|TICKET\n"
     "/confirm  /cancel [TICKET]  /orders  /history  /risk\n"
+    "/symbols list|add|remove [SYMBOL]\n"
     "/positions  /status  /ask ...\n"
     "/model grok|claude   /auto on|off\n"
     "/halt  /resume  /help\n"

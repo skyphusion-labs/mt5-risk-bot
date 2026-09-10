@@ -10,6 +10,7 @@
 - `/quote` with no symbol lists the configured book. `/trail` never loosens.
 - `/trail on|off` manages existing positions every tick without EMA entries. Default off.
 - `/sl` `/tp` TICKET modify a working order (`TRADE_ACTION_MODIFY`) as well as a position.
+- `/symbols list|add|remove` edits the configured book at runtime.
 - Grok (xAI) and Claude (Anthropic) via env keys. Last 6 turns kept. Advice never auto-sends.
 - Advice JSON may stage `limit=` / `stop=` or close TICKET. `/ask` context includes `/risk`, orders, positions, quotes.
 - Auto EMA regime is off until `/auto on`.

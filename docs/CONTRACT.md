@@ -61,6 +61,7 @@ off until `/auto on`.
 | `/be TICKET` | move SL to entry; never loosen |
 | `/trail on\|off\|TICKET` | on: `manage()` existing positions every tick, no EMA entries (default off). TICKET: one-shot. never loosen |
 | `/history` | last journal events |
+| `/symbols list\|add\|remove [SYMBOL]` | configured book (runtime). Bare `/symbols` lists. Cannot drop the last name, or a name with positions/orders |
 | `/ask ...` or free text | Grok or Claude (last 6 turns plus status, /risk, positions, working orders, quotes); JSON may stage market, `limit=`, `stop=`, or close TICKET; never sends |
 | `/model grok\|claude` | switch provider |
 | `/auto on\|off` | optional EMA regime; fill alerts do not wait for this |
