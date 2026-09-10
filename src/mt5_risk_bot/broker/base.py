@@ -16,7 +16,7 @@ from mt5_risk_bot.models import (
 
 
 class Broker(Protocol):
-    """Venue-neutral execution API. Paper and MT5 implement this.
+    """Venue-neutral execution API. Paper, MT5, and MT4 implement this.
 
     Engine, desk, and risk never send MT5 request dicts. A new venue
     implements these methods. close_by may return unsupported.

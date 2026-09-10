@@ -2,17 +2,21 @@
 
 The bot is the Python process on this computer.
 A venue is an execution provider.
-Paper and MetaTrader 5 are the venues today.
+Paper, MetaTrader 5, and MetaTrader 4 are the venues today.
 
 Engine, desk, and risk never send MetaTrader request dicts.
 They send `MarketOrder` and `WorkingOrder`.
 Each venue adapter maps those types to its own API.
 
-Paper and MT5 implement `mt5_risk_bot.broker.base.Broker`.
-`account.mode` selects the adapter (`paper` or `mt5`) in `run`.
-`broker_for(cfg)` in `mt5_risk_bot.broker` returns PaperBroker or Mt5Broker.
+Paper, MT5, and MT4 implement `mt5_risk_bot.broker.base.Broker`.
+`account.mode` selects the adapter (`paper`, `mt5`, or `mt4`) in `run`.
+`broker_for(cfg)` in `mt5_risk_bot.broker` returns PaperBroker, Mt5Broker, or Mt4Broker.
 A new venue is a new adapter plus a factory branch.
 Do not teach the engine MT5 constants.
+
+MT4 has no official Python package.
+`Mt4Broker` speaks a line mailbox to `mt4/Experts/Mt4RiskBot.mq4`.
+See `docs/MT4.md`.
 
 ## Types
 
@@ -55,12 +59,13 @@ It does not import MT5 retcode integers.
 MT5 integers and `order_send` dicts stay inside `broker/mt5_live.py` and
 `broker/paper.py` as private translation.
 The MT5 adapter maps timeframe names with `timeframe_code`.
+MT4 integers stay inside `broker/mt4_live.py` and the Expert.
 
 ## Config
 
-`account.mode` is `paper` or `mt5` today.
+`account.mode` is `paper`, `mt5`, or `mt4`.
 That is a venue name, not a protocol.
-A third venue adds a name and an adapter.
+A fourth venue adds a name and an adapter.
 It does not change Telegram or risk.
 
 ## Fills

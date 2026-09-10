@@ -59,6 +59,12 @@ class SessionConfig:
 
 
 @dataclass
+class Mt4Config:
+    files_dir: str = ""
+    timeout_ms: int = 5000
+
+
+@dataclass
 class Mt5Config:
     terminal_path: str = ""
     timeout_ms: int = 60000
@@ -106,13 +112,14 @@ class AdviceConfig:
 
 @dataclass
 class BotConfig:
-    mode: str = "paper"  # paper | mt5
+    mode: str = "paper"  # paper | mt5 | mt4
     initial_balance: float = 10_000.0
     symbols: list[str] = field(default_factory=lambda: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"])
     risk: RiskConfig = field(default_factory=RiskConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
     mt5: Mt5Config = field(default_factory=Mt5Config)
+    mt4: Mt4Config = field(default_factory=Mt4Config)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     advice: AdviceConfig = field(default_factory=AdviceConfig)
     poll_seconds: int = 15
@@ -121,8 +128,8 @@ class BotConfig:
     live_accepted: bool = False
 
     def validate(self) -> None:
-        if self.mode not in {"paper", "mt5"}:
-            raise ValueError("account.mode must be paper or mt5")
+        if self.mode not in {"paper", "mt5", "mt4"}:
+            raise ValueError("account.mode must be paper, mt5, or mt4")
         r = self.risk
         if not (0 < r.risk_pct <= 0.05):
             raise ValueError("risk_pct must be in (0, 0.05]")
@@ -177,6 +184,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     strat_s = _section(data, "strategy")
     sess_s = _section(data, "session")
     mt5_s = _section(data, "mt5")
+    mt4_s = _section(data, "mt4")
     tg_s = _section(data, "telegram")
     advice_s = _section(data, "advice")
     engine_s = _section(data, "engine")
@@ -205,7 +213,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
         events = tuple(str(x) for x in events_raw)
 
     cfg = BotConfig(
-        mode=str(account.get("mode", "paper")),
+        mode=os.environ.get("ACCOUNT_MODE", str(account.get("mode", "paper"))),
         initial_balance=float(account.get("initial_balance", 10_000.0)),
         symbols=names,
         poll_seconds=int(os.environ.get("POLL_SECONDS", engine_s.get("poll_seconds", 15))),
@@ -252,6 +260,10 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             login=login,
             password=password,
             server=server,
+        ),
+        mt4=Mt4Config(
+            files_dir=os.environ.get("MT4_FILES_DIR", str(mt4_s.get("files_dir", "") or "")),
+            timeout_ms=int(mt4_s.get("timeout_ms", 5000)),
         ),
         telegram=TelegramConfig(
             token=tg_token,

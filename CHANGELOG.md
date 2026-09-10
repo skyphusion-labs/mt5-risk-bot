@@ -4,6 +4,14 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.1.0
+
+- MetaTrader 4 is a third venue. `account.mode = "mt4"` selects `Mt4Broker`.
+- MT4 has no official Python package. The owned ICD is a Common Files mailbox (`mt4_risk_bot.req` / `.res`) spoken by `mt4/Experts/Mt4RiskBot.mq4`. See `docs/MT4.md`.
+- `run --mode mt4`. `doctor --connect` pings that mailbox when mode is `mt4`.
+- Real-money MT4 (`trade_mode=2`) uses the same fuse as MT5: `--i-accept-risk` or `/live on I-ACCEPT-RISK`.
+- `MT4_FILES_DIR` / `mt4.files_dir` is the Common Files path. Not a secret.
+
 ## 1.0.0
 
 - Development Status Production/Stable. Production bar holds: exclusive `journal.lock` (second `run --loop` exits 2), `journal.heartbeat` each successful `step_all`, journal rotate to `journal.jsonl.1` at 10 MiB, CI pytest on Python 3.12 and 3.13 plus `doctor`, launchd `KeepAlive` / `Umask` 63 / heartbeat path, pytest and PR CI coverage >= 80%.

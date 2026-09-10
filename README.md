@@ -113,6 +113,21 @@ Then run `pip install mt5-mac`.
 4. Start the live loop.
    `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
 
+## Live MT4
+
+MetaTrader 4 has no official Python package.
+Attach `mt4/Experts/Mt4RiskBot.mq4` to one chart.
+Set `mt4.files_dir` to Common Files (`MT4_FILES_DIR`).
+
+1. Set `account.mode = "mt4"`.
+2. Run doctor with a mailbox check.
+   `python -m mt5_risk_bot --config config.toml doctor --connect`
+3. Stop if doctor is not 0.
+4. Start the live loop.
+   `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop`
+
+See `docs/MT4.md` and `mt4/README.md`.
+
 WARNING
 A real account (`trade_mode=2`) also needs `--i-accept-risk` at start,
 or `/live on I-ACCEPT-RISK` in the locked chat.
@@ -184,6 +199,7 @@ Send `/help` for the rest.
 
 `docs/CONTRACT.md` is the behaviour that tests enforce.
 `docs/VENUE.md` is the provider-agnostic execution API (`MarketOrder`, `WorkingOrder`).
+`docs/MT4.md` is the MT4 file-mailbox ICD.
 `docs/RUNBOOK.md` is paper, live, `/live on I-ACCEPT-RISK`, `/approve always`, `poll_seconds=1`, HALT, confirm-on-restart, lock, heartbeat, journal rotate, and launchd.
 `docs/launchd.plist.example` is a user LaunchAgent.
 It uses paper `--loop`, `KeepAlive`, and `Umask` 63.

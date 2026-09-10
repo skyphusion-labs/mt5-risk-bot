@@ -1,9 +1,11 @@
-# Live MT5
+# Live MT5 / MT4
 
 Paper Docker on jello is the Telegram desk. It is not live execution.
 
-Live execution needs a host that runs MetaTrader 5 and the Python bot
-on the same OS. Official `MetaTrader5` is Windows. `mt5-mac` is macOS.
+Live execution needs a host that runs MetaTrader 4 or 5 and the Python
+bot on the same OS. Official `MetaTrader5` is Windows. `mt5-mac` is macOS.
+MT4 uses the Expert in `mt4/Experts/Mt4RiskBot.mq4` and `account.mode=mt4`.
+Set `MT4_FILES_DIR` to Common Files. `doctor --connect` must print `venue=mt4`.
 This fleet is Linux. Do not put Wine in the paper image and call it live.
 
 ## Path
@@ -36,6 +38,9 @@ set -a && source .env && set +a
 python -m mt5_risk_bot doctor --connect
 python -m mt5_risk_bot run --mode mt5 --loop
 ```
+
+On an MT4 host, attach `Mt4RiskBot.mq4`, set `ACCOUNT_MODE=mt4` and
+`MT4_FILES_DIR`, then `run --mode mt4 --loop`. See `docs/MT4.md`.
 
 5. Demo (`trade_mode=0`) does not need `/live on`.
 6. Real money (`trade_mode=2`): `/live on I-ACCEPT-RISK` then `/approve always`.

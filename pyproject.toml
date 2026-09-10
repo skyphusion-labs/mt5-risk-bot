@@ -4,13 +4,13 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mt5-risk-bot"
-version = "1.0.0"
-description = "Risk-first MetaTrader 5 trading bot. Paper by default. No profit guarantee."
+version = "1.1.0"
+description = "Risk-first MetaTrader desk. Paper by default. No profit guarantee."
 readme = "README.md"
 requires-python = ">=3.12"
 license = { text = "MIT" }
 authors = [{ name = "Conrad Rockenhaus", email = "conrad@skyphusion.org" }]
-keywords = ["metatrader", "mt5", "trading", "risk"]
+keywords = ["metatrader", "mt5", "mt4", "trading", "risk"]
 classifiers = [
   "Development Status :: 5 - Production/Stable",
   "License :: OSI Approved :: MIT License",

@@ -119,6 +119,20 @@ def test_live_blocked_without_flag() -> None:
     assert not d.allowed and d.reason == "live_not_accepted"
 
 
+def test_live_blocked_without_flag_mt4() -> None:
+    cfg = BotConfig(mode="mt4", live_accepted=False)
+    rm = RiskManager(cfg)
+    d = rm.evaluate(
+        account=_acct(trade_mode=2),
+        signal=_sig(),
+        spec=default_spec("EURUSD"),
+        tick=_tick(),
+        positions=[],
+        now=_now(),
+    )
+    assert not d.allowed and d.reason == "live_not_accepted"
+
+
 def test_operator_halt_clears_file_not_drawdown(tmp_path: Path) -> None:
     cfg = BotConfig()
     cfg.risk.halt_file = str(tmp_path / "HALT")
