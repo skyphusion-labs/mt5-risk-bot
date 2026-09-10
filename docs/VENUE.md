@@ -23,6 +23,11 @@ Fields: `symbol`, `side`, `volume`, `sl`, `tp`, `comment`, `magic`, `deviation`,
 Fields: `symbol`, `side`, `kind`, `volume`, `price`, `sl`, `tp`, `comment`, `magic`, `ticket`.
 `kind` is `"limit"` or `"stop"`.
 
+`PendingOrder` is a working order the venue holds.
+`kind` is `"limit"` or `"stop"`. Engine never reads MT5 type integers.
+
+`Side` is `buy` or `sell`. MT5 order type integers live in the adapters.
+
 `OrderResult.ok` is true when `retcode` is in `RETCODE_OK`.
 Only `OrderResult.ok` is a send.
 

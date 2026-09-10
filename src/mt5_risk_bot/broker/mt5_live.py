@@ -13,6 +13,7 @@ from mt5_risk_bot.constants import (
     FILLING_RETRY_ORDER,
     ORDER_TIME_GTC,
     ORDER_TYPE_BUY,
+    ORDER_TYPE_SELL,
     ORDER_TYPE_BUY_LIMIT,
     ORDER_TYPE_BUY_STOP,
     ORDER_TYPE_BUY_STOP_LIMIT,
@@ -69,6 +70,10 @@ def _asdict(obj: Any) -> dict:
     if hasattr(obj, "_asdict"):
         return obj._asdict()
     return dict(getattr(obj, "__dict__", {}) or {})
+
+
+def _deal_type(side: Side) -> int:
+    return ORDER_TYPE_BUY if side is Side.BUY else ORDER_TYPE_SELL
 
 
 def _order_kind(type_code: int) -> str:
@@ -464,7 +469,7 @@ class Mt5Broker:
                 "action": TRADE_ACTION_DEAL,
                 "symbol": symbol,
                 "volume": volume,
-                "type": close_side.order_type,
+                "type": _deal_type(close_side),
                 "position": ticket,
                 "price": price,
                 "deviation": deviation,
@@ -489,7 +494,7 @@ class Mt5Broker:
                 "action": TRADE_ACTION_DEAL,
                 "symbol": order.symbol,
                 "volume": order.volume,
-                "type": close_side.order_type,
+                "type": _deal_type(close_side),
                 "position": order.ticket,
                 "price": self.tick(order.symbol).bid if order.side is Side.BUY else self.tick(order.symbol).ask,
                 "sl": order.sl,
@@ -506,7 +511,7 @@ class Mt5Broker:
             "action": TRADE_ACTION_DEAL,
             "symbol": order.symbol,
             "volume": order.volume,
-            "type": order.side.order_type,
+            "type": _deal_type(order.side),
             "price": price,
             "sl": order.sl,
             "tp": order.tp,

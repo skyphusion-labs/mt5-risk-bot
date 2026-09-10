@@ -14,6 +14,7 @@ from dataclasses import replace
 
 from mt5_risk_bot.constants import (
     ORDER_TYPE_BUY,
+    ORDER_TYPE_SELL,
     ORDER_TYPE_BUY_LIMIT,
     ORDER_TYPE_BUY_STOP,
     ORDER_TYPE_SELL_LIMIT,
@@ -55,6 +56,12 @@ _PENDING_SIDE = {
     ORDER_TYPE_BUY_STOP: Side.BUY,
     ORDER_TYPE_SELL_STOP: Side.SELL,
 }
+
+
+def _deal_type(side: Side) -> int:
+    return ORDER_TYPE_BUY if side is Side.BUY else ORDER_TYPE_SELL
+
+
 _PENDING_KIND = {
     ORDER_TYPE_BUY_LIMIT: "limit",
     ORDER_TYPE_SELL_LIMIT: "limit",
@@ -296,7 +303,7 @@ class PaperBroker:
                 "action": TRADE_ACTION_DEAL,
                 "symbol": symbol,
                 "volume": volume,
-                "type": close_side.order_type,
+                "type": _deal_type(close_side),
                 "position": ticket,
                 "price": price,
                 "comment": comment[:31],
@@ -690,7 +697,7 @@ def _market_req(order: MarketOrder) -> dict:
             "action": TRADE_ACTION_DEAL,
             "symbol": order.symbol,
             "volume": order.volume,
-            "type": close_side.order_type,
+            "type": _deal_type(close_side),
             "position": order.ticket,
             "sl": order.sl,
             "tp": order.tp,
@@ -702,7 +709,7 @@ def _market_req(order: MarketOrder) -> dict:
         "action": TRADE_ACTION_DEAL,
         "symbol": order.symbol,
         "volume": order.volume,
-        "type": order.side.order_type,
+        "type": _deal_type(order.side),
         "sl": order.sl,
         "tp": order.tp,
         "comment": order.comment[:31],

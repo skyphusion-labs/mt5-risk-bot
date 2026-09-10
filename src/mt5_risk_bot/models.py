@@ -12,18 +12,6 @@ class Side(str, Enum):
     SELL = "sell"
 
     @property
-    def order_type(self) -> int:
-        from mt5_risk_bot.constants import ORDER_TYPE_BUY, ORDER_TYPE_SELL
-
-        return ORDER_TYPE_BUY if self is Side.BUY else ORDER_TYPE_SELL
-
-    @property
-    def close_type(self) -> int:
-        from mt5_risk_bot.constants import ORDER_TYPE_BUY, ORDER_TYPE_SELL
-
-        return ORDER_TYPE_SELL if self is Side.BUY else ORDER_TYPE_BUY
-
-    @property
     def opposite(self) -> Side:
         return Side.SELL if self is Side.BUY else Side.BUY
 

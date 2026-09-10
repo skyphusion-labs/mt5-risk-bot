@@ -300,3 +300,8 @@ def test_engine_flatten_uses_cancel_not_order_send(tmp_path: Path) -> None:
     assert spy.positions() == []
     assert engine.halted
     engine.stop()
+
+
+def test_side_has_no_mt5_type_ints() -> None:
+    assert "order_type" not in Side.__dict__
+    assert "close_type" not in Side.__dict__

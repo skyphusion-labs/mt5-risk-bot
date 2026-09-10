@@ -14,6 +14,7 @@ See README.md and docs/CONTRACT.md.
 - `AI_PROVIDER=computer` sends `/ask` to a Cloudflare Computer Durable Object. Working memory is the workspace filesystem (`notes.md`, `log.md`, `snapshot.md`, `history.json` from `journal.tail`). Inference is AI Gateway Unified Billing (`CF_AIG_TOKEN`), not provider BYOK.
 - `broker_for(cfg)` selects PaperBroker or Mt5Broker from `account.mode`. `PendingOrder.kind` is `limit` or `stop`; engine lists and replaces from that string, not MT5 type ints.
 - `PendingOrder.kind` is `limit` or `stop`. Engine and desk never read MT5 `type_code`.
+- `Side` has no MT5 order type integers. Adapters map buy/sell for `order_send`.
 
 ## 0.3.0
 
