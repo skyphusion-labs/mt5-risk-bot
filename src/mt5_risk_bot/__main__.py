@@ -130,7 +130,11 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             path=cfg.mt5.terminal_path,
             timeout_ms=cfg.mt5.timeout_ms,
         )
-        broker.connect()
+        ensure = getattr(broker, "ensure_connected", None)
+        if callable(ensure):
+            ensure()
+        else:
+            broker.connect()
         acct = broker.account()
         print(
             f"connected login={acct.login} server={acct.server} "
