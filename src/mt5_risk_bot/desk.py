@@ -136,7 +136,7 @@ class Desk:
     def handle(self, cmd: TgCommand) -> str:
         try:
             if not cmd.name:
-                return self._ask(cmd.args)
+                return self._ask(cmd.args, session=str(cmd.chat_id))
             fn = {
                 "start": lambda: HELP,
                 "help": lambda: HELP,
@@ -160,7 +160,7 @@ class Desk:
                 "history": self._history,
                 "recap": self.engine.recap_text,
                 "symbols": lambda: self._symbols(cmd.args),
-                "ask": lambda: self._ask(cmd.args),
+                "ask": lambda: self._ask(cmd.args, session=str(cmd.chat_id)),
                 "model": lambda: self._model(cmd.args),
                 "auto": lambda: self._auto(cmd.args),
                 "halt": self._halt,
@@ -430,12 +430,12 @@ class Desk:
         vol = float(parts[2]) if len(parts) == 3 else None
         return self.engine.set_tp(int(parts[0]), float(parts[1]), vol)
 
-    def _ask(self, question: str) -> str:
+    def _ask(self, question: str, session: str = "") -> str:
         if not question.strip():
             return "ask a question, or /buy /sell"
         if self.advisor is None:
             return "AI not configured"
-        advice = self.advisor.ask(question, self.engine.advice_context())
+        advice = self.advisor.ask(question, self.engine.advice_context(), session=session)
         lines = [advice.text]
         if advice.summary:
             lines.append(advice.summary)
@@ -469,8 +469,8 @@ class Desk:
         name = args.strip().lower()
         if not name:
             return f"provider={self.advisor.cfg.provider}"
-        if name not in {"grok", "claude"}:
-            return "usage: /model grok|claude"
+        if name not in {"grok", "claude", "computer"}:
+            return "usage: /model grok|claude|computer"
         self.advisor.cfg.provider = name
         if not self.advisor.cfg.enabled:
             return f"switched to {name} but no key is set"

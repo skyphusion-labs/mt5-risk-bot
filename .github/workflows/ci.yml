@@ -30,3 +30,19 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest -q --override-ini addopts=
       - run: python -m mt5_risk_bot doctor
+
+  agent:
+    name: agent-typecheck
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-node@v5
+        with:
+          node-version: "22"
+          cache: npm
+          cache-dependency-path: agent/package-lock.json
+      - run: npm ci
+        working-directory: agent
+      - run: npm run typecheck
+        working-directory: agent

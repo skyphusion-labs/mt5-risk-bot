@@ -230,7 +230,7 @@ HELP = (
     "/confirm  /cancel [TICKET]  /orders  /history  /recap  /risk\n"
     "/symbols list|add|remove [SYMBOL]\n"
     "/positions  /status  /ask ...\n"
-    "/model grok|claude   /auto on|off\n"
+    "/model grok|claude|computer   /auto on|off\n"
     "/halt  /resume  /help\n"
     "Anything not a slash command goes to the AI."
 )

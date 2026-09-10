@@ -84,18 +84,23 @@ class TelegramConfig:
 
 @dataclass
 class AdviceConfig:
-    provider: str = "grok"  # grok | claude
+    provider: str = "grok"  # grok | claude | computer
     grok_model: str = "grok-4"
     claude_model: str = "claude-sonnet-4-5"
     grok_key: str = ""
     claude_key: str = ""
     grok_url: str = "https://api.x.ai/v1/chat/completions"
     claude_url: str = "https://api.anthropic.com/v1/messages"
+    computer_url: str = ""
+    computer_token: str = ""
+    computer_model: str = "xai/grok-4"
 
     @property
     def enabled(self) -> bool:
         if self.provider == "claude":
             return bool(self.claude_key)
+        if self.provider == "computer":
+            return bool(self.computer_url and self.computer_token)
         return bool(self.grok_key)
 
 
@@ -135,8 +140,8 @@ class BotConfig:
         if s.atr_tp_mult / s.atr_stop_mult < r.min_rr - 1e-9:
             raise ValueError("atr_tp_mult / atr_stop_mult must be >= min_rr")
         self.strategy.timeframe_id  # raises if unknown
-        if self.advice.provider not in {"grok", "claude"}:
-            raise ValueError("advice.provider must be grok or claude")
+        if self.advice.provider not in {"grok", "claude", "computer"}:
+            raise ValueError("advice.provider must be grok, claude, or computer")
         if not self.symbols:
             raise ValueError("at least one symbol required")
         if self.telegram.confirm_seconds <= 0:
@@ -190,6 +195,8 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     tg_chat = os.environ.get("TELEGRAM_CHAT_ID", str(tg_s.get("chat_id", "") or ""))
     grok_key = os.environ.get("XAI_API_KEY", str(advice_s.get("grok_key", "") or ""))
     claude_key = os.environ.get("ANTHROPIC_API_KEY", str(advice_s.get("claude_key", "") or ""))
+    computer_url = os.environ.get("ADVICE_URL", str(advice_s.get("computer_url", "") or ""))
+    computer_token = os.environ.get("ADVICE_TOKEN", str(advice_s.get("computer_token", "") or ""))
     provider = os.environ.get("AI_PROVIDER", str(advice_s.get("provider", "grok") or "grok")).lower()
     events_raw = tg_s.get("notify_events", list(DEFAULT_TG_EVENTS))
     if isinstance(events_raw, str):
@@ -253,13 +260,16 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             confirm_seconds=int(tg_s.get("confirm_seconds", 120)),
         ),
         advice=AdviceConfig(
-            provider=provider if provider in {"grok", "claude"} else "grok",
+            provider=provider if provider in {"grok", "claude", "computer"} else "grok",
             grok_model=str(advice_s.get("grok_model", "grok-4")),
             claude_model=str(advice_s.get("claude_model", "claude-sonnet-4-5")),
             grok_key=grok_key,
             claude_key=claude_key,
             grok_url=str(advice_s.get("grok_url", "https://api.x.ai/v1/chat/completions")),
             claude_url=str(advice_s.get("claude_url", "https://api.anthropic.com/v1/messages")),
+            computer_url=computer_url,
+            computer_token=computer_token,
+            computer_model=str(advice_s.get("computer_model", "xai/grok-4")),
         ),
     )
     cfg.validate()

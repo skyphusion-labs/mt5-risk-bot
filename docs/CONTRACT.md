@@ -30,7 +30,9 @@ off until `/auto on`.
   `day_start`). That is not a trade. `/recap` dumps the same snapshot.
 - Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`,
   `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`,
-  `ANTHROPIC_API_KEY`, `AI_PROVIDER`. Journal writes, `loop_error`
+  `ANTHROPIC_API_KEY`, `AI_PROVIDER`, `ADVICE_URL`, `ADVICE_TOKEN`.
+  `AI_PROVIDER=computer` posts to the Computer worker. That worker bills
+  through AI Gateway (`CF_AIG_TOKEN`), not a provider key. Journal writes, `loop_error`
   stderr, and Telegram `send` redact BotFather tokens. Named secret
   keys in the journal become `[REDACTED]`. `journal.jsonl`,
   `journal.jsonl.1`, `journal.tg_offset`, `journal.lock`,

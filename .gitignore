@@ -15,3 +15,6 @@ HALT
 .env
 *.log
 .DS_Store
+agent/node_modules/
+agent/.wrangler/
+agent/.dev.vars

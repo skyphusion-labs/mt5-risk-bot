@@ -17,6 +17,11 @@ export TELEGRAM_CHAT_ID=...
 export XAI_API_KEY=...          # Grok (default)
 # export ANTHROPIC_API_KEY=...  # Claude
 # export AI_PROVIDER=claude
+# Computer worker (workspace memory, AI Gateway Unified Billing):
+# export AI_PROVIDER=computer
+# export ADVICE_URL=https://mt5-risk-agent.<account>.workers.dev/ask
+# export ADVICE_TOKEN=...
+# See agent/README.md.
 pytest
 python -m mt5_risk_bot doctor   # gate: telegram ping + paper /buy /confirm /close
 python -m mt5_risk_bot run --mode paper --loop --config config.toml

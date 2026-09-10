@@ -123,16 +123,18 @@ class Advisor:
         self._memory: list[dict[str, str]] = []
         self.load()
 
-    def ask(self, question: str, context: str) -> Advice:
+    def ask(self, question: str, context: str, session: str = "") -> Advice:
         if not self.cfg.enabled:
             return Advice(
                 text=(
-                    "no AI key. set XAI_API_KEY for Grok or ANTHROPIC_API_KEY for Claude "
-                    "(AI_PROVIDER=grok|claude)"
+                    "no AI key. set XAI_API_KEY, ANTHROPIC_API_KEY, or "
+                    "ADVICE_URL+ADVICE_TOKEN (AI_PROVIDER=grok|claude|computer)"
                 )
             )
         user = f"{context}\n\nUser: {question}"
-        if self.cfg.provider == "claude":
+        if self.cfg.provider == "computer":
+            raw = self._computer(question, context, session)
+        elif self.cfg.provider == "claude":
             raw = self._claude(user)
         else:
             raw = self._grok(user)
@@ -180,6 +182,25 @@ class Advisor:
         os.chmod(tmp, 0o600)
         tmp.replace(path)
         os.chmod(path, 0o600)
+
+    def _computer(self, question: str, context: str, session: str) -> str:
+        data = self.transport.post_json(
+            self.cfg.computer_url,
+            {
+                "session": session or "default",
+                "question": question,
+                "context": context,
+                "model": self.cfg.computer_model,
+            },
+            timeout=120.0,
+            headers={"Authorization": f"Bearer {self.cfg.computer_token}"},
+        )
+        if data.get("error"):
+            raise RuntimeError(str(data.get("error")))
+        text = str(data.get("text") or "")
+        if not text:
+            raise RuntimeError("computer empty")
+        return text
 
     def _grok(self, user: str) -> str:
         messages = [{"role": "system", "content": SYSTEM}, *self._memory, {"role": "user", "content": user}]

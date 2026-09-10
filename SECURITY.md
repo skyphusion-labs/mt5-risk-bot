@@ -7,8 +7,10 @@ for a live trading defect that could move money.
 
 Secrets live in the environment, never in `config.toml` (gitignored):
 `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`,
-`TELEGRAM_CHAT_ID`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`. Env vars override
-toml if both are set.
+`TELEGRAM_CHAT_ID`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `ADVICE_URL`,
+`ADVICE_TOKEN`. The Computer worker uses `CF_AIG_TOKEN` (AI Gateway
+Unified Billing) and `ADVICE_TOKEN`; never provider BYOK in that
+Worker. Env vars override toml if both are set.
 
 Journal writes replace keys named `token`, `password`, `api_key`,
 `grok_key`, and `claude_key` with `[REDACTED]`, and strip BotFather
