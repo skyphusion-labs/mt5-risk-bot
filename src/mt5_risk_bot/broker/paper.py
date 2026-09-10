@@ -14,6 +14,7 @@ from dataclasses import replace
 
 from mt5_risk_bot.constants import (
     ORDER_TYPE_BUY,
+    ORDER_TYPE_SELL,
     ORDER_TYPE_BUY_LIMIT,
     ORDER_TYPE_BUY_STOP,
     ORDER_TYPE_SELL_LIMIT,
@@ -35,7 +36,18 @@ from mt5_risk_bot.constants import (
     TRADE_RETCODE_POSITION_CLOSED,
     TRADE_RETCODE_TRADE_DISABLED,
 )
-from mt5_risk_bot.models import Account, Bar, OrderResult, PendingOrder, Position, Side, SymbolSpec, Tick
+from mt5_risk_bot.models import (
+    Account,
+    Bar,
+    MarketOrder,
+    OrderResult,
+    PendingOrder,
+    Position,
+    Side,
+    SymbolSpec,
+    Tick,
+    WorkingOrder,
+)
 from mt5_risk_bot.sizing import ticks_between
 
 _PENDING_SIDE = {
@@ -43,6 +55,18 @@ _PENDING_SIDE = {
     ORDER_TYPE_SELL_LIMIT: Side.SELL,
     ORDER_TYPE_BUY_STOP: Side.BUY,
     ORDER_TYPE_SELL_STOP: Side.SELL,
+}
+
+
+def _deal_type(side: Side) -> int:
+    return ORDER_TYPE_BUY if side is Side.BUY else ORDER_TYPE_SELL
+
+
+_PENDING_KIND = {
+    ORDER_TYPE_BUY_LIMIT: "limit",
+    ORDER_TYPE_SELL_LIMIT: "limit",
+    ORDER_TYPE_BUY_STOP: "stop",
+    ORDER_TYPE_SELL_STOP: "stop",
 }
 
 # Filling IOC allowed (bit 2) so live-style filling selection works in paper.
@@ -146,7 +170,7 @@ class PaperBroker:
         t = bar.time if bar else self._clock
         return Tick(time=t, bid=mid - half, ask=mid + half, last=mid)
 
-    def rates(self, name: str, timeframe: int, count: int) -> list[Bar]:
+    def rates(self, name: str, timeframe: str | int, count: int) -> list[Bar]:
         del timeframe
         bars = self._bars.get(name.upper(), [])
         if count <= 0:
@@ -212,6 +236,88 @@ class PaperBroker:
 
     def order_send(self, request: dict) -> OrderResult:
         return self._apply(request, commit=True)
+
+    def check_market(self, order: MarketOrder) -> OrderResult:
+        return self._apply(_market_req(order), commit=False)
+
+    def market(self, order: MarketOrder) -> OrderResult:
+        return self._apply(_market_req(order), commit=True)
+
+    def check_working(self, order: WorkingOrder) -> OrderResult:
+        return self._apply(_working_req(order), commit=False)
+
+    def working(self, order: WorkingOrder) -> OrderResult:
+        return self._apply(_working_req(order), commit=True)
+
+    def modify_position(self, ticket: int, sl: float, tp: float, symbol: str = "") -> OrderResult:
+        req = {"action": TRADE_ACTION_SLTP, "position": ticket, "sl": sl, "tp": tp}
+        if symbol:
+            req["symbol"] = symbol
+        return self._apply(req, commit=True)
+
+    def modify_working(
+        self,
+        ticket: int,
+        *,
+        price: float | None = None,
+        sl: float | None = None,
+        tp: float | None = None,
+        symbol: str = "",
+        volume: float = 0.0,
+        side: str = "",
+        kind: str = "",
+    ) -> OrderResult:
+        req: dict = {"action": TRADE_ACTION_MODIFY, "order": ticket}
+        if price is not None:
+            req["price"] = price
+        if sl is not None:
+            req["sl"] = sl
+        if tp is not None:
+            req["tp"] = tp
+        if symbol:
+            req["symbol"] = symbol
+        if volume:
+            req["volume"] = volume
+        return self._apply(req, commit=True)
+
+    def cancel(self, ticket: int) -> OrderResult:
+        return self._apply({"action": TRADE_ACTION_REMOVE, "order": ticket}, commit=True)
+
+    def close_position(
+        self,
+        ticket: int,
+        *,
+        symbol: str,
+        side: str,
+        volume: float,
+        price: float,
+        comment: str = "",
+        magic: int = 0,
+        deviation: int = 20,
+    ) -> OrderResult:
+        from mt5_risk_bot.models import Side as SideT
+
+        close_side = SideT.SELL if side == "buy" else SideT.BUY
+        return self._apply(
+            {
+                "action": TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": _deal_type(close_side),
+                "position": ticket,
+                "price": price,
+                "comment": comment[:31],
+                "magic": magic,
+                "deviation": deviation,
+            },
+            commit=True,
+        )
+
+    def close_by(self, ticket: int, other: int, symbol: str = "") -> OrderResult:
+        req = {"action": TRADE_ACTION_CLOSE_BY, "position": ticket, "position_by": other}
+        if symbol:
+            req["symbol"] = symbol
+        return self._apply(req, commit=True)
 
     def _apply(self, request: dict, *, commit: bool) -> OrderResult:
         if not self._trade_allowed:
@@ -416,6 +522,7 @@ class PaperBroker:
         tp = float(request.get("tp", 0) or 0)
         tick = self.tick(symbol)
         ticket = self._next_ticket
+        kind = _PENDING_KIND.get(type_code, "")
         if commit:
             self._next_ticket += 1
             self._orders[ticket] = PendingOrder(
@@ -428,7 +535,7 @@ class PaperBroker:
                 tp=spec.normalize_price(tp) if tp else 0.0,
                 magic=int(request.get("magic", 0) or 0),
                 comment=str(request.get("comment", "")),
-                type_code=type_code,
+                kind=kind,
                 time=tick.time,
             )
         return OrderResult(
@@ -459,28 +566,26 @@ class PaperBroker:
         )
 
     def _pending_hit_tick(self, order: PendingOrder, tick: Tick) -> bool:
-        t = order.type_code
         p = order.price
-        if t == ORDER_TYPE_BUY_LIMIT:
-            return tick.ask <= p
-        if t == ORDER_TYPE_SELL_LIMIT:
+        if order.kind == "limit":
+            if order.side is Side.BUY:
+                return tick.ask <= p
             return tick.bid >= p
-        if t == ORDER_TYPE_BUY_STOP:
-            return tick.ask >= p
-        if t == ORDER_TYPE_SELL_STOP:
+        if order.kind == "stop":
+            if order.side is Side.BUY:
+                return tick.ask >= p
             return tick.bid <= p
         return False
 
     def _pending_hit_bar(self, order: PendingOrder, bar: Bar) -> bool:
-        t = order.type_code
         p = order.price
-        if t == ORDER_TYPE_BUY_LIMIT:
-            return bar.low <= p
-        if t == ORDER_TYPE_SELL_LIMIT:
+        if order.kind == "limit":
+            if order.side is Side.BUY:
+                return bar.low <= p
             return bar.high >= p
-        if t == ORDER_TYPE_BUY_STOP:
-            return bar.high >= p
-        if t == ORDER_TYPE_SELL_STOP:
+        if order.kind == "stop":
+            if order.side is Side.BUY:
+                return bar.high >= p
             return bar.low <= p
         return False
 
@@ -583,3 +688,49 @@ class PaperBroker:
         if tp_hit:
             return tp
         return None
+
+
+def _market_req(order: MarketOrder) -> dict:
+    if order.ticket is not None:
+        close_side = Side.SELL if order.side is Side.BUY else Side.BUY
+        return {
+            "action": TRADE_ACTION_DEAL,
+            "symbol": order.symbol,
+            "volume": order.volume,
+            "type": _deal_type(close_side),
+            "position": order.ticket,
+            "sl": order.sl,
+            "tp": order.tp,
+            "comment": order.comment[:31],
+            "magic": order.magic,
+            "deviation": order.deviation,
+        }
+    return {
+        "action": TRADE_ACTION_DEAL,
+        "symbol": order.symbol,
+        "volume": order.volume,
+        "type": _deal_type(order.side),
+        "sl": order.sl,
+        "tp": order.tp,
+        "comment": order.comment[:31],
+        "magic": order.magic,
+        "deviation": order.deviation,
+    }
+
+
+def _working_req(order: WorkingOrder) -> dict:
+    if order.kind == "limit":
+        typ = ORDER_TYPE_BUY_LIMIT if order.side is Side.BUY else ORDER_TYPE_SELL_LIMIT
+    else:
+        typ = ORDER_TYPE_BUY_STOP if order.side is Side.BUY else ORDER_TYPE_SELL_STOP
+    return {
+        "action": TRADE_ACTION_PENDING,
+        "symbol": order.symbol,
+        "volume": order.volume,
+        "type": typ,
+        "price": order.price,
+        "sl": order.sl,
+        "tp": order.tp,
+        "comment": order.comment[:31],
+        "magic": order.magic,
+    }

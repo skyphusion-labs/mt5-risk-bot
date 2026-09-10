@@ -11,14 +11,37 @@ from typing import Any
 
 from mt5_risk_bot.constants import (
     FILLING_RETRY_ORDER,
+    ORDER_TIME_GTC,
     ORDER_TYPE_BUY,
+    ORDER_TYPE_SELL,
     ORDER_TYPE_BUY_LIMIT,
     ORDER_TYPE_BUY_STOP,
     ORDER_TYPE_BUY_STOP_LIMIT,
+    ORDER_TYPE_SELL_LIMIT,
+    ORDER_TYPE_SELL_STOP,
     RETCODE_OK,
+    TRADE_ACTION_CLOSE_BY,
+    TRADE_ACTION_DEAL,
+    TRADE_ACTION_MODIFY,
+    TRADE_ACTION_PENDING,
+    TRADE_ACTION_REMOVE,
+    TRADE_ACTION_SLTP,
     TRADE_RETCODE_INVALID_FILL,
+    choose_filling,
+    timeframe_code,
 )
-from mt5_risk_bot.models import Account, Bar, OrderResult, PendingOrder, Position, Side, SymbolSpec, Tick
+from mt5_risk_bot.models import (
+    Account,
+    Bar,
+    MarketOrder,
+    OrderResult,
+    PendingOrder,
+    Position,
+    Side,
+    SymbolSpec,
+    Tick,
+    WorkingOrder,
+)
 
 
 def load_mt5_module() -> Any:
@@ -47,6 +70,18 @@ def _asdict(obj: Any) -> dict:
     if hasattr(obj, "_asdict"):
         return obj._asdict()
     return dict(getattr(obj, "__dict__", {}) or {})
+
+
+def _deal_type(side: Side) -> int:
+    return ORDER_TYPE_BUY if side is Side.BUY else ORDER_TYPE_SELL
+
+
+def _order_kind(type_code: int) -> str:
+    if type_code in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_SELL_LIMIT):
+        return "limit"
+    if type_code in (ORDER_TYPE_BUY_STOP, ORDER_TYPE_SELL_STOP):
+        return "stop"
+    return ""
 
 
 class Mt5Broker:
@@ -234,8 +269,8 @@ class Mt5Broker:
             volume=int(d.get("volume", 0) or 0),
         )
 
-    def rates(self, name: str, timeframe: int, count: int) -> list[Bar]:
-        raw = self._mt5.copy_rates_from_pos(name, timeframe, 0, count)
+    def rates(self, name: str, timeframe: str | int, count: int) -> list[Bar]:
+        raw = self._mt5.copy_rates_from_pos(name, timeframe_code(timeframe), 0, count)
         if raw is None:
             return []
         out: list[Bar] = []
@@ -322,7 +357,7 @@ class Mt5Broker:
                     tp=float(d.get("tp", 0) or 0),
                     magic=mag,
                     comment=str(d.get("comment", "") or ""),
-                    type_code=ptype,
+                    kind=_order_kind(ptype),
                     time=int(d.get("time_setup") or d.get("time") or 0),
                 )
             )
@@ -364,3 +399,145 @@ class Mt5Broker:
                 return result
             tried.add(filling)
         return result
+
+    def check_market(self, order: MarketOrder) -> OrderResult:
+        return self.order_check(self._market_req(order))
+
+    def market(self, order: MarketOrder) -> OrderResult:
+        return self.order_send(self._market_req(order))
+
+    def check_working(self, order: WorkingOrder) -> OrderResult:
+        return self.order_check(self._working_req(order))
+
+    def working(self, order: WorkingOrder) -> OrderResult:
+        return self.order_send(self._working_req(order))
+
+    def modify_position(self, ticket: int, sl: float, tp: float, symbol: str = "") -> OrderResult:
+        req = {"action": TRADE_ACTION_SLTP, "position": ticket, "sl": sl, "tp": tp}
+        if symbol:
+            req["symbol"] = symbol
+        return self.order_send(req)
+
+    def modify_working(
+        self,
+        ticket: int,
+        *,
+        price: float | None = None,
+        sl: float | None = None,
+        tp: float | None = None,
+        symbol: str = "",
+        volume: float = 0.0,
+        side: str = "",
+        kind: str = "",
+    ) -> OrderResult:
+        req: dict = {"action": TRADE_ACTION_MODIFY, "order": ticket, "type_time": ORDER_TIME_GTC}
+        if price is not None:
+            req["price"] = price
+        if sl is not None:
+            req["sl"] = sl
+        if tp is not None:
+            req["tp"] = tp
+        if symbol:
+            req["symbol"] = symbol
+        if volume:
+            req["volume"] = volume
+        if kind == "limit":
+            req["type"] = ORDER_TYPE_BUY_LIMIT if side == "buy" else ORDER_TYPE_SELL_LIMIT
+        elif kind == "stop":
+            req["type"] = ORDER_TYPE_BUY_STOP if side == "buy" else ORDER_TYPE_SELL_STOP
+        return self.order_send(req)
+
+    def cancel(self, ticket: int) -> OrderResult:
+        return self.order_send({"action": TRADE_ACTION_REMOVE, "order": ticket})
+
+    def close_position(
+        self,
+        ticket: int,
+        *,
+        symbol: str,
+        side: str,
+        volume: float,
+        price: float,
+        comment: str = "",
+        magic: int = 0,
+        deviation: int = 20,
+    ) -> OrderResult:
+        spec = self.symbol(symbol)
+        close_side = Side.SELL if side == "buy" else Side.BUY
+        return self.order_send(
+            {
+                "action": TRADE_ACTION_DEAL,
+                "symbol": symbol,
+                "volume": volume,
+                "type": _deal_type(close_side),
+                "position": ticket,
+                "price": price,
+                "deviation": deviation,
+                "magic": magic,
+                "comment": comment[:31],
+                "type_time": ORDER_TIME_GTC,
+                "type_filling": choose_filling(spec.filling_mode),
+            }
+        )
+
+    def close_by(self, ticket: int, other: int, symbol: str = "") -> OrderResult:
+        req = {"action": TRADE_ACTION_CLOSE_BY, "position": ticket, "position_by": other}
+        if symbol:
+            req["symbol"] = symbol
+        return self.order_send(req)
+
+    def _market_req(self, order: MarketOrder) -> dict:
+        spec = self.symbol(order.symbol)
+        if order.ticket is not None:
+            close_side = Side.SELL if order.side is Side.BUY else Side.BUY
+            return {
+                "action": TRADE_ACTION_DEAL,
+                "symbol": order.symbol,
+                "volume": order.volume,
+                "type": _deal_type(close_side),
+                "position": order.ticket,
+                "price": self.tick(order.symbol).bid if order.side is Side.BUY else self.tick(order.symbol).ask,
+                "sl": order.sl,
+                "tp": order.tp,
+                "deviation": order.deviation,
+                "magic": order.magic,
+                "comment": order.comment[:31],
+                "type_time": ORDER_TIME_GTC,
+                "type_filling": choose_filling(spec.filling_mode),
+            }
+        tick = self.tick(order.symbol)
+        price = tick.ask if order.side is Side.BUY else tick.bid
+        return {
+            "action": TRADE_ACTION_DEAL,
+            "symbol": order.symbol,
+            "volume": order.volume,
+            "type": _deal_type(order.side),
+            "price": price,
+            "sl": order.sl,
+            "tp": order.tp,
+            "deviation": order.deviation,
+            "magic": order.magic,
+            "comment": order.comment[:31],
+            "type_time": ORDER_TIME_GTC,
+            "type_filling": choose_filling(spec.filling_mode),
+        }
+
+    def _working_req(self, order: WorkingOrder) -> dict:
+        spec = self.symbol(order.symbol)
+        if order.kind == "limit":
+            typ = ORDER_TYPE_BUY_LIMIT if order.side is Side.BUY else ORDER_TYPE_SELL_LIMIT
+        else:
+            typ = ORDER_TYPE_BUY_STOP if order.side is Side.BUY else ORDER_TYPE_SELL_STOP
+        return {
+            "action": TRADE_ACTION_PENDING,
+            "symbol": order.symbol,
+            "volume": order.volume,
+            "type": typ,
+            "price": order.price,
+            "sl": order.sl,
+            "tp": order.tp,
+            "magic": order.magic,
+            "comment": order.comment[:31],
+            "type_time": ORDER_TIME_GTC,
+            "type_filling": choose_filling(spec.filling_mode),
+        }

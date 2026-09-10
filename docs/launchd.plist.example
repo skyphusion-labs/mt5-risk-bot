@@ -1,6 +1,11 @@
 <?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
 <plist version="1.0">
+<!-- Example only. KeepAlive restarts a crash. Umask 63 is 077.
+     Watchdog: journal.heartbeat next to journal_path under WorkingDirectory
+     (ISO timestamp, chmod 0600, rewritten each successful step_all).
+     Leave REPLACE_ME here. Copy to ~/Library/LaunchAgents, fill tokens,
+     chmod 600. Never commit real tokens. -->
 <dict>
   <key>Label</key>
   <string>org.skyphusion.mt5-risk-bot</string>
@@ -29,6 +34,8 @@
   <true/>
   <key>KeepAlive</key>
   <true/>
+  <key>Umask</key>
+  <integer>63</integer>
   <key>StandardOutPath</key>
   <string>/ABS/PATH/TO/mt5-risk-bot/logs/launchd.out.log</string>
   <key>StandardErrorPath</key>

@@ -42,7 +42,10 @@ class UrlLibTransport:
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
-        hdrs = {"Content-Type": "application/json"}
+        hdrs = {
+            "Content-Type": "application/json",
+            "User-Agent": "mt5-risk-bot/1.0",
+        }
         if headers:
             hdrs.update(headers)
         req = urllib.request.Request(
@@ -230,7 +233,8 @@ HELP = (
     "/confirm  /cancel [TICKET]  /orders  /history  /recap  /risk\n"
     "/symbols list|add|remove [SYMBOL]\n"
     "/positions  /status  /ask ...\n"
-    "/model grok|claude   /auto on|off\n"
+    "/model grok|claude|computer   /auto on|off\n"
+    "/approve always|off   /live on I-ACCEPT-RISK|off\n"
     "/halt  /resume  /help\n"
     "Anything not a slash command goes to the AI."
 )

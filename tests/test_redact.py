@@ -1,7 +1,16 @@
+import os
+import subprocess
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from mt5_risk_bot.journal import Journal, redact_text
+from mt5_risk_bot.journal import (
+    InstanceLock,
+    InstanceLockError,
+    Journal,
+    lock_path_for,
+    redact_text,
+)
 
 FAKE_TOKEN = "123456789:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 FAKE_PASSWORD = "s3cr3t-pass-value"
@@ -79,3 +88,77 @@ def test_journal_file_is_0600_after_write(tmp_path: Path) -> None:
     path = tmp_path / "journal.jsonl"
     Journal(path).write("ping")
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+def test_lock_path_for_uses_journal_stem() -> None:
+    assert lock_path_for("journal.jsonl") == Path("journal.lock")
+    assert lock_path_for("/tmp/desk.jsonl") == Path("/tmp/desk.lock")
+
+
+def test_instance_lock_file_is_0600(tmp_path: Path) -> None:
+    journal = tmp_path / "journal.jsonl"
+    lock = InstanceLock(journal)
+    lock.acquire()
+    try:
+        path = lock_path_for(journal)
+        assert path.exists()
+        assert path.stat().st_mode & 0o777 == 0o600
+    finally:
+        lock.release()
+
+
+def test_instance_lock_blocks_other_process(tmp_path: Path) -> None:
+    journal = tmp_path / "journal.jsonl"
+    held = InstanceLock(journal)
+    held.acquire()
+    try:
+        src = str(Path(__file__).resolve().parents[1] / "src")
+        env = os.environ.copy()
+        env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-c",
+                "from mt5_risk_bot.journal import InstanceLock, InstanceLockError\n"
+                f"try:\n"
+                f"    InstanceLock({str(journal)!r}).acquire()\n"
+                "except InstanceLockError as exc:\n"
+                "    print(exc)\n"
+                "    raise SystemExit(2)\n"
+                "raise SystemExit(0)\n",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            timeout=10,
+        )
+        assert proc.returncode == 2
+        assert "already running" in proc.stdout
+    finally:
+        held.release()
+
+
+def test_instance_lock_acquire_raises_when_flock_blocks(tmp_path: Path, monkeypatch) -> None:
+    journal = tmp_path / "journal.jsonl"
+
+    def blocked(*_args, **_kwargs):
+        raise BlockingIOError("locked")
+
+    monkeypatch.setattr("mt5_risk_bot.journal.fcntl.flock", blocked)
+    lock = InstanceLock(journal)
+    try:
+        lock.acquire()
+    except InstanceLockError as exc:
+        assert "already running" in str(exc)
+        assert lock._fh is None
+        return
+    raise AssertionError("expected InstanceLockError")
+
+
+def test_instance_lock_context_manager_and_double_release(tmp_path: Path) -> None:
+    journal = tmp_path / "journal.jsonl"
+    with InstanceLock(journal) as lock:
+        assert lock_path_for(journal).exists()
+        assert lock._fh is not None
+    assert lock._fh is None
+    lock.release()

@@ -42,6 +42,15 @@ TIMEFRAME_BY_NAME = {
     "MN1": TIMEFRAME_MN1,
 }
 
+
+def timeframe_code(timeframe: str | int) -> int:
+    if isinstance(timeframe, int):
+        return timeframe
+    key = str(timeframe).upper()
+    if key not in TIMEFRAME_BY_NAME:
+        raise ValueError(f"unknown timeframe {timeframe!r}")
+    return TIMEFRAME_BY_NAME[key]
+
 # TRADE_REQUEST_ACTIONS
 TRADE_ACTION_DEAL = 1
 TRADE_ACTION_PENDING = 5

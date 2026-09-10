@@ -1,0 +1,24 @@
+# Paper desk. Secrets in env file, never in the image.
+# Live MT5 is not this file. See deploy/LIVE.md.
+services:
+  desk:
+    build: .
+    image: mt5-risk-bot:paper
+    container_name: mt5-risk-bot
+    restart: unless-stopped
+    user: "10001:10001"
+    env_file:
+      - .env
+    environment:
+      AI_PROVIDER: computer
+      ADVICE_URL: https://mt5-risk-agent.skyphusion.workers.dev/ask
+      POLL_SECONDS: "1"
+    volumes:
+      - ./data:/data
+    working_dir: /data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "5"
+    mem_limit: 512m

@@ -10,6 +10,7 @@ from mt5_risk_bot.constants import (
     TRADE_ACTION_CLOSE_BY,
     TRADE_ACTION_DEAL,
     TRADE_ACTION_SLTP,
+    TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID,
     TRADE_RETCODE_INVALID_STOPS,
 )
@@ -186,6 +187,72 @@ def test_parse_advice_json() -> None:
     assert "Stay out" in adv.text
 
 
+def test_live_arm_from_chat(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    assert "live=off" in engine.handle_command(TgCommand("1", 1, "/live", 1))
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/live on", 2))
+    on = engine.handle_command(TgCommand("1", 1, "/live on I-ACCEPT-RISK", 3))
+    assert "live armed" in on
+    assert engine.cfg.live_accepted
+    engine.handle_command(TgCommand("1", 1, "/live off", 4))
+    assert not engine.cfg.live_accepted
+    engine.stop()
+
+
+def test_live_arm_survives_restart(tmp_path) -> None:
+    first = _engine(tmp_path)
+    first.start()
+    first.handle_command(TgCommand("1", 1, "/live on I-ACCEPT-RISK", 1))
+    first.stop()
+    second = _engine(tmp_path)
+    second.start()
+    assert second.cfg.live_accepted
+    second.stop()
+
+
+def test_approve_always_sends_without_confirm(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    assert "approve=off" in engine.handle_command(TgCommand("1", 1, "/approve", 1))
+    on = engine.handle_command(TgCommand("1", 1, "/approve always", 2))
+    assert "approve always" in on
+    reply = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 3))
+    assert reply.startswith("sent buy")
+    assert engine.broker.positions()
+    assert engine.desk.pending is None
+    engine.handle_command(TgCommand("1", 1, "/close all", 4))
+    engine.handle_command(TgCommand("1", 1, "/approve off", 5))
+    staged = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 6))
+    assert "/confirm" in staged
+    assert not engine.broker.positions()
+    engine.stop()
+
+
+def test_approve_always_survives_restart(tmp_path) -> None:
+    first = _engine(tmp_path)
+    first.start()
+    first.handle_command(TgCommand("1", 1, "/approve always", 1))
+    first.stop()
+    second = _engine(tmp_path)
+    second.start()
+    assert second.desk.approve_always
+    reply = second.handle_command(TgCommand("1", 1, "/buy EURUSD", 2))
+    assert reply.startswith("sent buy")
+    second.stop()
+
+
+def test_approve_always_still_refuses_halt(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/approve always", 1))
+    engine.handle_command(TgCommand("1", 1, "/halt", 2))
+    reply = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 3))
+    assert "refused" in reply
+    assert not engine.broker.positions()
+    engine.stop()
+
+
 def test_auto_toggle(tmp_path) -> None:
     engine = _engine(tmp_path)
     assert engine.cfg.strategy.auto is False
@@ -306,7 +373,8 @@ def test_advice_context_includes_risk_and_orders(tmp_path) -> None:
     assert "no pending orders" in blob or "PENDING" in blob or "pending" in blob.lower()
     assert "no open positions" in blob or "#" in blob
     assert "bid=" in blob
-    assert "never sends" in blob.lower() or "only send" in blob.lower()
+    assert "approve always" in blob.lower()
+    assert "/confirm" in blob.lower()
     engine.stop()
 
 
@@ -723,22 +791,127 @@ def test_advisor_memory_includes_prior_turn(tmp_path) -> None:
     assert "first turn" in blob
 
 
+def test_advisor_memory_survives_restart(tmp_path) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Noted.\n"
+                        '{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"x"}'
+                    )
+                }
+            }
+        ]
+    }
+    first = _engine(tmp_path, llm=FakeLlm(payload))
+    first.start()
+    first.handle_command(TgCommand("1", 1, "/ask remember the EURUSD plan", 1))
+    path = first.advisor.persist_path
+    assert path is not None and path.exists()
+    assert path.stat().st_mode & 0o777 == 0o600
+    first.stop()
+    second = _engine(tmp_path, llm=FakeLlm(payload))
+    second.start()
+    second.handle_command(TgCommand("1", 1, "/ask what did I say", 2))
+    blob = str(second.advisor.transport.sent[-1][1]["messages"])
+    assert "remember the EURUSD plan" in blob
+    second.stop()
+
+
+def test_ask_sends_seen_ack(tmp_path) -> None:
+    class Tg:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        def send(self, text: str) -> bool:
+            self.sent.append(text)
+            return True
+
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Hold.\n"
+                        '{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"x"}'
+                    )
+                }
+            }
+        ]
+    }
+    engine = _engine(tmp_path, llm=FakeLlm(payload))
+    tg = Tg()
+    engine.telegram = tg
+    engine.handle_command(TgCommand("1", 1, "/ask ping", 1))
+    assert tg.sent and tg.sent[0] == "seen. working..."
+
+
+def test_computer_ask_posts_session(tmp_path) -> None:
+    payload = {
+        "text": (
+            "Hold.\n"
+            '{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"x"}'
+        )
+    }
+    llm = FakeLlm(payload)
+    engine = _engine(tmp_path, llm=llm)
+    engine.advisor.cfg.provider = "computer"
+    engine.advisor.cfg.computer_url = "https://example.test/ask"
+    engine.advisor.cfg.computer_token = "tok"
+    engine.handle_command(TgCommand("42", 7, "/ask remember copper", 1))
+    url, body = llm.sent[-1]
+    assert url == "https://example.test/ask"
+    assert body["session"] == "42"
+    assert body["question"] == "remember copper"
+    assert "context" in body
+    assert body["history"] == []
+
+
+def test_computer_ask_posts_journal_history(tmp_path) -> None:
+    payload = {
+        "text": (
+            "Hold.\n"
+            '{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"x"}'
+        )
+    }
+    llm = FakeLlm(payload)
+    engine = _engine(tmp_path, llm=llm)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    engine.advisor.cfg.provider = "computer"
+    engine.advisor.cfg.computer_url = "https://example.test/ask"
+    engine.advisor.cfg.computer_token = "tok"
+    engine.handle_command(TgCommand("42", 7, "/ask remember copper", 3))
+    url, body = llm.sent[-1]
+    assert url == "https://example.test/ask"
+    assert isinstance(body["history"], list)
+    assert body["history"]
+    events = [r.get("event") for r in body["history"] if isinstance(r, dict)]
+    assert "open" in events
+    assert engine.advice_history() == body["history"]
+    engine.stop()
+
+
 def _fail_send(broker, *, opens: bool = False, closes: bool = False, sltp: bool = False) -> None:
-    orig = broker.order_send
-
-    def wrapped(request: dict) -> OrderResult:
-        action = int(request.get("action", 0))
-        if opens and action == TRADE_ACTION_DEAL and not request.get("position"):
-            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="nope", request=request)
-        if closes and action == TRADE_ACTION_DEAL and request.get("position"):
-            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="nope", request=request)
-        if sltp and action == TRADE_ACTION_SLTP:
-            return OrderResult(
-                retcode=TRADE_RETCODE_INVALID_STOPS, comment="stops_level", request=request
-            )
-        return orig(request)
-
-    broker.order_send = wrapped  # type: ignore[method-assign]
+    if opens:
+        broker.market = lambda order: OrderResult(  # type: ignore[method-assign]
+            retcode=TRADE_RETCODE_INVALID, comment="nope"
+        )
+        broker.check_market = lambda order: OrderResult(  # type: ignore[method-assign]
+            retcode=TRADE_RETCODE_DONE, comment="ok"
+        )
+    if closes:
+        broker.close_position = lambda *a, **k: OrderResult(  # type: ignore[method-assign]
+            retcode=TRADE_RETCODE_INVALID, comment="nope"
+        )
+    if sltp:
+        broker.modify_position = lambda *a, **k: OrderResult(  # type: ignore[method-assign]
+            retcode=TRADE_RETCODE_INVALID_STOPS, comment="stops_level"
+        )
 
 
 def test_confirm_repreview_halt_file_refuses(tmp_path) -> None:
@@ -984,14 +1157,9 @@ def test_closeby_refuses_bad_pairs(tmp_path) -> None:
     assert "remainder below volume_min" in engine.handle_command(
         TgCommand("1", 1, f"/closeby {tiny_buy} {tiny_sell}", 6)
     )
-    orig = engine.broker.order_send
-
-    def wrapped(request: dict) -> OrderResult:
-        if int(request.get("action", 0)) == TRADE_ACTION_CLOSE_BY:
-            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="nope", request=request)
-        return orig(request)
-
-    engine.broker.order_send = wrapped  # type: ignore[method-assign]
+    engine.broker.close_by = lambda *a, **k: OrderResult(  # type: ignore[method-assign]
+        retcode=TRADE_RETCODE_INVALID, comment="nope"
+    )
     failed = engine.handle_command(TgCommand("1", 1, f"/closeby {buy} {sell}", 7))
     assert "closeby failed" in failed
     engine.stop()

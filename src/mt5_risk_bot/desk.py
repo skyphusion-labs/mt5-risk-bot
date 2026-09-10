@@ -84,12 +84,21 @@ class Desk:
         self.engine = engine
         self.advisor = advisor
         self.pending: Pending | None = None
+        self.approve_always = False
 
     def restore_from_journal(self, journal: object, now: float | None = None) -> None:
         last_fn = getattr(journal, "last_event", None)
         if not callable(last_fn):
             return
         rec = last_fn("confirm_stage", "confirm_cancel", "confirm_sent")
+        mode = last_fn("approve_always", "approve_off")
+        if isinstance(mode, dict) and mode.get("event") == "approve_always":
+            self.approve_always = True
+        live = last_fn("live_on", "live_off")
+        if isinstance(live, dict) and live.get("event") == "live_on":
+            cfg = getattr(self.engine, "cfg", None)
+            if cfg is not None:
+                cfg.live_accepted = True
         if not isinstance(rec, dict) or rec.get("event") != "confirm_stage":
             return
         stamp = time.time() if now is None else now
@@ -136,7 +145,7 @@ class Desk:
     def handle(self, cmd: TgCommand) -> str:
         try:
             if not cmd.name:
-                return self._ask(cmd.args)
+                return self._ask(cmd.args, session=str(cmd.chat_id))
             fn = {
                 "start": lambda: HELP,
                 "help": lambda: HELP,
@@ -154,13 +163,15 @@ class Desk:
                 "tp": lambda: self._stop(cmd.args, "tp"),
                 "be": lambda: self._be(cmd.args),
                 "confirm": self._confirm,
+                "approve": lambda: self._approve(cmd.args),
+                "live": lambda: self._live(cmd.args),
                 "cancel": lambda: self._cancel(cmd.args),
                 "orders": lambda: self.engine.orders_text(),
                 "replace": lambda: self._replace(cmd.args),
                 "history": self._history,
                 "recap": self.engine.recap_text,
                 "symbols": lambda: self._symbols(cmd.args),
-                "ask": lambda: self._ask(cmd.args),
+                "ask": lambda: self._ask(cmd.args, session=str(cmd.chat_id)),
                 "model": lambda: self._model(cmd.args),
                 "auto": lambda: self._auto(cmd.args),
                 "halt": self._halt,
@@ -206,6 +217,8 @@ class Desk:
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
         self._set_pending(Pending(sig, decision.volume, source, now + ttl))
         extra = f" {sig.pending_kind}" if sig.pending_kind else ""
+        if self.approve_always:
+            return self._confirm()
         return (
             f"confirm {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"@ {sig.entry} sl={sig.sl} tp={sig.tp} rr={sig.rr:.2f} "
@@ -226,6 +239,8 @@ class Desk:
             return "no such ticket"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
         self._set_pending(Pending(None, pos.volume, "advice", now + ttl, close_ticket=ticket))
+        if self.approve_always:
+            return self._confirm()
         return (
             f"confirm close #{ticket} {pos.symbol} vol={pos.volume} "
             f"source=advice\n/confirm within {ttl}s or /cancel"
@@ -305,6 +320,8 @@ class Desk:
             return f"refused: {decision.reason}"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
         self._set_pending(Pending(sig, decision.volume, "telegram", now + ttl, close_ticket=ticket))
+        if self.approve_always:
+            return self._confirm()
         return (
             f"confirm reverse #{ticket} {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"@ {sig.entry} sl={sig.sl} tp={sig.tp} rr={sig.rr:.2f} "
@@ -430,12 +447,23 @@ class Desk:
         vol = float(parts[2]) if len(parts) == 3 else None
         return self.engine.set_tp(int(parts[0]), float(parts[1]), vol)
 
-    def _ask(self, question: str) -> str:
+    def _ask(self, question: str, session: str = "") -> str:
         if not question.strip():
             return "ask a question, or /buy /sell"
         if self.advisor is None:
             return "AI not configured"
-        advice = self.advisor.ask(question, self.engine.advice_context())
+        tg = getattr(self.engine, "telegram", None)
+        if tg is not None and getattr(tg, "enabled", False):
+            try:
+                tg.send("seen. working...")
+            except (ValueError, RuntimeError, OSError):
+                pass
+        advice = self.advisor.ask(
+            question,
+            self.engine.advice_context(),
+            session=session,
+            history=self.engine.advice_history(),
+        )
         lines = [advice.text]
         if advice.summary:
             lines.append(advice.summary)
@@ -469,12 +497,69 @@ class Desk:
         name = args.strip().lower()
         if not name:
             return f"provider={self.advisor.cfg.provider}"
-        if name not in {"grok", "claude"}:
-            return "usage: /model grok|claude"
+        if name not in {"grok", "claude", "computer"}:
+            return "usage: /model grok|claude|computer"
         self.advisor.cfg.provider = name
         if not self.advisor.cfg.enabled:
             return f"switched to {name} but no key is set"
         return f"provider={name}"
+
+    def _live_needs_flag(self) -> bool:
+        cfg = getattr(self.engine, "cfg", None)
+        if cfg is None or getattr(cfg, "mode", "paper") != "mt5":
+            return False
+        if getattr(cfg, "live_accepted", False):
+            return False
+        broker = getattr(self.engine, "broker", None)
+        if broker is None:
+            return False
+        try:
+            acct = broker.account()
+        except Exception:
+            return False
+        return int(getattr(acct, "trade_mode", 0) or 0) == 2
+
+    def _live(self, args: str) -> str:
+        raw = args.strip()
+        cfg = getattr(self.engine, "cfg", None)
+        if raw.upper() == "ON I-ACCEPT-RISK":
+            if cfg is not None:
+                cfg.live_accepted = True
+            self._write_confirm("live_on")
+            return (
+                "live armed. real-money sends allowed if the terminal is "
+                "trade_mode=2. risk still sizes and can refuse. "
+                "/live off to disarm"
+            )
+        if raw.lower() == "off":
+            if cfg is not None:
+                cfg.live_accepted = False
+            self._write_confirm("live_off")
+            return "live disarmed. real-money sends refused until /live on I-ACCEPT-RISK"
+        if raw.lower() == "on":
+            return "usage: /live on I-ACCEPT-RISK"
+        armed = bool(cfg and getattr(cfg, "live_accepted", False))
+        return f"live={'on' if armed else 'off'}"
+
+    def _approve(self, args: str) -> str:
+        token = args.strip().lower()
+        if token in {"always", "on"}:
+            if self._live_needs_flag():
+                return (
+                    "real-money: /live on I-ACCEPT-RISK in this chat, "
+                    "then /approve always"
+                )
+            self.approve_always = True
+            self._write_confirm("approve_always")
+            return (
+                "approve always. risk still sizes and can refuse. "
+                "/approve off to stage again"
+            )
+        if token in {"off"}:
+            self.approve_always = False
+            self._write_confirm("approve_off")
+            return "approve off. /confirm required"
+        return f"approve={'always' if self.approve_always else 'off'}"
 
     def _auto(self, args: str) -> str:
         token = args.strip().lower()

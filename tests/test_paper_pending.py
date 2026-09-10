@@ -15,7 +15,7 @@ from mt5_risk_bot.constants import (
     TRADE_RETCODE_PLACED,
     TRADE_RETCODE_POSITION_CLOSED,
 )
-from mt5_risk_bot.models import Bar
+from mt5_risk_bot.models import Bar, MarketOrder, Side, WorkingOrder
 from mt5_risk_bot.synthetic import generate_bars
 
 
@@ -264,4 +264,58 @@ def test_paper_close_by() -> None:
         }
     )
     assert bad.retcode == TRADE_RETCODE_INVALID_VOLUME
+
+
+def test_working_and_market_without_order_send() -> None:
+    broker = _paper()
+    spec = broker.symbol("EURUSD")
+    tick = broker.tick("EURUSD")
+    limit = spec.normalize_price(tick.ask - 0.002)
+    sl = spec.normalize_price(limit - 0.005)
+    tp = spec.normalize_price(limit + 0.010)
+    placed = broker.working(
+        WorkingOrder(
+            symbol="EURUSD",
+            side=Side.BUY,
+            kind="limit",
+            volume=0.10,
+            price=limit,
+            sl=sl,
+            tp=tp,
+            magic=1,
+        )
+    )
+    assert placed.ok
+    order = broker.orders()[0]
+    assert order.kind == "limit"
+    assert order.side is Side.BUY
+    stop = spec.normalize_price(tick.ask + 0.002)
+    stopped = broker.working(
+        WorkingOrder(
+            symbol="EURUSD",
+            side=Side.BUY,
+            kind="stop",
+            volume=0.10,
+            price=stop,
+            sl=spec.normalize_price(stop - 0.005),
+            tp=spec.normalize_price(stop + 0.010),
+            magic=1,
+        )
+    )
+    assert stopped.ok
+    kinds = {o.ticket: o.kind for o in broker.orders()}
+    assert kinds[placed.order] == "limit"
+    assert kinds[stopped.order] == "stop"
+    opened = broker.market(
+        MarketOrder(
+            symbol="EURUSD",
+            side=Side.BUY,
+            volume=0.10,
+            sl=spec.normalize_price(tick.ask - 0.005),
+            tp=spec.normalize_price(tick.ask + 0.010),
+            magic=1,
+        )
+    )
+    assert opened.ok
+    assert any(p.ticket == opened.order for p in broker.positions())
 

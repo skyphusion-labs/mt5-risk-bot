@@ -1,19 +1,27 @@
-"""Append-only JSONL audit log. Every risk reject and every fill goes here."""
+"""Append-only JSONL audit log. Every risk reject and every fill goes here.
+
+Rotate the live file to <name>.1 (replacing any previous .1) before a
+write that would exceed 10 MiB. The new live file is chmod 0600.
+tail() and last_event() (confirm restore) read only the live file.
+Rotated history is <name>.1.
+"""
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 _SECRET_KEYS = frozenset({"token", "password", "api_key", "grok_key", "claude_key"})
 _REDACTED = "[REDACTED]"
 # BotFather tokens: <id>:<secret> with 8-12 digit id and 30+ url-safe chars.
 _TG_TOKEN_RE = re.compile(r"\d{8,12}:[A-Za-z0-9_-]{30,}")
+_ROTATE_BYTES = 10 * 1024 * 1024
 
 
 class Journal:
@@ -30,8 +38,21 @@ class Journal:
             **{k: _jsonable(v) for k, v in fields.items()},
         }
         rec = redact(rec)
+        line = json.dumps(rec, default=str) + "\n"
+        self._rotate_if_needed(len(line.encode("utf-8")))
         with self.path.open("a", encoding="utf-8") as fh:
-            fh.write(json.dumps(rec, default=str) + "\n")
+            fh.write(line)
+        os.chmod(self.path, 0o600)
+
+    def _rotate_if_needed(self, incoming: int) -> None:
+        if not self.path.exists():
+            return
+        size = self.path.stat().st_size
+        if size + incoming <= _ROTATE_BYTES:
+            return
+        dest = self.path.with_name(self.path.name + ".1")
+        self.path.replace(dest)
+        self.path.touch()
         os.chmod(self.path, 0o600)
 
     def tail(self, n: int = 20) -> list[dict[str, Any]]:
@@ -70,6 +91,54 @@ class Journal:
                 if isinstance(rec, dict) and rec.get("event") in wanted:
                     found = rec
         return found
+
+
+class InstanceLockError(RuntimeError):
+    """Another process already holds this journal's run lock."""
+
+
+def lock_path_for(journal_path: str | Path) -> Path:
+    p = Path(journal_path)
+    return p.with_name(p.stem + ".lock")
+
+
+class InstanceLock:
+    """Exclusive flock next to the journal. Released on close or crash."""
+
+    def __init__(self, journal_path: str | Path) -> None:
+        self.path = lock_path_for(journal_path)
+        self._fh: TextIO | None = None
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fh = self.path.open("a+", encoding="utf-8")
+        os.chmod(self.path, 0o600)
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            fh.close()
+            raise InstanceLockError(
+                f"already running: another process holds {self.path} "
+                "(two run --loop cannot share journal/offset)"
+            ) from exc
+        self._fh = fh
+
+    def release(self) -> None:
+        fh = self._fh
+        self._fh = None
+        if fh is None:
+            return
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+    def __enter__(self) -> InstanceLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
 
 
 def redact_text(s: str) -> str:

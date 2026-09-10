@@ -12,18 +12,6 @@ class Side(str, Enum):
     SELL = "sell"
 
     @property
-    def order_type(self) -> int:
-        from mt5_risk_bot.constants import ORDER_TYPE_BUY, ORDER_TYPE_SELL
-
-        return ORDER_TYPE_BUY if self is Side.BUY else ORDER_TYPE_SELL
-
-    @property
-    def close_type(self) -> int:
-        from mt5_risk_bot.constants import ORDER_TYPE_BUY, ORDER_TYPE_SELL
-
-        return ORDER_TYPE_SELL if self is Side.BUY else ORDER_TYPE_BUY
-
-    @property
     def opposite(self) -> Side:
         return Side.SELL if self is Side.BUY else Side.BUY
 
@@ -32,6 +20,37 @@ class SignalKind(str, Enum):
     BUY = "buy"
     SELL = "sell"
     FLAT = "flat"
+
+
+@dataclass(frozen=True)
+class MarketOrder:
+    """Venue-neutral market send. Adapters map this to MT5, IBKR, etc."""
+
+    symbol: str
+    side: Side
+    volume: float
+    sl: float = 0.0
+    tp: float = 0.0
+    comment: str = ""
+    magic: int = 0
+    deviation: int = 20
+    ticket: int | None = None
+
+
+@dataclass(frozen=True)
+class WorkingOrder:
+    """Venue-neutral working (limit/stop) send."""
+
+    symbol: str
+    side: Side
+    kind: str
+    volume: float
+    price: float
+    sl: float = 0.0
+    tp: float = 0.0
+    comment: str = ""
+    magic: int = 0
+    ticket: int | None = None
 
 
 @dataclass(frozen=True)
@@ -122,7 +141,7 @@ class PendingOrder:
     tp: float
     magic: int = 0
     comment: str = ""
-    type_code: int = 0
+    kind: str = ""  # "limit"|"stop"
     time: int = 0
 
 
@@ -167,6 +186,18 @@ class OrderResult:
         from mt5_risk_bot.constants import RETCODE_OK
 
         return self.retcode in RETCODE_OK
+
+    @classmethod
+    def unchanged(cls) -> OrderResult:
+        from mt5_risk_bot.constants import TRADE_RETCODE_DONE
+
+        return cls(retcode=TRADE_RETCODE_DONE, comment="unchanged")
+
+    @classmethod
+    def invalid_stops(cls, comment: str) -> OrderResult:
+        from mt5_risk_bot.constants import TRADE_RETCODE_INVALID_STOPS
+
+        return cls(retcode=TRADE_RETCODE_INVALID_STOPS, comment=comment)
 
 
 @dataclass(frozen=True)

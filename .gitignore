@@ -10,7 +10,15 @@ build/
 htmlcov/
 config.toml
 journal.jsonl
+journal.jsonl.1
+journal.lock
+journal.heartbeat
+journal.tg_offset
+journal.advice.json
 HALT
 .env
 *.log
 .DS_Store
+agent/node_modules/
+agent/.wrangler/
+agent/.dev.vars
