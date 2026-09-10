@@ -1,8 +1,23 @@
+from email.message import EmailMessage
+from io import BytesIO
+
+import urllib.error
+
 from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.config import AdviceConfig, BotConfig, TelegramConfig
 from mt5_risk_bot.engine import Engine
 from mt5_risk_bot.llm import Advisor
-from mt5_risk_bot.telegram import TelegramClient, TgCommand, _chunks, parse_command
+from mt5_risk_bot.telegram import (
+    RETRY_CAP_S,
+    RETRY_TRIES,
+    TelegramClient,
+    TelegramError,
+    TgCommand,
+    UrlLibTransport,
+    _chunks,
+    backoff_seconds,
+    parse_command,
+)
 
 
 class FakeTransport:
@@ -188,3 +203,105 @@ def test_poll_survives_freetext_llm_error(tmp_path) -> None:
     engine.poll_telegram()
     texts = [p.get("text", "") for _, p in tr.sent]
     assert any("grok down" in t for t in texts)
+
+
+class SeqTransport:
+    def __init__(self, responses: list) -> None:
+        self.responses = list(responses)
+        self.sent: list[tuple[str, dict]] = []
+
+    def post_json(self, url: str, payload: dict, timeout: float = 10.0, headers=None) -> dict:
+        del timeout, headers
+        self.sent.append((url, payload))
+        if not self.responses:
+            raise TelegramError("empty")
+        item = self.responses.pop(0)
+        if isinstance(item, Exception):
+            raise item
+        return item
+
+
+def _help_update(uid: int = 10) -> dict:
+    return {
+        "update_id": uid,
+        "message": {"text": "/help", "chat": {"id": "42"}, "from": {"id": 1}},
+    }
+
+
+def test_backoff_retry_after_and_cap() -> None:
+    assert backoff_seconds(0, 1.5) == 1.5
+    assert backoff_seconds(0, 999) == RETRY_CAP_S
+    assert backoff_seconds(0, None) == 0.5
+    assert backoff_seconds(1, None) == 1.0
+
+
+def test_poll_retries_429_then_resumes_offset() -> None:
+    tr = SeqTransport(
+        [
+            {"ok": False, "error_code": 429, "parameters": {"retry_after": 1}},
+            {"ok": True, "result": [_help_update(10)]},
+        ]
+    )
+    sleeps: list[float] = []
+    tg = TelegramClient(token="t", chat_id="42", transport=tr, sleep_fn=sleeps.append)
+    cmds = tg.poll_commands()
+    assert len(cmds) == 1
+    assert cmds[0].name == "help"
+    assert tg.offset == 11
+    assert sleeps == [1.0]
+    tr.responses.append({"ok": True, "result": []})
+    tg.poll_commands()
+    assert tr.sent[-1][1]["offset"] == 11
+
+
+def test_poll_429_exhausted_keeps_offset() -> None:
+    payload = {"ok": False, "error_code": 429, "parameters": {"retry_after": 1}}
+    tr = SeqTransport([payload] * RETRY_TRIES)
+    tg = TelegramClient(token="t", chat_id="42", transport=tr, sleep_fn=lambda _s: None)
+    assert tg.poll_commands() == []
+    assert tg.offset == 0
+    assert len(tr.sent) == RETRY_TRIES
+
+
+def test_send_retries_503() -> None:
+    tr = SeqTransport(
+        [
+            TelegramError("telegram http failed", status=503),
+            {"ok": True, "result": {"message_id": 1}},
+        ]
+    )
+    sleeps: list[float] = []
+    tg = TelegramClient(token="t", chat_id="42", transport=tr, sleep_fn=sleeps.append)
+    assert tg.send("hello") is True
+    assert len(tr.sent) == 2
+    assert sleeps == [0.5]
+
+
+def test_send_400_not_retried() -> None:
+    tr = SeqTransport([{"ok": False, "error_code": 400}])
+    sleeps: list[float] = []
+    tg = TelegramClient(token="t", chat_id="42", transport=tr, sleep_fn=sleeps.append)
+    assert tg.send("hello") is False
+    assert len(tr.sent) == 1
+    assert sleeps == []
+
+
+def test_http_error_status_and_no_token_leak(monkeypatch) -> None:
+    hdrs = EmailMessage()
+    hdrs["Retry-After"] = "3"
+    fp = BytesIO(b'{"ok":false,"error_code":429,"parameters":{"retry_after":9}}')
+    url = "https://api.telegram.org/botSECRETTOKEN/sendMessage"
+
+    def boom(_req, timeout=10.0):
+        del timeout
+        raise urllib.error.HTTPError(url, 429, "Too Many Requests", hdrs, fp)
+
+    monkeypatch.setattr(urllib.request, "urlopen", boom)
+    try:
+        UrlLibTransport().post_json(url, {"chat_id": "1", "text": "x"})
+        raise AssertionError("expected TelegramError")
+    except TelegramError as exc:
+        assert exc.status == 429
+        assert exc.retry_after == 3.0
+        assert "SECRETTOKEN" not in str(exc)
+        assert exc.__cause__ is None

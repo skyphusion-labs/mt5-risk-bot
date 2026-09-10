@@ -7,6 +7,7 @@ Transport is injectable so tests never hit api.telegram.org.
 from __future__ import annotations
 
 import json
+import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
@@ -15,6 +16,8 @@ from typing import Any, Protocol
 from mt5_risk_bot.config import TelegramConfig
 
 API_ROOT = "https://api.telegram.org"
+RETRY_TRIES = 4
+RETRY_CAP_S = 60.0
 
 
 class Transport(Protocol):
@@ -48,8 +51,10 @@ class UrlLibTransport:
         try:
             with urllib.request.urlopen(req, timeout=timeout) as resp:
                 raw = resp.read().decode("utf-8")
-        except urllib.error.URLError as exc:
-            raise TelegramError("telegram http failed") from exc
+        except urllib.error.HTTPError as exc:
+            raise _http_error(exc) from None
+        except urllib.error.URLError:
+            raise TelegramError("telegram http failed") from None
         try:
             data = json.loads(raw)
         except json.JSONDecodeError as exc:
@@ -60,7 +65,72 @@ class UrlLibTransport:
 
 
 class TelegramError(RuntimeError):
-    pass
+    def __init__(
+        self,
+        message: str,
+        *,
+        status: int | None = None,
+        retry_after: float | None = None,
+    ) -> None:
+        super().__init__(message)
+        self.status = status
+        self.retry_after = retry_after
+
+
+def retryable_status(status: int | None) -> bool:
+    if status == 429:
+        return True
+    return status is not None and 500 <= status <= 599
+
+
+def backoff_seconds(attempt: int, retry_after: float | None) -> float:
+    if retry_after is not None and retry_after > 0:
+        return min(float(retry_after), RETRY_CAP_S)
+    return min(0.5 * (2 ** max(attempt, 0)), RETRY_CAP_S)
+
+
+def _retry_after_from(data: dict[str, Any]) -> float | None:
+    params = data.get("parameters")
+    if not isinstance(params, dict) or params.get("retry_after") is None:
+        return None
+    try:
+        value = float(params["retry_after"])
+    except (TypeError, ValueError):
+        return None
+    return value if value > 0 else None
+
+
+def _error_code(data: dict[str, Any]) -> int | None:
+    try:
+        code = int(data.get("error_code") or 0)
+    except (TypeError, ValueError):
+        return None
+    return code or None
+
+
+def _http_error(exc: urllib.error.HTTPError) -> TelegramError:
+    status = int(getattr(exc, "code", 0) or 0) or None
+    retry_after: float | None = None
+    hdrs = getattr(exc, "headers", None)
+    if hdrs is not None:
+        raw_ra = hdrs.get("Retry-After")
+        if raw_ra:
+            try:
+                retry_after = float(raw_ra)
+            except (TypeError, ValueError):
+                retry_after = None
+    body: dict[str, Any] = {}
+    try:
+        parsed = json.loads(exc.read().decode("utf-8"))
+        if isinstance(parsed, dict):
+            body = parsed
+    except (OSError, json.JSONDecodeError, UnicodeDecodeError):
+        body = {}
+    if retry_after is None:
+        retry_after = _retry_after_from(body)
+    if status is None:
+        status = _error_code(body)
+    return TelegramError(f"telegram http {status or 'error'}", status=status, retry_after=retry_after)
 
 
 @dataclass(frozen=True)
@@ -144,6 +214,7 @@ class TelegramClient:
     )
     transport: Transport = field(default_factory=UrlLibTransport)
     offset: int = 0
+    sleep_fn: Any = field(default=time.sleep)
 
     @classmethod
     def from_config(cls, cfg: TelegramConfig, transport: Transport | None = None) -> TelegramClient | None:
@@ -165,14 +236,34 @@ class TelegramClient:
     def _url(self, method: str) -> str:
         return f"{API_ROOT}/bot{self.token}/{method}"
 
+    def _post(self, method: str, payload: dict[str, Any], *, timeout: float = 10.0) -> dict[str, Any]:
+        last: TelegramError | None = None
+        for attempt in range(RETRY_TRIES):
+            try:
+                data = self.transport.post_json(self._url(method), payload, timeout=timeout)
+            except TelegramError as exc:
+                last = exc
+            else:
+                if isinstance(data, dict) and data.get("ok"):
+                    return data
+                status = _error_code(data) if isinstance(data, dict) else None
+                retry_after = _retry_after_from(data) if isinstance(data, dict) else None
+                last = TelegramError("telegram api error", status=status, retry_after=retry_after)
+            if last is None:
+                raise TelegramError("telegram http failed")
+            if attempt >= RETRY_TRIES - 1 or not retryable_status(last.status):
+                raise last
+            self.sleep_fn(backoff_seconds(attempt, last.retry_after))
+        raise last or TelegramError("telegram http failed")
+
     def send(self, text: str) -> bool:
         if not self.enabled or not text:
             return False
         ok = True
         for chunk in _chunks(text, 3900):
             try:
-                data = self.transport.post_json(
-                    self._url("sendMessage"),
+                data = self._post(
+                    "sendMessage",
                     {
                         "chat_id": self.chat_id,
                         "text": chunk,
@@ -193,7 +284,7 @@ class TelegramClient:
             "allowed_updates": ["message"],
         }
         try:
-            data = self.transport.post_json(self._url("getUpdates"), payload, timeout=float(timeout + 5))
+            data = self._post("getUpdates", payload, timeout=float(timeout + 5))
         except TelegramError:
             return []
         if not data.get("ok"):
