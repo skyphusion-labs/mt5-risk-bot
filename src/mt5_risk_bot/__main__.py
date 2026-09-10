@@ -106,6 +106,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"config: mode={cfg.mode} symbols={cfg.symbols} risk_pct={cfg.risk.risk_pct}")
     print("terminal: official MetaTrader5 package is Windows-only.")
     print("macOS: install MetaTrader 5.app from metatrader5.com, then pip install mt5-mac.")
+    print("MT4: attach mt4/Experts/Mt4RiskBot.mq4 and set mt4.files_dir to Common Files.")
     print("Homebrew has no MetaTrader cask; Python is enough for paper/backtest.")
     print("telegram token:", "SET" if os.environ.get("TELEGRAM_BOT_TOKEN") else "unset")
     print("telegram chat:", "SET" if os.environ.get("TELEGRAM_CHAT_ID") else "unset")
@@ -120,10 +121,30 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     if ping.startswith("fail") or paper != "ok":
         rc = 1
     if args.connect:
+        cfg = _cfg(args) if args.config else load_config()
+        if cfg.mode == "mt4":
+            broker = None
+            try:
+                broker = broker_for(cfg)
+                broker.connect()
+                acct = broker.account()
+                print(
+                    f"connected venue=mt4 login={acct.login} server={acct.server} "
+                    f"equity={acct.equity:.2f} {acct.currency} trade_mode={acct.trade_mode}"
+                )
+            except (RuntimeError, OSError, ValueError) as exc:
+                print(f"connect: fail ({redact_text(str(exc))})")
+                rc = 1
+            finally:
+                if broker is not None:
+                    try:
+                        broker.disconnect()
+                    except (RuntimeError, OSError, ValueError, AttributeError):
+                        pass
+            return rc
         if not mt5_ok:
             print("connect: fail (no mt5 binding)")
             return 1
-        cfg = _cfg(args) if args.config else load_config()
         broker = broker_for(replace(cfg, mode="mt5"))
         try:
             ensure = getattr(broker, "ensure_connected", None)
@@ -210,7 +231,7 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 def _cmd_run_locked(args: argparse.Namespace, cfg: BotConfig) -> int:
     broker = broker_for(cfg)
-    if cfg.mode != "mt5":
+    if cfg.mode == "paper":
         if args.synthetic:
             from mt5_risk_bot.engine import run_backtest as _bt
             from mt5_risk_bot.synthetic import generate_bars as _gb
@@ -282,14 +303,14 @@ def cmd_telegram(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mt5-risk-bot",
-        description="Telegram desk for MT5: full trades and Grok/Claude advice. Risk gates every order.",
+        description="Telegram desk for MT4/MT5: full trades and Grok/Claude advice. Risk gates every order.",
     )
     p.add_argument("--config", help="path to TOML config")
     sub = p.add_subparsers(dest="cmd", required=True)
 
     d = sub.add_parser(
         "doctor",
-        help="telegram ping, paper /buy /confirm /close, optional MT5 login",
+        help="telegram ping, paper /buy /confirm /close, optional venue login",
     )
     d.add_argument("--connect", action="store_true")
     d.set_defaults(func=cmd_doctor)
@@ -303,8 +324,8 @@ def build_parser() -> argparse.ArgumentParser:
     b.add_argument("--no-session-filter", action="store_true")
     b.set_defaults(func=cmd_backtest)
 
-    r = sub.add_parser("run", help="paper or live loop")
-    r.add_argument("--mode", choices=("paper", "mt5"))
+    r = sub.add_parser("run", help="paper, mt5, or mt4 loop")
+    r.add_argument("--mode", choices=("paper", "mt5", "mt4"))
     r.add_argument("--loop", action="store_true", help="poll until halt or Ctrl-C")
     r.add_argument("--synthetic", action="store_true", help="seed paper broker with generated bars")
     r.add_argument("--feed-mt5", action="store_true", help="seed paper broker from a live terminal")

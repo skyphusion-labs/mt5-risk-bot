@@ -176,7 +176,7 @@ class RiskManager:
             return self._halt_reason or "halted"
         if not account.trade_allowed or not account.trade_expert:
             return "trade_not_allowed"
-        if self.cfg.mode == "mt5" and account.trade_mode == 2 and not self.cfg.live_accepted:
+        if self.cfg.mode in {"mt5", "mt4"} and account.trade_mode == 2 and not self.cfg.live_accepted:
             return "live_not_accepted"
         daily_loss = self.snapshot.day_start_equity - account.equity
         if daily_loss >= self.snapshot.day_start_equity * r.daily_loss_pct:
@@ -196,7 +196,7 @@ class RiskManager:
             return RiskDecision(allowed=False, reason=self._halt_reason, halt=True, flatten=True)
         if not account.trade_allowed or not account.trade_expert:
             return RiskDecision(allowed=False, reason="trade_not_allowed")
-        if self.cfg.mode == "mt5" and account.trade_mode == 2 and not self.cfg.live_accepted:
+        if self.cfg.mode in {"mt5", "mt4"} and account.trade_mode == 2 and not self.cfg.live_accepted:
             return RiskDecision(allowed=False, reason="live_not_accepted")
         daily_loss = self.snapshot.day_start_equity - account.equity
         if daily_loss >= self.snapshot.day_start_equity * r.daily_loss_pct:

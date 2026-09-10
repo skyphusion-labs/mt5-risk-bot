@@ -112,6 +112,38 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
    `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop --i-accept-risk`
    `/live on I-ACCEPT-RISK`
 
+### MT4 loop
+
+MetaTrader 4 has no official Python package.
+Copy `mt4/Experts/Mt4RiskBot.mq4` into `MQL4/Experts`.
+Compile it. Attach it to one chart. Enable AutoTrading.
+Set `mt4.files_dir` (or `MT4_FILES_DIR`) to Common Files:
+
+```
+%APPDATA%\MetaQuotes\Terminal\Common\Files
+```
+
+`doctor --connect` is the gate (mailbox ping, `account`, `trade_mode`).
+It is non-zero if the Expert is missing, the folder is wrong, or the ping times out.
+Do not start live on a traceback.
+Demo is `trade_mode=0` and does not need `--i-accept-risk`.
+
+WARNING
+Real money (`trade_mode=2`) is refused without `--i-accept-risk` at start
+or `/live on I-ACCEPT-RISK` in the locked chat.
+
+1. Set `account.mode = "mt4"` in config, or `export ACCOUNT_MODE=mt4`.
+2. Run doctor with a login check.
+   `python -m mt5_risk_bot --config config.toml doctor --connect`
+3. Stop if doctor is not 0.
+4. Start the live loop for demo.
+   `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop`
+5. For a real account, add `--i-accept-risk`, or arm from chat after start.
+   `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop --i-accept-risk`
+   `/live on I-ACCEPT-RISK`
+
+See `docs/MT4.md` and `mt4/README.md`.
+
 `--loop` polls until Ctrl-C.
 `engine.poll_seconds` is the Telegram `getUpdates` timeout.
 The example config sets `poll_seconds = 1`.
@@ -297,7 +329,7 @@ It does not launch the terminal.
 4. Edit the venv `python` path.
 5. Edit `EnvironmentVariables` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
 6. Add `XAI_API_KEY` or `ANTHROPIC_API_KEY` if you use advice.
-7. For an MT5 loop, change `--mode paper` to `--mode mt5`.
+7. For an MT5 loop, change `--mode paper` to `--mode mt5`. For MT4, `--mode mt4`.
 8. For a real account, append `--i-accept-risk`, or arm from chat after start
    with `/live on I-ACCEPT-RISK`.
 9. Put `--config` and the path before `run` in `ProgramArguments`.
@@ -349,7 +381,7 @@ Do not bootout to halt.
    `python -m mt5_risk_bot telegram --message ping`
 7. Run doctor. It must exit 0.
    `python -m mt5_risk_bot doctor`
-8. Start the paper or mt5 loop above.
+8. Start the paper, mt5, or mt4 loop above.
 
 Free text is `/ask`.
 Context includes `/risk`, positions, working orders, and quotes.
@@ -440,7 +472,7 @@ It can also leave no room to size the new side.
 You are left flat (`closed #TICKET; reverse refused: ...`).
 A failed opposite send is the same shape (`closed #TICKET; send failed ...`).
 
-Production live: `doctor --connect` must exit 0 before `run --mode mt5`.
+Production live: `doctor --connect` must exit 0 before `run --mode mt5` or `run --mode mt4`.
 `trade_mode=2` also needs `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.
 Demo (`trade_mode=0`) does not.
 

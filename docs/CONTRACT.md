@@ -10,7 +10,7 @@ The circuit is halt, daily-loss, and drawdown gates.
 The risk engine is the sizer in the bot (`RiskManager.evaluate`).
 
 You trade and ask for advice from one chat.
-MetaTrader 5 is the execution venue.
+Paper, MetaTrader 5, or MetaTrader 4 is the execution venue.
 The risk engine is the only thing that can size or refuse an order.
 The venue API is `Broker` (`MarketOrder`, `WorkingOrder`). Engine does not send MT5 request dicts.
 Auto EMA trading is off until `/auto on`.
@@ -60,6 +60,7 @@ Auto EMA trading is off until `/auto on`.
 | --- | --- | --- |
 | `paper` | in-process PaperBroker | synthetic, `--feed-mt5`, or empty |
 | `mt5` | terminal `order_send` | live terminal |
+| `mt4` | Expert mailbox (`docs/MT4.md`) | live terminal + `Mt4RiskBot.mq4` |
 
 ## Telegram commands
 
@@ -211,10 +212,11 @@ The TTL must not have expired.
 `doctor` pings Telegram when the token is set.
 It always runs an in-process paper `/buy` `/confirm` `/close`.
 No live terminal is required.
-`--connect` is the optional MT5 login check (binding, login, `trade_mode`).
-It is non-zero if the binding is missing or login fails.
+`--connect` is the optional venue login check.
+MT5: binding, login, `trade_mode`. Non-zero if the binding is missing or login fails.
+MT4: mailbox ping plus `account` (`account.mode=mt4`, Expert attached, `mt4.files_dir` set).
 A traceback is not a pass.
-Production live is `doctor --connect` then `run --mode mt5`.
+Production live is `doctor --connect` then `run --mode mt5` or `run --mode mt4`.
 `trade_mode=2` still needs `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.
 
 NOTE

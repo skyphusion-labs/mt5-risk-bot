@@ -1,3 +1,3 @@
-"""Risk-first MetaTrader 5 trading bot."""
+"""Risk-first MetaTrader desk. Paper by default. No profit guarantee."""
 
-__version__ = "1.0.0"
+__version__ = "1.1.0"

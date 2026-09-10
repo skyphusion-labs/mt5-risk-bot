@@ -3,7 +3,7 @@ import subprocess
 import sys
 from pathlib import Path
 
-from mt5_risk_bot.__main__ import main, paper_round_trip, run_loop, telegram_ping
+from mt5_risk_bot.__main__ import build_parser, main, paper_round_trip, run_loop, telegram_ping
 from mt5_risk_bot.config import BotConfig, TelegramConfig
 from mt5_risk_bot.journal import InstanceLock, InstanceLockError, Journal, lock_path_for
 from mt5_risk_bot.telegram import TelegramClient, offset_path_for
@@ -54,15 +54,76 @@ class _FakeConnectBroker:
 def test_doctor(capsys, monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("ACCOUNT_MODE", raising=False)
     assert main(["doctor"]) == 0
     out = capsys.readouterr().out
     assert "telegram ping: skip" in out
     assert "paper round-trip /buy /confirm /close: ok" in out
+    assert "Mt4RiskBot.mq4" in out
+
+
+def test_run_mode_accepts_mt4() -> None:
+    args = build_parser().parse_args(["run", "--mode", "mt4", "--loop"])
+    assert args.mode == "mt4"
+
+
+def test_doctor_connect_mt4(capsys, monkeypatch, tmp_path) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setenv("ACCOUNT_MODE", "mt4")
+    monkeypatch.setenv("MT4_FILES_DIR", str(tmp_path))
+    created: list = []
+
+    class FakeMt4Broker:
+        def __init__(self, call, *, magic: int = 0) -> None:
+            del call, magic
+            created.append(self)
+            self.calls: list[str] = []
+
+        def connect(self) -> None:
+            self.calls.append("connect")
+
+        def disconnect(self) -> None:
+            self.calls.append("disconnect")
+
+        def account(self):
+            self.calls.append("account")
+            return type(
+                "Acct",
+                (),
+                {
+                    "login": 42,
+                    "server": "MT4-Demo",
+                    "equity": 10000.0,
+                    "currency": "USD",
+                    "trade_mode": 0,
+                },
+            )()
+
+    monkeypatch.setattr("mt5_risk_bot.broker.mt4_live.Mt4Broker", FakeMt4Broker)
+    assert main(["doctor", "--connect"]) == 0
+    out = capsys.readouterr().out
+    assert created
+    assert created[0].calls[0] == "connect"
+    assert "connected venue=mt4 login=42" in out
+    assert "trade_mode=0" in out
+
+
+def test_doctor_connect_mt4_missing_files_dir(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.setenv("ACCOUNT_MODE", "mt4")
+    monkeypatch.delenv("MT4_FILES_DIR", raising=False)
+    assert main(["doctor", "--connect"]) == 1
+    out = capsys.readouterr().out
+    assert "connect: fail" in out
+    assert "files_dir" in out
 
 
 def test_doctor_connect_calls_ensure_connected(capsys, monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("ACCOUNT_MODE", raising=False)
     created: list[_FakeConnectBroker] = []
 
     def factory(**kwargs):
@@ -86,6 +147,7 @@ def test_doctor_connect_calls_ensure_connected(capsys, monkeypatch) -> None:
 def test_doctor_connect_fails_without_binding(capsys, monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("ACCOUNT_MODE", raising=False)
 
     def boom():
         raise RuntimeError("No MT5 Python binding")
@@ -100,6 +162,7 @@ def test_doctor_connect_fails_without_binding(capsys, monkeypatch) -> None:
 def test_doctor_connect_fails_on_ensure_error(capsys, monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("ACCOUNT_MODE", raising=False)
 
     class BoomBroker:
         def __init__(self, **kwargs) -> None:
@@ -124,6 +187,7 @@ def test_doctor_connect_fail_redacts_botfather_token(capsys, monkeypatch) -> Non
     secret = "1234567890:AA" + "x" * 35
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("ACCOUNT_MODE", raising=False)
 
     class BoomBroker:
         def __init__(self, **kwargs) -> None:
@@ -147,6 +211,7 @@ def test_doctor_connect_fail_redacts_botfather_token(capsys, monkeypatch) -> Non
 def test_doctor_connect_falls_back_to_connect(capsys, monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("ACCOUNT_MODE", raising=False)
     created: list = []
 
     class NoEnsure:
@@ -188,6 +253,7 @@ def test_doctor_connect_falls_back_to_connect(capsys, monkeypatch) -> None:
 def test_doctor_connect_disconnect_error_still_ok(capsys, monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    monkeypatch.delenv("ACCOUNT_MODE", raising=False)
 
     class OkThenBoom:
         def __init__(self, **kwargs) -> None:

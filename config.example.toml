@@ -6,13 +6,19 @@
 # the agent = Cloudflare Computer worker. the gateway = AI Gateway mt5-risk-bot.
 
 [account]
-mode = "paper"              # paper | mt5
+mode = "paper"              # paper | mt5 | mt4
 initial_balance = 10000.0
 
 [mt5]
 terminal_path = ""
 timeout_ms = 60000
 # login / password / server: leave empty. Use env vars.
+
+[mt4]
+# Common Files folder. Windows: %APPDATA%\MetaQuotes\Terminal\Common\Files
+# Or export MT4_FILES_DIR. Attach mt4/Experts/Mt4RiskBot.mq4 to one chart.
+files_dir = ""
+timeout_ms = 5000
 
 [risk]
 risk_pct = 0.005            # 0.5% of equity per trade
