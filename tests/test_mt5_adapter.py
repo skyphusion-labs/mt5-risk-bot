@@ -5,6 +5,9 @@ from mt5_risk_bot.constants import (
     ORDER_FILLING_IOC,
     ORDER_TYPE_BUY_LIMIT,
     ORDER_TYPE_SELL_LIMIT,
+    TRADE_ACTION_CLOSE_BY,
+    TRADE_ACTION_MODIFY,
+    TRADE_ACTION_REMOVE,
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID_FILL,
 )
@@ -49,6 +52,24 @@ class FakeMt5:
                 comment="",
                 time=50,
             ),
+        ]
+        self.position_rows: list = [
+            _nt(
+                ticket=7,
+                symbol="EURUSD",
+                type=0,
+                volume=0.1,
+                price_open=1.1,
+                sl=1.09,
+                tp=1.12,
+                price_current=1.11,
+                profit=10.0,
+                swap=0.0,
+                magic=20260909,
+                comment="x",
+                time=1,
+                identifier=7,
+            )
         ]
 
     def initialize(self, *args, **kwargs) -> bool:
@@ -130,24 +151,7 @@ class FakeMt5:
         return self.order_rows
 
     def positions_get(self):
-        return [
-            _nt(
-                ticket=7,
-                symbol="EURUSD",
-                type=0,
-                volume=0.1,
-                price_open=1.1,
-                sl=1.09,
-                tp=1.12,
-                price_current=1.11,
-                profit=10.0,
-                swap=0.0,
-                magic=20260909,
-                comment="x",
-                time=1,
-                identifier=7,
-            )
-        ]
+        return self.position_rows
 
     def order_check(self, request):
         return _nt(retcode=0, comment="Done", deal=0, order=0, volume=request.get("volume", 0), price=1.1, bid=1.1, ask=1.1)
@@ -163,6 +167,63 @@ class FakeMt5:
                 order=0,
                 volume=0,
                 price=0,
+                bid=1.1,
+                ask=1.1,
+            )
+        action = int(request.get("action", 0))
+        if action == TRADE_ACTION_MODIFY:
+            ticket = int(request.get("order") or 0)
+            rows = list(self.order_rows or [])
+            for i, row in enumerate(rows):
+                if int(row.ticket) != ticket:
+                    continue
+                data = dict(row._asdict())
+                if "price" in request:
+                    data["price_open"] = request["price"]
+                if "sl" in request:
+                    data["sl"] = request["sl"]
+                if "tp" in request:
+                    data["tp"] = request["tp"]
+                rows[i] = _nt(**data)
+                self.order_rows = rows
+                break
+            return _nt(
+                retcode=TRADE_RETCODE_DONE,
+                comment="Done",
+                deal=0,
+                order=ticket,
+                volume=request.get("volume", 0),
+                price=request.get("price", 1.1),
+                bid=1.1,
+                ask=1.1,
+            )
+        if action == TRADE_ACTION_REMOVE:
+            ticket = int(request.get("order") or 0)
+            rows = list(self.order_rows or [])
+            self.order_rows = [row for row in rows if int(row.ticket) != ticket]
+            return _nt(
+                retcode=TRADE_RETCODE_DONE,
+                comment="Done",
+                deal=0,
+                order=ticket,
+                volume=request.get("volume", 0),
+                price=1.1,
+                bid=1.1,
+                ask=1.1,
+            )
+        if action == TRADE_ACTION_CLOSE_BY:
+            gone = {
+                int(request.get("position") or 0),
+                int(request.get("position_by") or 0),
+            }
+            self.position_rows = [row for row in self.position_rows if int(row.ticket) not in gone]
+            return _nt(
+                retcode=TRADE_RETCODE_DONE,
+                comment="Done",
+                deal=int(request.get("position") or 0),
+                order=int(request.get("position") or 0),
+                volume=request.get("volume", 0),
+                price=1.1,
                 bid=1.1,
                 ask=1.1,
             )
@@ -240,3 +301,93 @@ def test_invalid_fill_retries() -> None:
     assert result.ok
     assert len(fake.sends) == 2
     assert fake.sends[1]["type_filling"] == ORDER_FILLING_IOC
+
+
+# Paper mutates in tests/test_paper_pending.py. Live is a pass-through:
+# MODIFY / REMOVE / CLOSE_BY return 10009 (TRADE_RETCODE_DONE) and orders()
+# still maps whatever orders_get returns after the send.
+
+
+def test_adapter_modify_pending() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    result = broker.order_send(
+        {
+            "action": TRADE_ACTION_MODIFY,
+            "order": 11,
+            "price": 1.079,
+            "sl": 1.069,
+            "tp": 1.101,
+        }
+    )
+    assert result.retcode == TRADE_RETCODE_DONE
+    assert result.ok
+    assert fake.sends[-1]["action"] == TRADE_ACTION_MODIFY
+    ours = broker.orders(magic=20260909)
+    assert len(ours) == 1
+    assert ours[0].ticket == 11
+    assert ours[0].price == 1.079
+    assert ours[0].sl == 1.069
+    assert ours[0].tp == 1.101
+    all_orders = broker.orders()
+    assert len(all_orders) == 2
+    assert all_orders[1].ticket == 12
+    assert all_orders[1].price == 1.27
+    broker.disconnect()
+
+
+def test_adapter_remove_pending() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    result = broker.order_send({"action": TRADE_ACTION_REMOVE, "order": 11})
+    assert result.retcode == TRADE_RETCODE_DONE
+    assert result.ok
+    remaining = broker.orders()
+    assert len(remaining) == 1
+    assert remaining[0].ticket == 12
+    assert remaining[0].side is Side.SELL
+    assert remaining[0].type_code == ORDER_TYPE_SELL_LIMIT
+    assert broker.orders(magic=20260909) == []
+    broker.disconnect()
+
+
+def test_adapter_close_by() -> None:
+    fake = FakeMt5()
+    fake.position_rows.append(
+        _nt(
+            ticket=8,
+            symbol="EURUSD",
+            type=1,
+            volume=0.1,
+            price_open=1.11,
+            sl=1.12,
+            tp=1.09,
+            price_current=1.1,
+            profit=-10.0,
+            swap=0.0,
+            magic=20260909,
+            comment="y",
+            time=2,
+            identifier=8,
+        )
+    )
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    assert len(broker.positions()) == 2
+    result = broker.order_send(
+        {
+            "action": TRADE_ACTION_CLOSE_BY,
+            "position": 7,
+            "position_by": 8,
+        }
+    )
+    assert result.retcode == TRADE_RETCODE_DONE
+    assert result.ok
+    assert broker.positions() == []
+    mapped = broker.orders()
+    assert len(mapped) == 2
+    assert mapped[0].ticket == 11
+    assert mapped[1].ticket == 12
+    broker.disconnect()

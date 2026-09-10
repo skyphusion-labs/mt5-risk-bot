@@ -51,6 +51,9 @@ def _place(broker: PaperBroker, type_code: int, price: float, volume: float = 0.
     )
 
 
+# Live adapter parity: tests/test_mt5_adapter.py Fake MODIFY / REMOVE / CLOSE_BY -> 10009.
+
+
 def test_place_buy_limit_then_remove() -> None:
     broker = _paper()
     tick = broker.tick("EURUSD")
