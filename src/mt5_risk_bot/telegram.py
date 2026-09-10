@@ -105,14 +105,22 @@ def parse_command(update: dict[str, Any]) -> TgCommand | None:
     )
 
 
+def _chunks(text: str, size: int) -> list[str]:
+    if size <= 0:
+        raise ValueError("chunk size must be > 0")
+    if not text:
+        return []
+    return [text[i : i + size] for i in range(0, len(text), size)]
+
+
 HELP = (
     "mt5-risk-bot  (not financial advice)\n"
     "/quote SYMBOL\n"
     "/buy SYMBOL [sl=] [tp=]\n"
     "/sell SYMBOL [sl=] [tp=]\n"
-    "/close TICKET|SYMBOL|all\n"
-    "/sl TICKET PRICE   /tp TICKET PRICE\n"
-    "/confirm  /cancel\n"
+    "/close TICKET|SYMBOL|all [VOL]\n"
+    "/sl TICKET PRICE   /tp TICKET PRICE   /be TICKET\n"
+    "/confirm  /cancel  /history\n"
     "/positions  /status  /ask ...\n"
     "/model grok|claude   /auto on|off\n"
     "/halt  /resume  /help\n"
@@ -153,18 +161,21 @@ class TelegramClient:
     def send(self, text: str) -> bool:
         if not self.enabled or not text:
             return False
-        try:
-            data = self.transport.post_json(
-                self._url("sendMessage"),
-                {
-                    "chat_id": self.chat_id,
-                    "text": text[:3900],
-                    "disable_web_page_preview": True,
-                },
-            )
-        except TelegramError:
-            return False
-        return bool(data.get("ok"))
+        ok = True
+        for chunk in _chunks(text, 3900):
+            try:
+                data = self.transport.post_json(
+                    self._url("sendMessage"),
+                    {
+                        "chat_id": self.chat_id,
+                        "text": chunk,
+                        "disable_web_page_preview": True,
+                    },
+                )
+            except TelegramError:
+                return False
+            ok = ok and bool(data.get("ok"))
+        return ok
 
     def poll_commands(self, *, timeout: int = 0) -> list[TgCommand]:
         if not self.enabled:

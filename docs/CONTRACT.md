@@ -45,15 +45,19 @@ off until `/auto on`.
 
 | Command | Effect |
 | --- | --- |
-| `/quote SYMBOL` | bid/ask |
+| `/quote SYMBOL` | bid/ask plus ATR/ADX/EMA when bars exist |
 | `/buy` `/sell` SYMBOL `[sl=] [tp=]` | stage a market order |
 | `/confirm` `/cancel` | send or drop the staged order |
-| `/close TICKET\|SYMBOL\|all` | flatten |
-| `/sl` `/tp` TICKET PRICE | modify |
+| `/close TICKET\|SYMBOL\|all [VOL]` | flatten or partial close |
+| `/sl` `/tp` TICKET PRICE | modify; success only if the broker applied it |
+| `/be TICKET` | move SL to entry; never loosen |
+| `/history` | last journal events |
 | `/ask ...` or free text | Grok or Claude, may stage a trade |
 | `/model grok\|claude` | switch provider |
 | `/auto on\|off` | optional EMA regime |
 | `/status` `/positions` `/halt` `/resume` | account |
+
+`/confirm` reprices and re-runs `preview`. Halt, daily-loss, and drawdown still refuse. A second `/buy` while a pending is live is refused until `/cancel`. Advice never overwrites a live pending. Success replies come from `OrderResult.ok`, not from "the ticket existed".
 
 Manual `/buy` `/sell` skip the session window. Auto does not.
 

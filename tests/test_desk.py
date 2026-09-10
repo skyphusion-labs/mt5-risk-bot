@@ -142,3 +142,116 @@ def test_quote_usage(tmp_path) -> None:
     assert "usage" in engine.handle_command(TgCommand("1", 1, "/quote", 1))
     assert "usage" in engine.handle_command(TgCommand("1", 1, "/close", 2))
     assert "unknown" in engine.handle_command(TgCommand("1", 1, "/nope", 3))
+
+
+def test_confirm_after_halt_does_not_open(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/halt", 2))
+    reply = engine.handle_command(TgCommand("1", 1, "/confirm", 3))
+    assert "sent" not in reply
+    assert not engine.broker.positions()
+    engine.stop()
+
+
+def test_stage_refuses_overwrite(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    first = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    assert "confirm buy EURUSD" in first
+    second = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 2))
+    assert "pending buy EURUSD" in second
+    assert "/cancel" in second
+    engine.stop()
+
+
+def test_ask_http_error_does_not_kill(tmp_path) -> None:
+    class Boom:
+        def post_json(self, url, payload, timeout=10.0, headers=None):
+            raise RuntimeError("grok empty")
+
+    engine = _engine(tmp_path, llm=Boom())
+    reply = engine.handle_command(TgCommand("1", 1, "should I buy?", 1))
+    assert "grok empty" in reply
+
+
+def test_buy_wrong_side_sl_refused(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    tick = engine.broker.tick("EURUSD")
+    reply = engine.handle_command(TgCommand("1", 1, f"/buy EURUSD sl={tick.ask + 0.01} tp={tick.ask + 0.02}", 1))
+    assert "sl < entry < tp" in reply
+    assert engine.desk.pending is None
+    engine.stop()
+
+
+def test_partial_close_and_history(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    pos = engine.broker.positions()[0]
+    opened = pos.volume
+    half = round(opened / 2, 2)
+    reply = engine.handle_command(TgCommand("1", 1, f"/close {pos.ticket} {half}", 3))
+    assert reply.startswith("closed")
+    left = engine.broker.positions()
+    assert len(left) == 1
+    assert left[0].volume == round(opened - half, 8)
+    hist = engine.handle_command(TgCommand("1", 1, "/history", 4))
+    assert "open" in hist or "close" in hist
+    engine.stop()
+
+
+def test_be_missing_ticket_and_winner(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    assert "no such ticket" in engine.handle_command(TgCommand("1", 1, "/be 999", 1))
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 2))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 3))
+    pos = engine.broker.positions()[0]
+    last = engine.broker.rates("EURUSD", engine.cfg.strategy.timeframe_id, 1)[-1]
+    from mt5_risk_bot.models import Bar
+
+    engine.broker.seed_bars(
+        "EURUSD",
+        engine.broker.rates("EURUSD", engine.cfg.strategy.timeframe_id, 200)
+        + [
+            Bar(
+                time=last.time + 3600,
+                open=last.close,
+                high=last.close + 0.05,
+                low=last.close,
+                close=last.close + 0.04,
+            )
+        ],
+    )
+    reply = engine.handle_command(TgCommand("1", 1, f"/be {pos.ticket}", 4))
+    assert reply.startswith("be #")
+    updated = engine.broker.positions()[0]
+    assert abs(updated.sl - updated.price_open) < 1e-9
+    engine.stop()
+
+
+def test_advisor_memory_includes_prior_turn(tmp_path) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Noted.\n"
+                        '{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"x"}'
+                    )
+                }
+            }
+        ]
+    }
+    llm = FakeLlm(payload)
+    engine = _engine(tmp_path, llm=llm)
+    engine.handle_command(TgCommand("1", 1, "/ask first turn", 1))
+    engine.handle_command(TgCommand("1", 1, "/ask second turn", 2))
+    assert len(llm.sent) == 2
+    second_msgs = llm.sent[1][1]["messages"]
+    blob = str(second_msgs)
+    assert "first turn" in blob

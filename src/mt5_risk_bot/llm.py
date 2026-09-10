@@ -68,6 +68,7 @@ class Advisor:
     def __init__(self, cfg: AdviceConfig, transport: Transport | None = None) -> None:
         self.cfg = cfg
         self.transport = transport or UrlLibTransport()
+        self._memory: list[dict[str, str]] = []
 
     def ask(self, question: str, context: str) -> Advice:
         if not self.cfg.enabled:
@@ -82,17 +83,22 @@ class Advisor:
             raw = self._claude(user)
         else:
             raw = self._grok(user)
-        return parse_advice(raw)
+        advice = parse_advice(raw)
+        self._remember("user", question)
+        self._remember("assistant", advice.text or raw)
+        return advice
+
+    def _remember(self, role: str, content: str) -> None:
+        self._memory.append({"role": role, "content": content})
+        self._memory = self._memory[-6:]
 
     def _grok(self, user: str) -> str:
+        messages = [{"role": "system", "content": SYSTEM}, *self._memory, {"role": "user", "content": user}]
         data = self.transport.post_json(
             self.cfg.grok_url,
             {
                 "model": self.cfg.grok_model,
-                "messages": [
-                    {"role": "system", "content": SYSTEM},
-                    {"role": "user", "content": user},
-                ],
+                "messages": messages,
                 "temperature": 0.2,
             },
             timeout=60.0,
@@ -110,7 +116,7 @@ class Advisor:
                 "model": self.cfg.claude_model,
                 "max_tokens": 800,
                 "system": SYSTEM,
-                "messages": [{"role": "user", "content": user}],
+                "messages": [*self._memory, {"role": "user", "content": user}],
             },
             timeout=60.0,
             headers={

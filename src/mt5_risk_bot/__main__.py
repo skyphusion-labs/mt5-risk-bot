@@ -11,7 +11,6 @@ import csv
 import json
 import os
 import sys
-import time
 from pathlib import Path
 
 from mt5_risk_bot import __version__
@@ -183,7 +182,6 @@ def cmd_run(args: argparse.Namespace) -> int:
                 break
             if not args.loop:
                 break
-            time.sleep(cfg.poll_seconds)
     except KeyboardInterrupt:
         print("interrupt")
     finally:

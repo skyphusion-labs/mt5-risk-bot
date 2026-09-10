@@ -63,6 +63,16 @@ def test_send_and_notify_filter() -> None:
     assert methods == ["sendMessage", "sendMessage"]
 
 
+def test_send_splits_long_text() -> None:
+    tr = FakeTransport()
+    tg = TelegramClient(token="t", chat_id="42", transport=tr)
+    text = "x" * 4000
+    assert tg.send(text)
+    bodies = [p["text"] for _, p in tr.sent]
+    assert len(bodies) == 2
+    assert "".join(bodies) == text
+
+
 def test_engine_halt_and_resume_via_telegram(tmp_path) -> None:
     cfg = BotConfig()
     cfg.risk.halt_file = str(tmp_path / "HALT")

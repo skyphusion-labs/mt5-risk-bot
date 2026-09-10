@@ -39,30 +39,32 @@ class Desk:
         self.pending: Pending | None = None
 
     def handle(self, cmd: TgCommand) -> str:
-        if not cmd.name:
-            return self._ask(cmd.args)
-        fn = {
-            "start": lambda: HELP,
-            "help": lambda: HELP,
-            "status": self.engine.status_text,
-            "positions": self.engine.positions_text,
-            "quote": lambda: self._quote(cmd.args),
-            "buy": lambda: self._trade(SignalKind.BUY, cmd.args, "telegram"),
-            "sell": lambda: self._trade(SignalKind.SELL, cmd.args, "telegram"),
-            "close": lambda: self._close(cmd.args),
-            "sl": lambda: self._stop(cmd.args, "sl"),
-            "tp": lambda: self._stop(cmd.args, "tp"),
-            "confirm": self._confirm,
-            "cancel": self._cancel,
-            "ask": lambda: self._ask(cmd.args),
-            "model": lambda: self._model(cmd.args),
-            "auto": lambda: self._auto(cmd.args),
-            "halt": self._halt,
-            "resume": self._resume,
-        }.get(cmd.name)
-        if fn is None:
-            return "unknown command. /help"
         try:
+            if not cmd.name:
+                return self._ask(cmd.args)
+            fn = {
+                "start": lambda: HELP,
+                "help": lambda: HELP,
+                "status": self.engine.status_text,
+                "positions": self.engine.positions_text,
+                "quote": lambda: self._quote(cmd.args),
+                "buy": lambda: self._trade(SignalKind.BUY, cmd.args, "telegram"),
+                "sell": lambda: self._trade(SignalKind.SELL, cmd.args, "telegram"),
+                "close": lambda: self._close(cmd.args),
+                "sl": lambda: self._stop(cmd.args, "sl"),
+                "tp": lambda: self._stop(cmd.args, "tp"),
+                "be": lambda: self._be(cmd.args),
+                "confirm": self._confirm,
+                "cancel": self._cancel,
+                "history": self._history,
+                "ask": lambda: self._ask(cmd.args),
+                "model": lambda: self._model(cmd.args),
+                "auto": lambda: self._auto(cmd.args),
+                "halt": self._halt,
+                "resume": self._resume,
+            }.get(cmd.name)
+            if fn is None:
+                return "unknown command. /help"
             return fn()
         except (ValueError, RuntimeError) as exc:
             return str(exc)
@@ -83,11 +85,17 @@ class Desk:
         return self._stage(sig, source)
 
     def _stage(self, sig: Signal, source: str) -> str:
+        now = time.time()
+        if self.pending is not None and now <= self.pending.expires_at:
+            p = self.pending
+            return (
+                f"pending {p.signal.kind.value} {p.signal.symbol}; /cancel first"
+            )
         decision = self.engine.preview(sig, manual=True)
         if not decision.allowed:
             return f"refused: {decision.reason}"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
-        self.pending = Pending(sig, decision.volume, source, time.time() + ttl)
+        self.pending = Pending(sig, decision.volume, source, now + ttl)
         return (
             f"confirm {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"@ {sig.entry} sl={sig.sl} tp={sig.tp} rr={sig.rr:.2f} "
@@ -96,16 +104,24 @@ class Desk:
 
     def _confirm(self) -> str:
         pending = self.pending
-        self.pending = None
         if pending is None:
             return "nothing to confirm"
         if time.time() > pending.expires_at:
+            self.pending = None
             return "confirm expired"
-        self.engine.submit(pending.signal, pending.volume)
-        return (
-            f"sent {pending.signal.kind.value} {pending.signal.symbol} "
-            f"vol={pending.volume}"
-        )
+        sig = pending.signal
+        spec = self.engine.broker.symbol(sig.symbol)
+        tick = self.engine.broker.tick(sig.symbol)
+        entry = tick.ask if sig.kind is SignalKind.BUY else tick.bid
+        sig = sig.reprice(entry, spec)
+        decision = self.engine.preview(sig, manual=True)
+        if not decision.allowed:
+            return f"refused: {decision.reason}"
+        result = self.engine.submit(sig, decision.volume)
+        self.pending = None
+        if not result.ok:
+            return f"send failed retcode={result.retcode} {result.comment}"
+        return f"sent {sig.kind.value} {sig.symbol} vol={decision.volume}"
 
     def _cancel(self) -> str:
         if self.pending is None:
@@ -114,17 +130,27 @@ class Desk:
         return "cancelled"
 
     def _close(self, args: str) -> str:
-        token = args.split()[0] if args.strip() else ""
-        if not token:
-            return "usage: /close TICKET|SYMBOL|all"
+        parts = args.split()
+        if not parts:
+            return "usage: /close TICKET|SYMBOL|all [VOL]"
+        token = parts[0]
+        vol = float(parts[1]) if len(parts) > 1 else None
         if token.lower() == "all":
             n = self.engine.close_all("telegram")
             return f"closed {n}"
         if token.isdigit():
-            ok = self.engine.close_ticket(int(token), "telegram")
-            return "closed" if ok else "no such ticket"
+            return self.engine.close_ticket(int(token), "telegram", vol)
         n = self.engine.close_symbol(token.upper(), "telegram")
         return f"closed {n} {token.upper()}"
+
+    def _be(self, args: str) -> str:
+        token = args.split()[0] if args.strip() else ""
+        if not token or not token.isdigit():
+            return "usage: /be TICKET"
+        return self.engine.breakeven(int(token))
+
+    def _history(self) -> str:
+        return self.engine.history_text()
 
     def _stop(self, args: str, which: str) -> str:
         parts = args.split()
@@ -180,6 +206,7 @@ class Desk:
         return f"auto={'on' if self.engine.cfg.strategy.auto else 'off'}"
 
     def _halt(self) -> str:
+        self.pending = None
         self.engine.risk.write_halt_file("telegram")
         self.engine.flatten("telegram")
         acct = self.engine.broker.account()

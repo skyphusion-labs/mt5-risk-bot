@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
@@ -21,6 +22,23 @@ class Journal:
         }
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, default=str) + "\n")
+
+    def tail(self, n: int = 20) -> list[dict[str, Any]]:
+        if n <= 0 or not self.path.exists():
+            return []
+        lines = self.path.read_text(encoding="utf-8").splitlines()
+        out: list[dict[str, Any]] = []
+        for line in lines[-n:]:
+            line = line.strip()
+            if not line:
+                continue
+            try:
+                rec = json.loads(line)
+            except json.JSONDecodeError:
+                continue
+            if isinstance(rec, dict):
+                out.append(rec)
+        return out
 
 
 def _jsonable(v: Any) -> Any:
