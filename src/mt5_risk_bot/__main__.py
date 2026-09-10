@@ -323,6 +323,7 @@ def build_parser() -> argparse.ArgumentParser:
 
 
 def main(argv: list[str] | None = None) -> int:
+    os.umask(0o077)
     parser = build_parser()
     args = parser.parse_args(argv)
     try:
