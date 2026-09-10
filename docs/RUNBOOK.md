@@ -81,17 +81,25 @@ Do not start live on a traceback.
 Demo is `trade_mode=0` and does not need `--i-accept-risk`.
 
 WARNING
-Real money (`trade_mode=2`) is refused without `--i-accept-risk`.
+Real money (`trade_mode=2`) is refused without `--i-accept-risk` at start
+or `/live on I-ACCEPT-RISK` in the locked chat.
 
 1. Run doctor with a login check.
    `python -m mt5_risk_bot --config config.toml doctor --connect`
 2. Stop if doctor is not 0.
 3. Start the live loop for demo.
    `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
-4. For a real account only, add `--i-accept-risk`.
+4. For a real account, add `--i-accept-risk`, or arm from chat after start.
    `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop --i-accept-risk`
+   `/live on I-ACCEPT-RISK`
 
 `--loop` polls until Ctrl-C.
+`engine.poll_seconds` is the Telegram `getUpdates` timeout.
+The example config sets `poll_seconds = 1`.
+Each loop tick waits up to that many seconds for a chat update.
+Then `step_all` runs fills, SL/TP, trail, and auto.
+If the key is omitted, load uses 15.
+Do not add a second sleep. The long poll is the wait.
 It retries Telegram 429/5xx with backoff.
 It resumes `getUpdates` from `journal.tg_offset` (next to `journal_path`).
 A restart does not replay or drop commands.
@@ -121,7 +129,10 @@ That replaces any previous `.1`.
 
 The desk can send `/ask` to the agent.
 The desk does not need to call xAI or Anthropic directly.
-Working memory is the Durable Object workspace (`notes.md`, `log.md`, `snapshot.md`).
+Working memory is the Durable Object SQLite workspace
+(`/workspace/notes.md`, `log.md`, `snapshot.md`, `history.json`).
+`history.json` is the last journal records from `/ask`.
+The agent does not use Cloudflare D1.
 Inference is Unified Billing on the gateway.
 The bot still does not send trades.
 
@@ -181,13 +192,21 @@ Read `journal.jsonl`.
 ## Real money
 
 WARNING
-The bot refuses `trade_mode=2` without `--i-accept-risk`.
+The bot refuses `trade_mode=2` without `--i-accept-risk` at start
+or `/live on I-ACCEPT-RISK` in the locked chat.
 
 1. Complete the Demo steps.
 2. Confirm `doctor --connect` exits 0.
 3. Set `risk_pct = 0.002` (0.2%) at first.
 4. Start the live loop with `--i-accept-risk`.
    `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop --i-accept-risk`
+5. Or start without that flag and arm from chat.
+   `/live on I-ACCEPT-RISK`
+   The phrase is required.
+   `/live on` without it is usage.
+   `/live off` disarms.
+6. Then `/approve always` if you want sends without `/confirm`.
+   On `trade_mode=2`, arm live before `/approve always`.
 
 ## Halt
 
@@ -218,6 +237,8 @@ Staging writes `confirm_stage` to the journal.
 The TTL must not have expired.
 After expiry, `/confirm` replies `nothing to confirm`.
 Restage with `/buy` `/sell` `/reverse` or advice.
+`start` restores `/approve always` from the last of `approve_always` / `approve_off`.
+`start` restores `live_accepted` from the last of `live_on` / `live_off`.
 
 MT5 positions and working orders stay in the terminal.
 Paper positions and paper working orders die with the bot.
@@ -258,7 +279,8 @@ It does not launch the terminal.
 5. Edit `EnvironmentVariables` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
 6. Add `XAI_API_KEY` or `ANTHROPIC_API_KEY` if you use advice.
 7. For an MT5 loop, change `--mode paper` to `--mode mt5`.
-8. For a real account only, append `--i-accept-risk`.
+8. For a real account, append `--i-accept-risk`, or arm from chat after start
+   with `/live on I-ACCEPT-RISK`.
 9. Put `--config` and the path before `run` in `ProgramArguments`.
 10. chmod 600 the installed plist. Never commit it.
 
@@ -313,12 +335,15 @@ Do not bootout to halt.
 Free text is `/ask`.
 Context includes `/risk`, positions, working orders, and quotes.
 A recommended market, limit, stop, or close-ticket is staged.
-`/confirm` sends it.
+`/confirm` is the default send.
 `/approve always` sends after risk preview. No `/confirm` each time.
+Paper and demo accept `/approve always` at any time.
+On `trade_mode=2` without live armed, `/approve always` is refused.
 `/approve off` restores staging.
 The bot still sizes the order.
 The bot can refuse it.
 Real-money: `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.
+The phrase is required.
 Then `/approve always` if you want sends without `/confirm`.
 `/auto on` is the only way the EMA regime trades on its own.
 `/trail on` trails open positions each tick.
@@ -326,7 +351,7 @@ It does not turn auto on.
 SL/TP hits and pending fills still alert in Telegram when auto is off.
 
 Paper is the default (`account.mode = "paper"`).
-Real accounts still need `--i-accept-risk`.
+Real accounts still need `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.
 
 Stage a working order, then confirm:
 
@@ -397,12 +422,17 @@ You are left flat (`closed #TICKET; reverse refused: ...`).
 A failed opposite send is the same shape (`closed #TICKET; send failed ...`).
 
 Production live: `doctor --connect` must exit 0 before `run --mode mt5`.
-`trade_mode=2` also needs `--i-accept-risk`.
+`trade_mode=2` also needs `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.
 Demo (`trade_mode=0`) does not.
 
 ## Journal
 
-JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `stop`.
+`journal.jsonl` is the source of truth for fills the bot observed.
+A pending fill writes `open` with `fill=true`.
+A vanished ticket writes `close` with `fill=true`.
+The venue holds the live book. It is not the fill log.
+
+JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `live_on`, `live_off`, `stop`.
 Grep `reject` if it never trades.
 `outside_session` and `no_regime` are the usual reasons.
 `reconnect` is an MT5 IPC drop then `initialize`.

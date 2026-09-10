@@ -52,9 +52,9 @@ end_utc = "17:00"
 skip_friday_after_utc = "16:00"
 
 [engine]
-poll_seconds = 15
+poll_seconds = 1            # Telegram getUpdates timeout (seconds). One loop tick after each poll (fills, SL/TP, trail, auto). If omitted, load uses 15.
 comment = "mt5-risk-bot"
-# journal.jsonl and journal.tg_offset are chmod 0600. Process umask 077.
+# journal.jsonl is the fill log (SSOT). journal.tg_offset is chmod 0600. Process umask 077.
 # journal.heartbeat is written each successful step_all. chmod 0600.
 # journal.jsonl rotates to journal.jsonl.1 at 10 MiB.
 # journal.lock is an exclusive flock. A second run --loop on this path exits 2.

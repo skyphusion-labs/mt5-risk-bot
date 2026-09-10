@@ -9,7 +9,8 @@ You send desk commands from one Telegram chat.
 The bot sizes every order.
 The bot can refuse an order.
 Advice never sends an order.
-`/confirm` is the only send.
+`/confirm` is the default send.
+`/approve always` sends after risk preview.
 
 WARNING
 Nothing here guarantees profit.
@@ -78,6 +79,9 @@ See `agent/README.md` and `docs/RUNBOOK.md`.
 
 `--loop` retries Telegram HTTP 429 and 5xx.
 `--loop` calls `initialize` again after a dropped MT5 IPC.
+`engine.poll_seconds` is the Telegram `getUpdates` timeout.
+The example config sets `poll_seconds = 1`.
+If the key is omitted, load uses 15.
 The Telegram offset is `journal.tg_offset` next to the journal.
 One failed tick is journaled as `reconnect` or `loop_error`.
 The bot stays up.
@@ -85,6 +89,7 @@ Two `run --loop` processes cannot share one journal.
 The second process prints `already running` and exits 2.
 Each successful tick writes `journal.heartbeat`.
 The live journal rotates to `journal.jsonl.1` at 10 MiB.
+`journal.jsonl` is the source of truth for fills the bot observed.
 
 See `docs/RUNBOOK.md`.
 
@@ -109,7 +114,8 @@ Then run `pip install mt5-mac`.
    `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
 
 WARNING
-A real account (`trade_mode=2`) also needs `--i-accept-risk`.
+A real account (`trade_mode=2`) also needs `--i-accept-risk` at start,
+or `/live on I-ACCEPT-RISK` in the locked chat.
 
 The bot accepts only `TELEGRAM_CHAT_ID`.
 The journal, stderr, and chat echoes redact BotFather tokens as `[REDACTED]`.
@@ -129,6 +135,10 @@ The bot uses an ATR stop if you omit `sl=`.
 `stop=` is the same shape.
 Do not set both `limit=` and `stop=`.
 `/confirm` sends the staged order.
+`/approve always` sends after risk preview. No `/confirm` each time.
+`/approve off` restores staging.
+`/live on I-ACCEPT-RISK` arms real-money sends from the locked chat.
+The phrase is required.
 `/orders` lists working orders.
 `/cancel TICKET` cancels a working order.
 Bare `/cancel` drops a staged confirm.
@@ -165,15 +175,16 @@ A recap is not a trade.
 
 Free text is advice.
 The model can stage a market, `limit=`, `stop=`, or close-ticket order.
-`/confirm` is the only send.
+`/confirm` is the default send.
+`/approve always` sends after risk preview.
 If the next order would trip the circuit, advice is hold or close only.
 Send `/help` for the rest.
 
 ## Docs
 
 `docs/CONTRACT.md` is the behaviour that tests enforce.
-`docs/VENUE.md` is the provider-agnostic execution API.
-`docs/RUNBOOK.md` is paper, live, HALT, confirm-on-restart, lock, heartbeat, journal rotate, and launchd.
+`docs/VENUE.md` is the provider-agnostic execution API (`MarketOrder`, `WorkingOrder`).
+`docs/RUNBOOK.md` is paper, live, `/live on I-ACCEPT-RISK`, `/approve always`, `poll_seconds=1`, HALT, confirm-on-restart, lock, heartbeat, journal rotate, and launchd.
 `docs/launchd.plist.example` is a user LaunchAgent.
 It uses paper `--loop`, `KeepAlive`, and `Umask` 63.
 Tokens stay `REPLACE_ME` in the example.

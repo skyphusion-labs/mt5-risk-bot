@@ -23,13 +23,16 @@ Auto EMA trading is off until `/auto on`.
 | Desk trades | Slash commands place, close, and modify trades. |
 | Free text | Free text goes to the configured model. |
 | Advice send | AI advice never sends an order. |
-| Confirm | A staged suggestion waits for `/confirm` (default 120s). |
+| Confirm | A staged suggestion waits for `/confirm` (default 120s). `/approve always` skips that wait after a successful risk preview. |
+| Approve | `/approve always` sends after risk preview. No `/confirm`. Default off. `/approve off` restores staging. Circuit and `risk_pct` still refuse. Halt still refuses. Paper and demo accept `/approve always` at any time. On `trade_mode=2` without live armed, `/approve always` is refused until `/live on I-ACCEPT-RISK`. Last of `approve_always` / `approve_off` in `journal.jsonl` restores on start. |
+| Live from chat | Real-money sends need `live_accepted`. Set it with `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat. The phrase is required. `/live on` without it is usage. `/live off` clears it. Last of `live_on` / `live_off` restores on start. Same fuse as `--i-accept-risk`. Risk still sizes and can refuse. |
 | Size | Every new order is sized so a full stop-out loses at most `risk_pct` of equity (default 0.5%). |
 | Min lot | If the broker minimum lot would exceed that, the trade is skipped. |
 | Daily loss | Daily loss of `daily_loss_pct` (default 2%) of start-of-UTC-day equity flattens positions for the bot's magic and halts until the next UTC day. |
 | Drawdown | Drawdown of `max_drawdown_pct` (default 10%) from peak equity flattens and stays halted until an operator inspects and restarts. |
 | Halt | `HALT` or `/halt` flattens immediately (positions and working orders). |
 | Real money | Real-money accounts (`trade_mode = 2`) refuse orders unless `--i-accept-risk` was passed at start or `/live on I-ACCEPT-RISK` was sent in the locked chat. |
+| Fills SSOT | `journal.jsonl` is the source of truth for fills the bot observed. Pending fills write `open` with `fill=true`. Vanished tickets write `close` with `fill=true`. The venue holds the live book. It is not the fill log. |
 | Paper default | Paper is the default mode. |
 | Alerts | SL/TP hits and pending-order fills emit Telegram alerts even when `/auto` is off. |
 | Notify | Default notify events include `open`, `close`, `pending`, and `recap`. |
@@ -82,7 +85,7 @@ Auto EMA trading is off until `/auto on`.
 | `/history` | Last journal events. |
 | `/recap` | Equity vs UTC `day_start` plus `journal.tail`. Also sent on UTC day roll as notify `recap`. |
 | `/symbols list\|add\|remove [SYMBOL]` | Configured book (runtime). Bare `/symbols` lists. Cannot drop the last name, or a name with positions/orders. |
-| `/ask ...` or free text | Grok, Claude, or the agent. Local: last 40 turns in `journal.advice.json`. `AI_PROVIDER=computer`: Durable Object workspace (`notes.md`, `log.md`, `snapshot.md`) plus Computer tools. Session is the Telegram chat id. JSON can stage. Never sends. |
+| `/ask ...` or free text | Grok, Claude, or the agent. Local: last 40 turns in `journal.advice.json`. `AI_PROVIDER=computer`: Durable Object SQLite workspace (`/workspace/notes.md`, `log.md`, `snapshot.md`, `history.json` from `journal.tail`) plus Computer tools. Session is the Telegram chat id. JSON can stage. Never sends. Not Cloudflare D1. |
 | `/model grok\|claude\|computer` | Switch provider. |
 | `/auto on\|off` | Optional EMA regime. Fill alerts do not wait for this. |
 | `/status` `/positions` `/halt` `/resume` | Account. `/halt` flattens, drops the confirm, and cancels working orders. |
@@ -113,6 +116,8 @@ Advice JSON fields: `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `
 `limit` and `stop` are XOR.
 A close action with `ticket` stages that close.
 Default send is `/confirm`. `/approve always` sends after risk preview.
+`/approve always` is available in paper and demo without a live fuse.
+On `trade_mode=2`, arm live first (`--i-accept-risk` or `/live on I-ACCEPT-RISK`).
 Context always includes `/risk`, positions, working orders, and quotes.
 If the next order would trip the circuit, context says hold/close only.
 Buy/sell is not staged.
@@ -198,6 +203,8 @@ The new live file is chmod 0600.
 A staged `/confirm` is journaled (`confirm_stage`).
 `start` restores it if the last of `confirm_stage` / `confirm_cancel` / `confirm_sent` is still `confirm_stage`.
 The TTL must not have expired.
+`start` restores `/approve always` if the last of `approve_always` / `approve_off` is `approve_always`.
+`start` restores `live_accepted` if the last of `live_on` / `live_off` is `live_on`.
 
 ## Doctor
 
@@ -208,7 +215,7 @@ No live terminal is required.
 It is non-zero if the binding is missing or login fails.
 A traceback is not a pass.
 Production live is `doctor --connect` then `run --mode mt5`.
-`trade_mode=2` still needs `--i-accept-risk`.
+`trade_mode=2` still needs `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.
 
 NOTE
 Put `--config` before the subcommand.
