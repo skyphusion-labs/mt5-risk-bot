@@ -384,6 +384,79 @@ def test_partial_close_and_history(tmp_path) -> None:
     engine.stop()
 
 
+def test_scale_out_tp_partial_close_on_hit(tmp_path) -> None:
+    from mt5_risk_bot.models import Bar
+
+    engine = _engine(tmp_path)
+    engine.start()
+    tick = engine.broker.tick("EURUSD")
+    spec = engine.broker.symbol("EURUSD")
+    sl = spec.normalize_price(tick.ask - 0.005)
+    runner = spec.normalize_price(tick.ask + 0.100)
+    engine.handle_command(TgCommand("1", 1, f"/buy EURUSD sl={sl} tp={runner}", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    pos = engine.broker.positions()[0]
+    opened = pos.volume
+    half = round(opened / 2, 2)
+    assert half >= spec.volume_min
+    scale_px = spec.normalize_price(pos.price_open + 0.020)
+    reply = engine.handle_command(
+        TgCommand("1", 1, f"/tp {pos.ticket} {scale_px} {half}", 3)
+    )
+    assert f"tp #{pos.ticket}" in reply
+    assert f"vol={half}" in reply
+    still = engine.broker.positions()[0]
+    assert abs(still.volume - opened) < 1e-12
+    assert abs(still.tp - runner) < spec.point
+    listed = engine.handle_command(TgCommand("1", 1, "/positions", 4))
+    assert "scale=" in listed
+    last = engine.broker.rates("EURUSD", engine.cfg.strategy.timeframe_id, 1)[-1]
+    engine.broker.seed_bars(
+        "EURUSD",
+        engine.broker.rates("EURUSD", engine.cfg.strategy.timeframe_id, 200)
+        + [
+            Bar(
+                time=last.time + 3600,
+                open=last.close,
+                high=scale_px + 0.001,
+                low=min(last.close, scale_px),
+                close=scale_px + 0.001,
+            )
+        ],
+    )
+    engine.step_all()
+    left = engine.broker.positions()
+    assert len(left) == 1
+    assert abs(left[0].volume - round(opened - half, 8)) < 1e-9
+    assert pos.ticket not in engine._scale_outs
+    engine.stop()
+
+
+def test_scale_out_halt_and_geometry(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    tick = engine.broker.tick("EURUSD")
+    spec = engine.broker.symbol("EURUSD")
+    sl = spec.normalize_price(tick.ask - 0.005)
+    tp = spec.normalize_price(tick.ask + 0.100)
+    engine.handle_command(TgCommand("1", 1, f"/buy EURUSD sl={sl} tp={tp}", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    pos = engine.broker.positions()[0]
+    half = round(pos.volume / 2, 2)
+    below = spec.normalize_price(pos.price_open - 0.001)
+    assert "above entry" in engine.handle_command(
+        TgCommand("1", 1, f"/tp {pos.ticket} {below} {half}", 3)
+    )
+    engine.risk.write_halt_file("operator")
+    refused = engine.handle_command(
+        TgCommand("1", 1, f"/tp {pos.ticket} {tp} {half}", 4)
+    )
+    assert "refused" in refused
+    assert pos.ticket not in engine._scale_outs
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/tp", 5))
+    engine.stop()
+
+
 def test_be_missing_ticket_and_winner(tmp_path) -> None:
     engine = _engine(tmp_path)
     engine.start()

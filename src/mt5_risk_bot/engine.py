@@ -29,6 +29,7 @@ from mt5_risk_bot.journal import Journal
 from mt5_risk_bot.llm import Advisor
 from mt5_risk_bot.models import Bar, OrderResult, PendingOrder, Position, Signal, SignalKind
 from mt5_risk_bot.risk import RiskDecision, RiskManager
+from mt5_risk_bot.sizing import normalize_volume
 from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.telegram import TelegramClient, TgCommand
 
@@ -66,6 +67,7 @@ class Engine:
         self._seen_pos: set[int] | None = None
         self._opened_this_step: set[int] = set()
         self._closed_this_step: set[int] = set()
+        self._scale_outs: dict[int, tuple[float, float]] = {}
 
     def _emit(self, event: str, **fields: Any) -> None:
         self.journal.write(event, **fields)
@@ -104,6 +106,7 @@ class Engine:
             self.broker.order_send({"action": TRADE_ACTION_REMOVE, "order": order.ticket})
         for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
             self._close(pos, reason)
+        self._scale_outs.clear()
         self.halted = True
         self._seen_pos = {
             p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
@@ -137,6 +140,8 @@ class Engine:
         }
         result = self.broker.order_send(request)
         self._closed_this_step.add(pos.ticket)
+        if result.ok:
+            self._scale_outs.pop(pos.ticket, None)
         self._emit(
             "close",
             reason=reason,
@@ -476,7 +481,18 @@ class Engine:
                 tp_hit = pos.tp > 0 and tick.ask <= pos.tp
             if sl_hit:
                 self._close(pos, "sl")
-            elif tp_hit:
+                continue
+            scale = self._scale_outs.get(pos.ticket)
+            if scale is not None:
+                px, vol = scale
+                scale_hit = (
+                    (pos.side.value == "buy" and tick.bid >= px)
+                    or (pos.side.value == "sell" and tick.ask <= px)
+                )
+                if scale_hit:
+                    self._close(pos, "tp", vol)
+                    continue
+            if tp_hit:
                 self._close(pos, "tp")
 
     def _detect_fills(self) -> None:
@@ -602,7 +618,9 @@ class Engine:
             return f"sl failed retcode={result.retcode} {result.comment}"
         return f"sl #{ticket} -> {price}"
 
-    def set_tp(self, ticket: int, price: float) -> str:
+    def set_tp(self, ticket: int, price: float, volume: float | None = None) -> str:
+        if volume is not None:
+            return self._set_scale_out(ticket, price, volume)
         pos = self._pos(ticket)
         if pos is not None:
             result = self._modify(pos, pos.sl, price)
@@ -616,6 +634,43 @@ class Engine:
         if not result.ok:
             return f"tp failed retcode={result.retcode} {result.comment}"
         return f"tp #{ticket} -> {price}"
+
+    def _set_scale_out(self, ticket: int, price: float, volume: float) -> str:
+        pos = self._pos(ticket)
+        if pos is None:
+            return "scale-out needs an open position"
+        trip = self.risk.circuit(self.broker.account(), self.now_fn())
+        if not trip.allowed:
+            return f"refused: {trip.reason}"
+        spec = self.broker.symbol(pos.symbol)
+        vol = normalize_volume(volume, spec)
+        if vol <= 0:
+            return "volume below min lot"
+        if vol > pos.volume + 1e-12:
+            return "volume exceeds position"
+        remaining = round(pos.volume - vol, 8)
+        if remaining > 1e-12 and remaining < spec.volume_min - 1e-12:
+            return "remainder below volume_min"
+        px = spec.normalize_price(price)
+        if pos.side.value == "buy" and not (px > pos.price_open):
+            return "buy tp must be above entry"
+        if pos.side.value == "sell" and not (px < pos.price_open):
+            return "sell tp must be below entry"
+        if remaining <= 1e-12:
+            result = self._modify(pos, pos.sl, px)
+            if not result.ok:
+                return f"tp failed retcode={result.retcode} {result.comment}"
+            return f"tp #{ticket} -> {px}"
+        self._scale_outs[ticket] = (px, vol)
+        self.journal.write(
+            "modify",
+            ticket=ticket,
+            symbol=pos.symbol,
+            tp=px,
+            volume=vol,
+            scale_out=True,
+        )
+        return f"tp #{ticket} {px} vol={vol}"
 
     def _order(self, ticket: int) -> PendingOrder | None:
         for order in self.broker.orders(magic=self.cfg.risk.magic):
@@ -772,11 +827,17 @@ class Engine:
         rows = self.broker.positions(magic=self.cfg.risk.magic)
         if not rows:
             return "no open positions"
-        return "\n".join(
-            f"#{p.ticket} {p.symbol} {p.side.value} {p.volume} "
-            f"@ {p.price_open} sl={p.sl} tp={p.tp} pnl={p.profit:.2f}"
-            for p in rows
-        )
+        lines = []
+        for p in rows:
+            extra = ""
+            scale = self._scale_outs.get(p.ticket)
+            if scale is not None:
+                extra = f" scale={scale[1]} @{scale[0]}"
+            lines.append(
+                f"#{p.ticket} {p.symbol} {p.side.value} {p.volume} "
+                f"@ {p.price_open} sl={p.sl} tp={p.tp} pnl={p.profit:.2f}{extra}"
+            )
+        return "\n".join(lines)
 
     def handle_command(self, cmd: TgCommand) -> str:
         return self.desk.handle(cmd)

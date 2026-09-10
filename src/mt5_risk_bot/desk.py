@@ -252,13 +252,14 @@ class Desk:
 
     def _stop(self, args: str, which: str) -> str:
         parts = args.split()
-        if len(parts) != 2:
-            return f"usage: /{which} TICKET PRICE"
-        ticket = int(parts[0])
-        price = float(parts[1])
         if which == "sl":
-            return self.engine.set_sl(ticket, price)
-        return self.engine.set_tp(ticket, price)
+            if len(parts) != 2:
+                return "usage: /sl TICKET PRICE"
+            return self.engine.set_sl(int(parts[0]), float(parts[1]))
+        if len(parts) not in {2, 3}:
+            return "usage: /tp TICKET PRICE [VOL]"
+        vol = float(parts[2]) if len(parts) == 3 else None
+        return self.engine.set_tp(int(parts[0]), float(parts[1]), vol)
 
     def _ask(self, question: str) -> str:
         if not question.strip():

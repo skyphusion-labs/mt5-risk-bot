@@ -98,6 +98,7 @@ Stage a working order, then confirm:
 /trail on
 /sl TICKET PRICE
 /tp TICKET PRICE
+/tp TICKET PRICE VOL
 /symbols
 /symbols add NZDUSD
 /symbols remove NZDUSD
