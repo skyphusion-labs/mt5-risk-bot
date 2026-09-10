@@ -63,12 +63,12 @@ python -m mt5_risk_bot run --mode mt5 --loop --config config.toml --i-accept-ris
 ```
 
 `--loop` polls until Ctrl-C. It retries Telegram 429/5xx with backoff and
-resumes `getUpdates` at the same in-memory offset. A dropped terminal
-calls `initialize` again. One bad tick is journaled (`reconnect` or
+resumes `getUpdates` from `journal.tg_offset` (next to `journal_path`).
+A restart does not replay or drop commands. A dropped terminal calls
+`initialize` again. One bad tick is journaled (`reconnect` or
 `loop_error`); the process stays up. `/halt` and a `HALT` file flatten
 and stay halted; the process does not exit, so `/resume` works without a
-restart. A crash or launchd KeepAlive restart is a new process (see
-Confirm).
+restart.
 
 ## Demo
 
@@ -104,13 +104,14 @@ The `HALT` path is relative to the process working directory (LaunchAgent
 `WorkingDirectory`). Remove the file and `/resume` (or restart, if you
 are clearing drawdown) when you intend to resume.
 
-## Confirm (lost on restart)
+## Confirm
 
-`/confirm` TTL is `telegram.confirm_seconds` (default 120). The staged
-intent is `Desk.pending` in process memory. There is no persist file and
-nothing to restore on start. A restart (Ctrl-C, crash, launchd KeepAlive)
-drops it. `/confirm` then replies `nothing to confirm`. Restage with
-`/buy` `/sell` `/reverse` or advice.
+`/confirm` TTL is `telegram.confirm_seconds` (default 120). Staging
+writes `confirm_stage` to the journal. `start` restores that intent if
+the last of `confirm_stage` / `confirm_cancel` / `confirm_sent` is still
+`confirm_stage` and the TTL has not expired. After expiry, `/confirm`
+replies `nothing to confirm`. Restage with `/buy` `/sell` `/reverse` or
+advice.
 
 MT5 positions and working orders stay in the terminal. Paper positions
 and paper working orders die with the process.
@@ -162,8 +163,9 @@ Stop:
 launchctl bootout gui/$(id -u)/org.skyphusion.mt5-risk-bot
 ```
 
-`KeepAlive` restarts a crash. That restart drops the staged confirm.
-Halt does not crash the process; do not bootout to halt.
+`KeepAlive` restarts a crash. The confirm is restored from the journal
+if the TTL has not expired. Halt does not crash the process; do not
+bootout to halt.
 
 ## Telegram desk
 
@@ -220,6 +222,8 @@ max-drawdown cannot be cleared from Telegram.
 
 JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`,
 `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`,
-`stop`. Grep `reject` if it never trades; `outside_session` and `no_regime`
-are the usual reasons. `reconnect` is an MT5 IPC drop then `initialize`.
-`loop_error` is a tick that raised; the process kept running.
+`confirm_stage`, `confirm_cancel`, `confirm_sent`, `stop`. Grep `reject`
+if it never trades; `outside_session` and `no_regime` are the usual
+reasons. `reconnect` is an MT5 IPC drop then `initialize`. `loop_error`
+is a tick that raised; the process kept running. `journal.tg_offset` is
+the Telegram `getUpdates` cursor (not JSONL).

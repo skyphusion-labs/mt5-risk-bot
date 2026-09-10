@@ -1030,7 +1030,9 @@ class Engine:
                 try:
                     self.telegram.send(f"error: {exc}")
                 except (ValueError, RuntimeError, OSError):
-                    continue
+                    pass
+            finally:
+                self.telegram.ack(cmd.update_id)
 
     def recap_text(self) -> str:
         acct = self.broker.account()

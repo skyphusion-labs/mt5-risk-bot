@@ -20,7 +20,7 @@ from mt5_risk_bot.config import BotConfig, load_config
 from mt5_risk_bot.engine import Engine, run_backtest
 from mt5_risk_bot.models import Bar
 from mt5_risk_bot.synthetic import generate_bars, generate_ranging
-from mt5_risk_bot.telegram import TelegramClient, TgCommand
+from mt5_risk_bot.telegram import TelegramClient, TgCommand, offset_path_for
 
 
 def _cfg(args: argparse.Namespace) -> BotConfig:
@@ -228,7 +228,9 @@ def cmd_run(args: argparse.Namespace) -> int:
             print("paper broker seeded from MT5 history; orders stay local")
 
     halt_dir = str(Path(cfg.risk.halt_file).parent) or "."
-    tg = TelegramClient.from_config(cfg.telegram)
+    tg = TelegramClient.from_config(
+        cfg.telegram, offset_path=offset_path_for(cfg.journal_path)
+    )
     if tg is None:
         print("telegram is the front door: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
         return 2

@@ -16,6 +16,7 @@ from mt5_risk_bot.telegram import (
     UrlLibTransport,
     _chunks,
     backoff_seconds,
+    offset_path_for,
     parse_command,
 )
 
@@ -305,3 +306,65 @@ def test_http_error_status_and_no_token_leak(monkeypatch) -> None:
         assert exc.retry_after == 3.0
         assert "SECRETTOKEN" not in str(exc)
         assert exc.__cause__ is None
+
+
+def test_offset_path_for_uses_journal_stem() -> None:
+    assert offset_path_for("journal.jsonl") == "journal.tg_offset"
+    assert offset_path_for("/tmp/desk.jsonl") == "/tmp/desk.tg_offset"
+
+
+def test_offset_not_persisted_until_ack(tmp_path) -> None:
+    path = str(tmp_path / "journal.tg_offset")
+    tr = FakeTransport()
+    tr.updates = [_help_update(10)]
+    tg = TelegramClient(token="t", chat_id="42", transport=tr, offset_path=path)
+    cmds = tg.poll_commands()
+    assert len(cmds) == 1
+    assert tg.offset == 11
+    assert not (tmp_path / "journal.tg_offset").exists()
+    tg.ack(10)
+    assert (tmp_path / "journal.tg_offset").read_text(encoding="utf-8").strip() == "11"
+    loaded = TelegramClient(token="t", chat_id="42", transport=FakeTransport(), offset_path=path)
+    assert loaded.offset == 11
+
+
+def test_poll_telegram_acks_after_handle(tmp_path) -> None:
+    path = str(tmp_path / "j.tg_offset")
+    cfg = BotConfig()
+    cfg.journal_path = str(tmp_path / "j.jsonl")
+    tr = FakeTransport()
+    tr.updates = [
+        {
+            "update_id": 5,
+            "message": {"text": "/help", "chat": {"id": "1"}, "from": {"id": 1}},
+        }
+    ]
+    tg = TelegramClient(token="t", chat_id="1", transport=tr, offset_path=path)
+    engine = Engine(cfg, PaperBroker(balance=10_000), halt_dir=str(tmp_path), telegram=tg)
+    engine.poll_telegram()
+    assert path == offset_path_for(cfg.journal_path)
+    assert (tmp_path / "j.tg_offset").read_text(encoding="utf-8").strip() == "6"
+    loaded = TelegramClient(token="t", chat_id="1", transport=FakeTransport(), offset_path=path)
+    assert loaded.offset == 6
+
+
+def test_foreign_chat_acks_without_dispatch(tmp_path) -> None:
+    path = str(tmp_path / "j.tg_offset")
+    tr = FakeTransport()
+    tr.updates = [
+        {
+            "update_id": 1,
+            "message": {"text": "/halt", "chat": {"id": 999}, "from": {"id": 1}},
+        }
+    ]
+    tg = TelegramClient(token="t", chat_id="42", transport=tr, offset_path=path)
+    assert tg.poll_commands() == []
+    assert tg.offset == 2
+    assert (tmp_path / "j.tg_offset").read_text(encoding="utf-8").strip() == "2"
+
+
+def test_bad_offset_file_starts_at_zero(tmp_path) -> None:
+    path = tmp_path / "j.tg_offset"
+    path.write_text("nope\n", encoding="utf-8")
+    tg = TelegramClient(token="t", chat_id="1", transport=FakeTransport(), offset_path=str(path))
+    assert tg.offset == 0

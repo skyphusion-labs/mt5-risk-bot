@@ -26,7 +26,8 @@ python -m mt5_risk_bot run --mode paper --loop --config config.toml
 copy `docs/launchd.plist.example` (paper `--loop`; see `docs/RUNBOOK.md`).
 
 `--loop` retries Telegram 429/5xx and re-`initialize`s a dropped MT5
-IPC. One bad tick is journaled; the process stays up. See `docs/RUNBOOK.md`.
+IPC. `getUpdates` offset is `journal.tg_offset` next to the journal.
+One bad tick is journaled; the process stays up. See `docs/RUNBOOK.md`.
 
 Live/demo needs a running terminal. Official `MetaTrader5` is Windows-only.
 On macOS: MetaTrader 5.app from metatrader5.com plus `pip install mt5-mac`.
@@ -40,8 +41,8 @@ python -m mt5_risk_bot run --mode mt5 --loop --config config.toml
 ```
 
 Real accounts (`trade_mode=2`) also need `--i-accept-risk`.
-`TELEGRAM_CHAT_ID` is the only accepted chat. `/confirm` is 120s in
-memory; a restart drops it (`nothing to confirm`). Halt is `touch HALT`
+`TELEGRAM_CHAT_ID` is the only accepted chat. `/confirm` is restored
+from the journal if the 120s TTL has not expired. Halt is `touch HALT`
 or `/halt` (process stays up).
 
 ## Chat

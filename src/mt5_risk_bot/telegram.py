@@ -11,6 +11,7 @@ import time
 import urllib.error
 import urllib.request
 from dataclasses import dataclass, field
+from pathlib import Path
 from typing import Any, Protocol
 
 from mt5_risk_bot.config import TelegramConfig
@@ -106,6 +107,35 @@ def _error_code(data: dict[str, Any]) -> int | None:
     except (TypeError, ValueError):
         return None
     return code or None
+
+
+def offset_path_for(journal_path: str | Path) -> str:
+    p = Path(journal_path)
+    return str(p.with_name(p.stem + ".tg_offset"))
+
+
+def _read_offset(path: str | None) -> int | None:
+    if not path:
+        return None
+    try:
+        raw = Path(path).read_text(encoding="utf-8").strip()
+    except OSError:
+        return None
+    if not raw:
+        return None
+    try:
+        value = int(raw)
+    except ValueError:
+        return None
+    return value if value >= 0 else None
+
+
+def _write_offset(path: str, offset: int) -> None:
+    dest = Path(path)
+    dest.parent.mkdir(parents=True, exist_ok=True)
+    tmp = dest.with_name(dest.name + ".tmp")
+    tmp.write_text(str(int(offset)), encoding="utf-8")
+    tmp.replace(dest)
 
 
 def _http_error(exc: urllib.error.HTTPError) -> TelegramError:
@@ -214,10 +244,24 @@ class TelegramClient:
     )
     transport: Transport = field(default_factory=UrlLibTransport)
     offset: int = 0
+    offset_path: str | None = None
     sleep_fn: Any = field(default=time.sleep)
 
+    def __post_init__(self) -> None:
+        self._acked = 0
+        loaded = _read_offset(self.offset_path)
+        if loaded is not None:
+            self.offset = loaded
+            self._acked = loaded
+
     @classmethod
-    def from_config(cls, cfg: TelegramConfig, transport: Transport | None = None) -> TelegramClient | None:
+    def from_config(
+        cls,
+        cfg: TelegramConfig,
+        transport: Transport | None = None,
+        *,
+        offset_path: str | None = None,
+    ) -> TelegramClient | None:
         if not cfg.enabled:
             return None
         kwargs: dict[str, Any] = {
@@ -227,6 +271,8 @@ class TelegramClient:
         }
         if transport is not None:
             kwargs["transport"] = transport
+        if offset_path is not None:
+            kwargs["offset_path"] = offset_path
         return cls(**kwargs)
 
     @property
@@ -235,6 +281,22 @@ class TelegramClient:
 
     def _url(self, method: str) -> str:
         return f"{API_ROOT}/bot{self.token}/{method}"
+
+    def _store_offset(self) -> None:
+        if not self.offset_path:
+            return
+        try:
+            _write_offset(self.offset_path, int(self._acked))
+        except OSError:
+            return
+
+    def ack(self, update_id: int) -> None:
+        nxt = int(update_id) + 1
+        if nxt > self.offset:
+            self.offset = nxt
+        if nxt > self._acked:
+            self._acked = nxt
+            self._store_offset()
 
     def _post(self, method: str, payload: dict[str, Any], *, timeout: float = 10.0) -> dict[str, Any]:
         last: TelegramError | None = None
@@ -294,11 +356,12 @@ class TelegramClient:
             if not isinstance(upd, dict):
                 continue
             uid = int(upd.get("update_id", 0) or 0)
-            self.offset = max(self.offset, uid + 1)
+            nxt = uid + 1
+            if nxt > self.offset:
+                self.offset = nxt
             cmd = parse_command(upd)
-            if cmd is None:
-                continue
-            if cmd.chat_id != str(self.chat_id):
+            if cmd is None or cmd.chat_id != str(self.chat_id):
+                self.ack(uid)
                 continue
             out.append(cmd)
         return out
