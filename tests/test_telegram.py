@@ -1,7 +1,8 @@
 from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import BotConfig, TelegramConfig
+from mt5_risk_bot.config import AdviceConfig, BotConfig, TelegramConfig
 from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.telegram import TelegramClient, TgCommand, parse_command
+from mt5_risk_bot.llm import Advisor
+from mt5_risk_bot.telegram import TelegramClient, TgCommand, _chunks, parse_command
 
 
 class FakeTransport:
@@ -146,3 +147,44 @@ def test_status_command(tmp_path) -> None:
     text = engine.handle_command(TgCommand("1", 1, "/status", 1))
     assert "equity=" in text
     engine.stop()
+
+
+def test_chunks_splits_and_preserves() -> None:
+    assert _chunks("abcdef", 2) == ["ab", "cd", "ef"]
+    assert _chunks("a", 10) == ["a"]
+    assert _chunks("", 4) == []
+
+
+def test_send_chunks_long_text() -> None:
+    tr = FakeTransport()
+    tg = TelegramClient(token="t", chat_id="42", transport=tr)
+    text = "x" * 5000
+    assert tg.send(text)
+    bodies = [p["text"] for _, p in tr.sent]
+    assert len(bodies) >= 2
+    assert "".join(bodies) == text
+    assert all(len(b) <= 3900 for b in bodies)
+
+
+def test_poll_survives_freetext_llm_error(tmp_path) -> None:
+    class Boom:
+        def post_json(self, *a, **k):
+            raise RuntimeError("grok down")
+
+    cfg = BotConfig()
+    cfg.journal_path = str(tmp_path / "j.jsonl")
+    tr = FakeTransport()
+    tr.updates = [
+        {
+            "update_id": 8,
+            "message": {"text": "should I buy euro?", "chat": {"id": "1"}, "from": {"id": 1}},
+        }
+    ]
+    tg = TelegramClient(token="t", chat_id="1", transport=tr)
+    advisor = Advisor(AdviceConfig(provider="grok", grok_key="x"), transport=Boom())
+    engine = Engine(
+        cfg, PaperBroker(balance=10_000), halt_dir=str(tmp_path), telegram=tg, advisor=advisor
+    )
+    engine.poll_telegram()
+    texts = [p.get("text", "") for _, p in tr.sent]
+    assert any("grok down" in t for t in texts)

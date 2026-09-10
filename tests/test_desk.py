@@ -2,8 +2,15 @@ from datetime import datetime, timezone
 
 from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.config import AdviceConfig, BotConfig
+from mt5_risk_bot.constants import (
+    TRADE_ACTION_DEAL,
+    TRADE_ACTION_SLTP,
+    TRADE_RETCODE_INVALID,
+    TRADE_RETCODE_INVALID_STOPS,
+)
 from mt5_risk_bot.engine import Engine
 from mt5_risk_bot.llm import Advisor, parse_advice
+from mt5_risk_bot.models import OrderResult
 from mt5_risk_bot.synthetic import generate_bars
 from mt5_risk_bot.telegram import TgCommand
 
@@ -255,3 +262,85 @@ def test_advisor_memory_includes_prior_turn(tmp_path) -> None:
     second_msgs = llm.sent[1][1]["messages"]
     blob = str(second_msgs)
     assert "first turn" in blob
+
+
+def _fail_send(broker, *, opens: bool = False, closes: bool = False, sltp: bool = False) -> None:
+    orig = broker.order_send
+
+    def wrapped(request: dict) -> OrderResult:
+        action = int(request.get("action", 0))
+        if opens and action == TRADE_ACTION_DEAL and not request.get("position"):
+            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="nope", request=request)
+        if closes and action == TRADE_ACTION_DEAL and request.get("position"):
+            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="nope", request=request)
+        if sltp and action == TRADE_ACTION_SLTP:
+            return OrderResult(
+                retcode=TRADE_RETCODE_INVALID_STOPS, comment="stops_level", request=request
+            )
+        return orig(request)
+
+    broker.order_send = wrapped  # type: ignore[method-assign]
+
+
+def test_confirm_repreview_halt_file_refuses(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    staged = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    assert "confirm buy EURUSD" in staged
+    engine.risk.write_halt_file("operator")
+    reply = engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    assert not reply.startswith("sent")
+    assert "refused" in reply
+    assert not engine.broker.positions()
+    engine.stop()
+
+
+def test_confirm_send_failure_not_hardcoded_success(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    _fail_send(engine.broker, opens=True)
+    reply = engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    assert not reply.startswith("sent")
+    assert "fail" in reply.lower() or "retcode" in reply.lower()
+    assert not engine.broker.positions()
+    engine.stop()
+
+
+def test_sl_tp_success_only_when_applied(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    sent = engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    assert sent.startswith("sent ")
+    pos = engine.broker.positions()[0]
+    spec = engine.broker.symbol(pos.symbol)
+    new_sl = spec.normalize_price(pos.price_open - abs(pos.price_open - pos.sl) * 0.5)
+    ok = engine.handle_command(TgCommand("1", 1, f"/sl {pos.ticket} {new_sl}", 3))
+    assert "sl #" in ok
+    assert abs(engine.broker.positions()[0].sl - new_sl) < spec.point
+    other_sl = spec.normalize_price(pos.price_open - abs(pos.price_open - pos.sl) * 0.35)
+    other_tp = spec.normalize_price(pos.price_open + abs(pos.tp - pos.price_open) * 0.7)
+    _fail_send(engine.broker, sltp=True)
+    bad_sl = engine.handle_command(TgCommand("1", 1, f"/sl {pos.ticket} {other_sl}", 4))
+    assert "sl #" not in bad_sl
+    assert "fail" in bad_sl.lower()
+    bad_tp = engine.handle_command(TgCommand("1", 1, f"/tp {pos.ticket} {other_tp}", 5))
+    assert "tp #" not in bad_tp
+    assert "fail" in bad_tp.lower()
+    engine.stop()
+
+
+def test_close_success_only_when_applied(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    pos = engine.broker.positions()[0]
+    _fail_send(engine.broker, closes=True)
+    reply = engine.handle_command(TgCommand("1", 1, f"/close {pos.ticket}", 3))
+    assert reply != "closed"
+    assert "fail" in reply.lower() or "retcode" in reply.lower()
+    assert engine.broker.positions()
+    engine.stop()
+
