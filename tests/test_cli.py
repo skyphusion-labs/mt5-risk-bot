@@ -1,8 +1,11 @@
+import os
+import subprocess
+import sys
 from pathlib import Path
 
 from mt5_risk_bot.__main__ import main, paper_round_trip, run_loop, telegram_ping
 from mt5_risk_bot.config import BotConfig, TelegramConfig
-from mt5_risk_bot.journal import Journal
+from mt5_risk_bot.journal import InstanceLock, InstanceLockError, Journal, lock_path_for
 from mt5_risk_bot.telegram import TelegramClient, offset_path_for
 
 
@@ -414,3 +417,61 @@ def test_run_loop_stderr_redacts_botfather_token(capsys) -> None:
     assert "loop error" in err
     assert secret not in err
     assert "[REDACTED]" in err
+
+
+def test_run_loop_second_process_refuses_shared_journal(tmp_path: Path) -> None:
+    journal = tmp_path / "journal.jsonl"
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(f'[engine]\njournal_path = "{journal.as_posix()}"\n', encoding="utf-8")
+    src = str(Path(__file__).resolve().parents[1] / "src")
+    env = os.environ.copy()
+    env["PYTHONPATH"] = src + os.pathsep + env.get("PYTHONPATH", "")
+    env["TELEGRAM_BOT_TOKEN"] = "1234567890:" + "A" * 35
+    env["TELEGRAM_CHAT_ID"] = "42"
+    held = InstanceLock(journal)
+    held.acquire()
+    try:
+        proc = subprocess.run(
+            [
+                sys.executable,
+                "-m",
+                "mt5_risk_bot",
+                "--config",
+                str(cfg),
+                "run",
+                "--mode",
+                "paper",
+                "--loop",
+            ],
+            capture_output=True,
+            text=True,
+            env=env,
+            cwd=str(tmp_path),
+            timeout=15,
+        )
+    finally:
+        held.release()
+    assert proc.returncode == 2
+    assert "already running" in proc.stderr
+    assert "journal.lock" in proc.stderr
+
+
+def test_run_loop_lock_error_exits_nonzero(tmp_path: Path, monkeypatch, capsys) -> None:
+    journal = tmp_path / "journal.jsonl"
+    cfg = tmp_path / "c.toml"
+    cfg.write_text(f'[engine]\njournal_path = "{journal.as_posix()}"\n', encoding="utf-8")
+    monkeypatch.setenv("TELEGRAM_BOT_TOKEN", "1234567890:" + "A" * 35)
+    monkeypatch.setenv("TELEGRAM_CHAT_ID", "42")
+
+    def boom(self) -> None:
+        raise InstanceLockError(
+            f"already running: another process holds {lock_path_for(journal)} "
+            "(two run --loop cannot share journal/offset)"
+        )
+
+    monkeypatch.setattr(InstanceLock, "acquire", boom)
+    rc = main(["--config", str(cfg), "run", "--mode", "paper", "--loop"])
+    assert rc == 2
+    err = capsys.readouterr().err
+    assert "already running" in err
+    assert "journal.lock" in err

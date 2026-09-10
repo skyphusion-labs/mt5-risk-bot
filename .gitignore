@@ -10,6 +10,7 @@ build/
 htmlcov/
 config.toml
 journal.jsonl
+journal.lock
 HALT
 .env
 *.log

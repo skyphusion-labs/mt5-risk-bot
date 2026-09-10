@@ -27,7 +27,10 @@ copy `docs/launchd.plist.example` (paper `--loop`; see `docs/RUNBOOK.md`).
 
 `--loop` retries Telegram 429/5xx and re-`initialize`s a dropped MT5
 IPC. `getUpdates` offset is `journal.tg_offset` next to the journal.
-One bad tick is journaled; the process stays up. See `docs/RUNBOOK.md`.
+One bad tick is journaled; the process stays up. Two `run --loop` cannot
+share a journal; the second exits 2 (`journal.lock`). Each successful
+tick writes `journal.heartbeat`. The live journal rotates to
+`journal.jsonl.1` at 10 MiB. See `docs/RUNBOOK.md`.
 
 Live/demo needs a running terminal. Official `MetaTrader5` is Windows-only.
 On macOS: MetaTrader 5.app from metatrader5.com plus `pip install mt5-mac`.
@@ -46,8 +49,9 @@ Real accounts (`trade_mode=2`) also need `--i-accept-risk`.
 chat echoes redact BotFather tokens (`[REDACTED]`). `/confirm` is restored
 from the journal if the 120s TTL has not expired. Halt is `touch HALT`
 or `/halt` (process stays up).
-Journal, offset, and HALT files are owner-only (0600); the process sets
-umask 077. Secrets stay in the environment (see `SECURITY.md`).
+Journal, offset, lock, heartbeat, and HALT files are owner-only (0600);
+the process sets umask 077. Secrets stay in the environment (see
+`SECURITY.md`).
 
 ## Chat
 
@@ -84,8 +88,10 @@ halt, advice is hold/close only. `/help` for the rest.
 ## Docs
 
 `docs/CONTRACT.md` is the behaviour tests enforce.
-`docs/RUNBOOK.md` is paper, live, HALT, confirm-on-restart, and launchd.
-`docs/launchd.plist.example` is a user LaunchAgent (paper `--loop`).
+`docs/RUNBOOK.md` is paper, live, HALT, confirm-on-restart, lock,
+heartbeat, journal rotate, and launchd.
+`docs/launchd.plist.example` is a user LaunchAgent (paper `--loop`,
+`KeepAlive`; tokens stay `REPLACE_ME` in the example).
 
 ## License
 

@@ -69,7 +69,15 @@ A restart does not replay or drop commands. A dropped terminal calls
 `initialize` again. One bad tick is journaled (`reconnect` or
 `loop_error`); the process stays up. `/halt` and a `HALT` file flatten
 and stay halted; the process does not exit, so `/resume` works without a
-restart.
+restart. Two `run --loop` on the same journal cannot run together:
+the second exits 2 with `already running` on stderr (`journal.lock`).
+Stop the first process, or set a different `engine.journal_path`.
+Do not load the LaunchAgent and also run `--loop` in a terminal.
+Each successful tick (account reached) writes `journal.heartbeat`
+next to the journal (ISO timestamp, chmod 0600). A reconnect that
+fails does not update it. Before a write that would exceed 10 MiB,
+the live journal is renamed to `journal.jsonl.1` (replacing any
+previous `.1`).
 
 ## Demo
 
@@ -151,7 +159,8 @@ launch the terminal.
    Add `XAI_API_KEY` or `ANTHROPIC_API_KEY` if you want advice.
    For an MT5 loop, change `--mode paper` to `--mode mt5` and, for a
    real account only, append `--i-accept-risk`. chmod 600 the installed
-   plist. Never commit it.
+   plist. Never commit it. The committed example keeps `REPLACE_ME`
+   and `KeepAlive`.
 4. `mkdir -p logs` under `WorkingDirectory` (or point the log keys
    somewhere writable). `*.log` is gitignored.
 5. Load:
@@ -167,9 +176,11 @@ Stop:
 launchctl bootout gui/$(id -u)/org.skyphusion.mt5-risk-bot
 ```
 
-`KeepAlive` restarts a crash. The confirm is restored from the journal
-if the TTL has not expired. Halt does not crash the process; do not
-bootout to halt.
+`KeepAlive` restarts a crash. The flock is released when the process
+dies, so the new process can acquire `journal.lock`. A leftover
+`journal.lock` file is not a held lock. The confirm is restored from
+the live journal if the TTL has not expired. Halt does not crash the
+process; do not bootout to halt.
 
 ## Telegram desk
 
@@ -256,5 +267,11 @@ JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`,
 if it never trades; `outside_session` and `no_regime` are the usual
 reasons. `reconnect` is an MT5 IPC drop then `initialize`. `loop_error`
 is a tick that raised; the process kept running. `journal.tg_offset` is
-the Telegram `getUpdates` cursor (not JSONL). `journal.jsonl` and
-`journal.tg_offset` are owner-only (chmod 0600).
+the Telegram `getUpdates` cursor (not JSONL). `journal.lock` is an
+exclusive flock so two loops cannot share the journal or offset.
+`journal.heartbeat` is an ISO timestamp rewritten each successful
+`step_all`. Before a write that would exceed 10 MiB, the live file
+is renamed to `journal.jsonl.1` (one generation; the previous `.1`
+is replaced). `tail` and confirm restore read only the live file.
+`journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`,
+`journal.lock`, and `journal.heartbeat` are owner-only (chmod 0600).

@@ -55,6 +55,7 @@ comment = "mt5-risk-bot"
 # journal.jsonl and journal.tg_offset are chmod 0600; process umask 077
 # journal.heartbeat is written each successful step_all, chmod 0600
 # journal.jsonl rotates to journal.jsonl.1 at 10 MiB
+# journal.lock is an exclusive flock; a second run --loop on this path exits 2
 journal_path = "journal.jsonl"
 
 # Telegram is required for `run`. Secrets from the environment only:

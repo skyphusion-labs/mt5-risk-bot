@@ -18,7 +18,7 @@ from tempfile import TemporaryDirectory
 from mt5_risk_bot import __version__
 from mt5_risk_bot.config import BotConfig, load_config
 from mt5_risk_bot.engine import Engine, run_backtest
-from mt5_risk_bot.journal import redact_text
+from mt5_risk_bot.journal import InstanceLock, InstanceLockError, redact_text
 from mt5_risk_bot.models import Bar
 from mt5_risk_bot.synthetic import generate_bars, generate_ranging
 from mt5_risk_bot.telegram import TelegramClient, TgCommand, offset_path_for
@@ -204,6 +204,19 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     if args.mode:
         cfg.mode = args.mode
+    try:
+        lock = InstanceLock(cfg.journal_path)
+        lock.acquire()
+    except InstanceLockError:
+        print("already running", file=sys.stderr)
+        return 2
+    try:
+        return _cmd_run_locked(args, cfg)
+    finally:
+        lock.release()
+
+
+def _cmd_run_locked(args: argparse.Namespace, cfg: BotConfig) -> int:
     if cfg.mode == "mt5":
         from mt5_risk_bot.broker.mt5_live import Mt5Broker
 
@@ -254,15 +267,23 @@ def cmd_run(args: argparse.Namespace) -> int:
     if tg is None:
         print("telegram is the front door: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
         return 2
-    engine = Engine(cfg, broker, halt_dir=halt_dir, telegram=tg)
-    engine.start()
-    keep_on_halt = True
     try:
-        run_loop(engine, loop=bool(args.loop), keep_on_halt=keep_on_halt)
+        lock = InstanceLock(cfg.journal_path)
+        lock.acquire()
+    except InstanceLockError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
+    engine = Engine(cfg, broker, halt_dir=halt_dir, telegram=tg)
+    try:
+        engine.start()
+        run_loop(engine, loop=bool(args.loop), keep_on_halt=True)
     except KeyboardInterrupt:
         print("interrupt")
     finally:
-        engine.stop()
+        try:
+            engine.stop()
+        finally:
+            lock.release()
     return 0
 
 

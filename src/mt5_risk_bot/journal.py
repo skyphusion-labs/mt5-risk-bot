@@ -8,13 +8,14 @@ Rotated history is <name>.1.
 
 from __future__ import annotations
 
+import fcntl
 import json
 import os
 import re
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, TextIO
 
 _SECRET_KEYS = frozenset({"token", "password", "api_key", "grok_key", "claude_key"})
 _REDACTED = "[REDACTED]"
@@ -90,6 +91,54 @@ class Journal:
                 if isinstance(rec, dict) and rec.get("event") in wanted:
                     found = rec
         return found
+
+
+class InstanceLockError(RuntimeError):
+    """Another process already holds this journal's run lock."""
+
+
+def lock_path_for(journal_path: str | Path) -> Path:
+    p = Path(journal_path)
+    return p.with_name(p.stem + ".lock")
+
+
+class InstanceLock:
+    """Exclusive flock next to the journal. Released on close or crash."""
+
+    def __init__(self, journal_path: str | Path) -> None:
+        self.path = lock_path_for(journal_path)
+        self._fh: TextIO | None = None
+
+    def acquire(self) -> None:
+        self.path.parent.mkdir(parents=True, exist_ok=True)
+        fh = self.path.open("a+", encoding="utf-8")
+        os.chmod(self.path, 0o600)
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
+        except BlockingIOError as exc:
+            fh.close()
+            raise InstanceLockError(
+                f"already running: another process holds {self.path} "
+                "(two run --loop cannot share journal/offset)"
+            ) from exc
+        self._fh = fh
+
+    def release(self) -> None:
+        fh = self._fh
+        self._fh = None
+        if fh is None:
+            return
+        try:
+            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+        finally:
+            fh.close()
+
+    def __enter__(self) -> InstanceLock:
+        self.acquire()
+        return self
+
+    def __exit__(self, *exc: object) -> None:
+        self.release()
 
 
 def redact_text(s: str) -> str:

@@ -33,7 +33,8 @@ off until `/auto on`.
   `ANTHROPIC_API_KEY`, `AI_PROVIDER`. Journal writes, `loop_error`
   stderr, and Telegram `send` redact BotFather tokens. Named secret
   keys in the journal become `[REDACTED]`. `journal.jsonl`,
-  `journal.tg_offset`, and `HALT` are chmod 0600. Process umask 077.
+  `journal.jsonl.1`, `journal.tg_offset`, `journal.lock`,
+  `journal.heartbeat`, and `HALT` are chmod 0600. Process umask 077.
 
 ## Forbidden claims
 
@@ -96,7 +97,16 @@ Manual `/buy` `/sell` skip the session window. Auto does not.
 journal (`journal.tg_offset`) after each update is handled or skipped,
 so a restart does not replay or drop commands. A dropped MT5 IPC calls
 `initialize` again. One failed poll, send, or broker tick is journaled
-(`reconnect` or `loop_error`); the process stays up.
+(`reconnect` or `loop_error`); the process stays up. Two `run --loop`
+processes cannot share a journal: `run` takes an exclusive flock on
+`journal.lock` (same stem as `journal_path`). A second process prints
+`already running` to stderr and exits non-zero. The lock is released on
+exit or crash. Each `step_all` that reaches `account` writes
+`journal.heartbeat` (ISO timestamp, chmod 0600, atomic replace). A
+failed reconnect does not. Before a journal write that would exceed
+10 MiB, the live file is renamed to `<name>.1` (replacing any previous
+`.1`); the new live file is chmod 0600. `tail` and `last_event` (confirm
+restore) read only the live file.
 
 A staged `/confirm` is journaled (`confirm_stage`). `start` restores it
 if the last of `confirm_stage` / `confirm_cancel` / `confirm_sent` is
