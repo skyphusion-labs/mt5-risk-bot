@@ -7,6 +7,7 @@ Transport is injectable so tests never hit api.telegram.org.
 from __future__ import annotations
 
 import json
+import os
 import time
 import urllib.error
 import urllib.request
@@ -136,6 +137,7 @@ def _write_offset(path: str, offset: int) -> None:
     dest.parent.mkdir(parents=True, exist_ok=True)
     tmp = dest.with_name(dest.name + ".tmp")
     tmp.write_text(str(int(offset)), encoding="utf-8")
+    os.chmod(tmp, 0o600)
     tmp.replace(dest)
 
 
