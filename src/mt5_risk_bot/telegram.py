@@ -121,6 +121,7 @@ HELP = (
     "/close TICKET|SYMBOL|all [VOL]\n"
     "/sl TICKET PRICE   /tp TICKET PRICE [VOL]   /be TICKET\n"
     "/trail on|off|TICKET\n"
+    "/replace TICKET PRICE\n"
     "/confirm  /cancel [TICKET]  /orders  /history  /recap  /risk\n"
     "/symbols list|add|remove [SYMBOL]\n"
     "/positions  /status  /ask ...\n"

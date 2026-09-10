@@ -103,6 +103,7 @@ Stage a working order, then confirm:
 /sl TICKET PRICE
 /tp TICKET PRICE
 /tp TICKET PRICE VOL
+/replace TICKET PRICE
 /symbols
 /symbols add NZDUSD
 /symbols remove NZDUSD

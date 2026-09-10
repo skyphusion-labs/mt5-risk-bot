@@ -44,6 +44,7 @@ drops one. Bare `/cancel` drops a staged confirm.
 `/quote` with no symbol lists the book. `/symbols list|add|remove`
 edits that book at runtime. `/risk` shows daily-loss and
 drawdown room. `/sl` `/tp` TICKET work on positions and working orders.
+`/replace TICKET PRICE` moves a working order's entry.
 `/tp TICKET PRICE VOL` scales out VOL at PRICE; the rest stays.
 `/trail TICKET` moves SL using the ATR trail and never loosens.
 `/trail on` does that every tick for open positions and does not enable

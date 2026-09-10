@@ -213,6 +213,66 @@ def test_sell_stop_and_buy_limit_price_rules(tmp_path) -> None:
     engine.stop()
 
 
+def test_replace_pending_price(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    tick = engine.broker.tick("EURUSD")
+    spec = engine.broker.symbol("EURUSD")
+    limit = spec.normalize_price(tick.ask - 0.002)
+    sl = spec.normalize_price(limit - 0.005)
+    tp = spec.normalize_price(limit + 0.010)
+    engine.handle_command(
+        TgCommand("1", 1, f"/buy EURUSD limit={limit} sl={sl} tp={tp}", 1)
+    )
+    sent = engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    assert sent.startswith("sent")
+    order = engine.broker.orders()[0]
+    new_px = spec.normalize_price(limit - 0.001)
+    reply = engine.handle_command(TgCommand("1", 1, f"/replace {order.ticket} {new_px}", 3))
+    assert f"replace #{order.ticket}" in reply
+    assert abs(engine.broker.orders()[0].price - new_px) < spec.point
+    assert not engine.broker.positions()
+    too_high = spec.normalize_price(tick.ask + 0.001)
+    bad = engine.handle_command(TgCommand("1", 1, f"/replace {order.ticket} {too_high}", 4))
+    assert "below ask" in bad
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 5))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 6))
+    pos = engine.broker.positions()[0]
+    assert "working orders" in engine.handle_command(
+        TgCommand("1", 1, f"/replace {pos.ticket} {new_px}", 7)
+    )
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/replace", 8))
+    engine.stop()
+
+
+def test_replace_pending_risk_and_halt(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    tick = engine.broker.tick("EURUSD")
+    spec = engine.broker.symbol("EURUSD")
+    limit = spec.normalize_price(tick.ask - 0.002)
+    sl = spec.normalize_price(limit - 0.005)
+    tp = spec.normalize_price(limit + 0.010)
+    engine.handle_command(
+        TgCommand("1", 1, f"/buy EURUSD limit={limit} sl={sl} tp={tp}", 1)
+    )
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    order = engine.broker.orders()[0]
+    wider = spec.normalize_price(limit + 0.001)
+    assert wider < tick.ask
+    risked = engine.handle_command(
+        TgCommand("1", 1, f"/replace {order.ticket} {wider}", 3)
+    )
+    assert "size_exceeds_risk" in risked
+    engine.risk.write_halt_file("operator")
+    new_px = spec.normalize_price(limit - 0.001)
+    halted = engine.handle_command(
+        TgCommand("1", 1, f"/replace {order.ticket} {new_px}", 4)
+    )
+    assert "refused" in halted
+    engine.stop()
+
+
 def test_orders_empty_message(tmp_path) -> None:
     engine = _engine(tmp_path)
     engine.start()

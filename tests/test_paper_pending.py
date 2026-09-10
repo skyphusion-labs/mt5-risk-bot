@@ -172,4 +172,16 @@ def test_modify_pending_sl_tp() -> None:
     missing = broker.order_send({"action": TRADE_ACTION_MODIFY, "order": 999, "price": limit})
     assert missing.retcode == TRADE_RETCODE_INVALID_ORDER
     assert not missing.ok
+    new_px = spec.normalize_price(limit - 0.001)
+    moved = broker.order_send(
+        {
+            "action": TRADE_ACTION_MODIFY,
+            "order": res.order,
+            "price": new_px,
+            "sl": new_sl,
+            "tp": new_tp,
+        }
+    )
+    assert moved.ok
+    assert abs(broker.orders()[0].price - new_px) < spec.point
 

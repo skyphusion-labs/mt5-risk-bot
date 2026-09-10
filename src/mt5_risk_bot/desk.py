@@ -68,6 +68,7 @@ class Desk:
                 "confirm": self._confirm,
                 "cancel": lambda: self._cancel(cmd.args),
                 "orders": lambda: self.engine.orders_text(),
+                "replace": lambda: self._replace(cmd.args),
                 "history": self._history,
                 "recap": self.engine.recap_text,
                 "symbols": lambda: self._symbols(cmd.args),
@@ -250,6 +251,12 @@ class Desk:
                 return "usage: /symbols remove SYMBOL"
             return self.engine.remove_symbol(name)
         return "usage: /symbols list|add|remove [SYMBOL]"
+
+    def _replace(self, args: str) -> str:
+        parts = args.split()
+        if len(parts) != 2:
+            return "usage: /replace TICKET PRICE"
+        return self.engine.replace_pending(int(parts[0]), float(parts[1]))
 
     def _stop(self, args: str, which: str) -> str:
         parts = args.split()

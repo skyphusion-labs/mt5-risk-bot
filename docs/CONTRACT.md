@@ -57,6 +57,7 @@ off until `/auto on`.
 | `/confirm` | market: reprice to the live tick, preview, send. limit/stop: preview at the staged price, send |
 | `/cancel` | drop the staged confirm |
 | `/cancel TICKET` | cancel a working order |
+| `/replace TICKET PRICE` | move a working order's entry; `TRADE_ACTION_MODIFY`. Circuit and risk_pct still refuse |
 | `/orders` | list working orders |
 | `/close TICKET\|SYMBOL\|all [VOL]` | flatten or partial close |
 | `/sl` TICKET PRICE | modify a position or a working order; success only if the broker applied it |
@@ -75,7 +76,7 @@ off until `/auto on`.
 
 Advice JSON fields: `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `summary`. `limit` and `stop` are XOR. A close action with `ticket` stages that close; `/confirm` is still the only send. Context always includes `/risk`, positions, working orders, and quotes. If the circuit would halt, context says hold/close only and buy/sell is not staged.
 
-Buy limit must be below ask; sell limit above bid; buy stop above ask; sell stop below bid. `limit=` and `stop=` together are refused.
+Buy limit must be below ask; sell limit above bid; buy stop above ask; sell stop below bid. `limit=` and `stop=` together are refused. `/replace TICKET PRICE` keeps that geometry and existing SL/TP; it does not send a new order.
 
 Each loop tick resolves pending fills and SL/TP even when `/auto` is off. Pending fills notify as `FILL/OPEN`; SL/TP hits notify as `CLOSE` with `reason=sl` or `reason=tp`. `/trail on` runs `manage()` on open positions every `step_all` tick and does not enable EMA entries. `/auto on` still owns entries. Trail default is off.
 

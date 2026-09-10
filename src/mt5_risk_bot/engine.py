@@ -29,7 +29,7 @@ from mt5_risk_bot.journal import Journal
 from mt5_risk_bot.llm import Advisor
 from mt5_risk_bot.models import Bar, OrderResult, PendingOrder, Position, Signal, SignalKind
 from mt5_risk_bot.risk import RiskDecision, RiskManager, day_key
-from mt5_risk_bot.sizing import normalize_volume
+from mt5_risk_bot.sizing import money_per_lot_at_stop, normalize_volume
 from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.telegram import TelegramClient, TgCommand
 
@@ -678,13 +678,54 @@ class Engine:
                 return order
         return None
 
-    def _modify_pending(self, order: PendingOrder, sl: float, tp: float) -> OrderResult:
+    def replace_pending(self, ticket: int, price: float) -> str:
+        if self._pos(ticket) is not None:
+            return "replace is for working orders"
+        order = self._order(ticket)
+        if order is None:
+            return "no such ticket"
+        reason = self.risk.circuit_reason(self.broker.account(), self.now_fn())
+        if reason:
+            return f"refused: {reason}"
+        spec = self.broker.symbol(order.symbol)
+        tick = self.broker.tick(order.symbol)
+        px = spec.normalize_price(price)
+        kind = order.type_code
+        if kind == ORDER_TYPE_BUY_LIMIT and not (px < tick.ask):
+            return "buy limit must be below ask"
+        if kind == ORDER_TYPE_SELL_LIMIT and not (px > tick.bid):
+            return "sell limit must be above bid"
+        if kind == ORDER_TYPE_BUY_STOP and not (px > tick.ask):
+            return "buy stop must be above ask"
+        if kind == ORDER_TYPE_SELL_STOP and not (px < tick.bid):
+            return "sell stop must be below bid"
+        sl, tp = order.sl, order.tp
+        if order.side.value == "buy" and not (sl < px and (tp <= 0 or px < tp)):
+            return "buy needs sl < entry < tp"
+        if order.side.value == "sell" and not (sl > px and (tp <= 0 or tp < px)):
+            return "sell needs tp < entry < sl"
+        worst = money_per_lot_at_stop(px, sl, spec) * order.volume
+        cap = self.broker.account().equity * self.cfg.risk.risk_pct * self.cfg.risk.max_risk_multiple
+        if worst > cap + 1e-6:
+            return "refused: size_exceeds_risk"
+        result = self._modify_pending(order, sl=sl, tp=tp, price=px)
+        if not result.ok:
+            return f"replace failed retcode={result.retcode} {result.comment}"
+        return f"replace #{ticket} -> {px}"
+
+    def _modify_pending(
+        self,
+        order: PendingOrder,
+        sl: float,
+        tp: float,
+        price: float | None = None,
+    ) -> OrderResult:
         spec = self.broker.symbol(order.symbol)
         sl_n = spec.normalize_price(sl) if sl else 0.0
         tp_n = spec.normalize_price(tp) if tp else 0.0
         if sl_n <= 0:
             return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="sl required")
-        entry = order.price
+        entry = spec.normalize_price(price) if price is not None else order.price
         if order.side.value == "buy" and not (sl_n < entry and (tp_n <= 0 or entry < tp_n)):
             return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="buy needs sl < entry < tp")
         if order.side.value == "sell" and not (sl_n > entry and (tp_n <= 0 or tp_n < entry)):
@@ -695,7 +736,7 @@ class Engine:
             "symbol": order.symbol,
             "volume": order.volume,
             "type": order.type_code,
-            "price": order.price,
+            "price": entry,
             "sl": sl_n,
             "tp": tp_n,
             "type_time": ORDER_TIME_GTC,
@@ -706,6 +747,7 @@ class Engine:
             "modify",
             ticket=order.ticket,
             symbol=order.symbol,
+            price=entry,
             sl=sl_n,
             tp=tp_n,
             pending=True,
