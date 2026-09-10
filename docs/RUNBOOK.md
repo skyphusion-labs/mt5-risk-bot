@@ -159,8 +159,9 @@ launch the terminal.
    Add `XAI_API_KEY` or `ANTHROPIC_API_KEY` if you want advice.
    For an MT5 loop, change `--mode paper` to `--mode mt5` and, for a
    real account only, append `--i-accept-risk`. chmod 600 the installed
-   plist. Never commit it. The committed example keeps `REPLACE_ME`
-   and `KeepAlive`.
+   plist. Never commit it. The committed example keeps `REPLACE_ME`,
+   `KeepAlive`, and `Umask` 63 (077). Watchdog: `journal.heartbeat`
+   next to `journal_path` under `WorkingDirectory`.
 4. `mkdir -p logs` under `WorkingDirectory` (or point the log keys
    somewhere writable). `*.log` is gitignored.
 5. Load:
@@ -176,11 +177,13 @@ Stop:
 launchctl bootout gui/$(id -u)/org.skyphusion.mt5-risk-bot
 ```
 
-`KeepAlive` restarts a crash. The flock is released when the process
-dies, so the new process can acquire `journal.lock`. A leftover
-`journal.lock` file is not a held lock. The confirm is restored from
-the live journal if the TTL has not expired. Halt does not crash the
-process; do not bootout to halt.
+`KeepAlive` restarts a crash. `Umask` 63 is 077, matching `main()`.
+Watchdog liveness is `journal.heartbeat` next to the journal (ISO ts,
+chmod 0600). Stale mtime means the loop is not ticking. The flock is
+released when the process dies, so the new process can acquire
+`journal.lock`. A leftover `journal.lock` file is not a held lock. The
+confirm is restored from the live journal if the TTL has not expired.
+Halt does not crash the process; do not bootout to halt.
 
 ## Telegram desk
 

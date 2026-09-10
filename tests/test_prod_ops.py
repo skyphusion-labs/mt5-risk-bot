@@ -117,3 +117,15 @@ def test_overlapping_instance_lock_fails_second(tmp_path: Path) -> None:
     after.acquire()
     after.release()
 
+
+def test_launchd_example_keepalive_umask_heartbeat() -> None:
+    path = Path(__file__).resolve().parents[1] / "docs" / "launchd.plist.example"
+    text = path.read_text(encoding="utf-8")
+    assert "<key>KeepAlive</key>" in text
+    assert "<key>Umask</key>" in text
+    assert "<integer>63</integer>" in text
+    assert "journal.heartbeat" in text
+    assert "REPLACE_ME" in text
+    assert "TELEGRAM_BOT_TOKEN" in text
+    assert "TELEGRAM_CHAT_ID" in text
+

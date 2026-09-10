@@ -91,7 +91,8 @@ halt, advice is hold/close only. `/help` for the rest.
 `docs/RUNBOOK.md` is paper, live, HALT, confirm-on-restart, lock,
 heartbeat, journal rotate, and launchd.
 `docs/launchd.plist.example` is a user LaunchAgent (paper `--loop`,
-`KeepAlive`; tokens stay `REPLACE_ME` in the example).
+`KeepAlive`, `Umask` 63; watchdog `journal.heartbeat` under
+`WorkingDirectory`). Tokens stay `REPLACE_ME` in the example.
 
 ## License
 
