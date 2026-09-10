@@ -11,10 +11,14 @@ from typing import Any
 
 from mt5_risk_bot.constants import (
     FILLING_RETRY_ORDER,
+    ORDER_TYPE_BUY,
+    ORDER_TYPE_BUY_LIMIT,
+    ORDER_TYPE_BUY_STOP,
+    ORDER_TYPE_BUY_STOP_LIMIT,
     RETCODE_OK,
     TRADE_RETCODE_INVALID_FILL,
 )
-from mt5_risk_bot.models import Account, Bar, OrderResult, Position, Side, SymbolSpec, Tick
+from mt5_risk_bot.models import Account, Bar, OrderResult, PendingOrder, Position, Side, SymbolSpec, Tick
 
 
 def load_mt5_module() -> Any:
@@ -222,6 +226,45 @@ class Mt5Broker:
                     comment=str(d.get("comment", "") or ""),
                     time=int(d.get("time", 0) or 0),
                     identifier=int(d.get("identifier", 0) or d.get("ticket", 0)),
+                )
+            )
+        return out
+
+    def orders(self, magic: int | None = None) -> list[PendingOrder]:
+        mt5 = self._mt5
+        if mt5 is None or not hasattr(mt5, "orders_get"):
+            return []
+        raw = mt5.orders_get()
+        if not raw:
+            return []
+        buy_types = {
+            ORDER_TYPE_BUY,
+            ORDER_TYPE_BUY_LIMIT,
+            ORDER_TYPE_BUY_STOP,
+            ORDER_TYPE_BUY_STOP_LIMIT,
+        }
+        out: list[PendingOrder] = []
+        for row in raw:
+            d = _asdict(row)
+            mag = int(d.get("magic", 0) or 0)
+            if magic is not None and mag != magic:
+                continue
+            ptype = int(d.get("type", 0))
+            volume = float(d.get("volume_current", d.get("volume_initial", d.get("volume", 0))) or 0)
+            price = float(d.get("price_open", d.get("price_current", d.get("price", 0))) or 0)
+            out.append(
+                PendingOrder(
+                    ticket=int(d.get("ticket", 0)),
+                    symbol=str(d.get("symbol", "")),
+                    side=Side.BUY if ptype in buy_types else Side.SELL,
+                    volume=volume,
+                    price=price,
+                    sl=float(d.get("sl", 0) or 0),
+                    tp=float(d.get("tp", 0) or 0),
+                    magic=mag,
+                    comment=str(d.get("comment", "") or ""),
+                    type_code=ptype,
+                    time=int(d.get("time_setup") or d.get("time") or 0),
                 )
             )
         return out
