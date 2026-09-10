@@ -648,9 +648,13 @@ class Engine:
     def advice_context(self) -> str:
         lines = [
             self.status_text(),
+            self.risk_text(),
             self.positions_text(),
+            self.orders_text(),
             f"symbols={','.join(self.cfg.symbols)} risk_pct={self.cfg.risk.risk_pct}",
             f"auto={self.cfg.strategy.auto} provider={self.cfg.advice.provider}",
+            "Advice may stage a trade. It never sends. /confirm is the only send.",
+            "If daily_loss or drawdown room is gone, action must be hold or close.",
         ]
         for name in self.cfg.symbols:
             try:

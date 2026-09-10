@@ -12,11 +12,16 @@ from mt5_risk_bot.telegram import Transport, UrlLibTransport
 
 SYSTEM = (
     "You are a trading desk analyst for one MetaTrader 5 account. "
-    "You see equity, positions, and quotes. You give a view, not a guarantee. "
-    "Never claim consistent profits. The risk engine sizes and can refuse. "
-    "End every reply with a single JSON object on its own, no markdown fence:\n"
+    "You see equity, daily-loss room, drawdown room, positions, working "
+    "orders, and quotes. You give a view, not a guarantee. Never claim "
+    "consistent profits. The risk engine sizes and can refuse; you do not "
+    "send orders. Prefer hold or close when daily_loss or drawdown room is "
+    "thin. Always set sl and tp on buy/sell. For a working order set limit "
+    "or stop, not both. For close set ticket. End every reply with a single "
+    "JSON object on its own, no markdown fence:\n"
     '{"action":"buy"|"sell"|"close"|"hold","symbol":"EURUSD"|null,'
-    '"sl":number|null,"tp":number|null,"summary":"one line"}'
+    '"sl":number|null,"tp":number|null,"limit":number|null,"stop":number|null,'
+    '"ticket":number|null,"summary":"one line"}'
 )
 
 _JSON_TAIL = re.compile(r"\{[^{}]*\}\s*$", re.DOTALL)
@@ -29,6 +34,9 @@ class Advice:
     symbol: str | None = None
     sl: float | None = None
     tp: float | None = None
+    limit: float | None = None
+    stop: float | None = None
+    ticket: int | None = None
     summary: str = ""
 
 
@@ -36,6 +44,7 @@ def parse_advice(raw: str) -> Advice:
     text = (raw or "").strip()
     match = _JSON_TAIL.search(text)
     action, symbol, sl, tp, summary = "hold", None, None, None, ""
+    limit, stop, ticket = None, None, None
     body = text
     if match:
         body = text[: match.start()].strip()
@@ -51,8 +60,21 @@ def parse_advice(raw: str) -> Advice:
             symbol = str(sym).upper() if sym else None
             sl = _num(obj.get("sl"))
             tp = _num(obj.get("tp"))
+            limit = _num(obj.get("limit"))
+            stop = _num(obj.get("stop"))
+            ticket = _int(obj.get("ticket"))
             summary = str(obj.get("summary") or "")
-    return Advice(text=body or text, action=action, symbol=symbol, sl=sl, tp=tp, summary=summary)
+    return Advice(
+        text=body or text,
+        action=action,
+        symbol=symbol,
+        sl=sl,
+        tp=tp,
+        limit=limit,
+        stop=stop,
+        ticket=ticket,
+        summary=summary,
+    )
 
 
 def _num(v: Any) -> float | None:
@@ -60,6 +82,16 @@ def _num(v: Any) -> float | None:
         return None
     try:
         return float(v)
+    except (TypeError, ValueError):
+        return None
+
+
+def _int(v: Any) -> int | None:
+    n = _num(v)
+    if n is None:
+        return None
+    try:
+        return int(n)
     except (TypeError, ValueError):
         return None
 

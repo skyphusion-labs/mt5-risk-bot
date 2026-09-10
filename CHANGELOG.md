@@ -9,6 +9,7 @@
 - Tick fill alerts and SL/TP checks run even when `/auto` is off.
 - `/quote` with no symbol lists the configured book. `/trail` never loosens.
 - Grok (xAI) and Claude (Anthropic) via env keys. Last 6 turns kept. Advice never auto-sends.
+- Advice JSON may stage `limit=` / `stop=` or close TICKET. `/ask` context includes `/risk`, orders, positions, quotes.
 - Auto EMA regime is off until `/auto on`.
 
 ## 0.1.0

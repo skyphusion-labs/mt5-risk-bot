@@ -5,17 +5,26 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
-from mt5_risk_bot.llm import Advisor
+from mt5_risk_bot.llm import Advice, Advisor
 from mt5_risk_bot.models import Signal, SignalKind
 from mt5_risk_bot.telegram import HELP, TgCommand
 
 
 @dataclass
 class Pending:
-    signal: Signal
+    signal: Signal | None
     volume: float
     source: str
     expires_at: float
+    close_ticket: int | None = None
+
+    def label(self) -> str:
+        if self.close_ticket is not None:
+            return f"close #{self.close_ticket}"
+        if self.signal is None:
+            return "order"
+        extra = f" {self.signal.pending_kind}" if self.signal.pending_kind else ""
+        return f"{self.signal.kind.value} {self.signal.symbol}{extra}"
 
 
 def parse_kv(args: str) -> tuple[str, dict[str, str], list[str]]:
@@ -99,10 +108,7 @@ class Desk:
     def _stage(self, sig: Signal, source: str) -> str:
         now = time.time()
         if self.pending is not None and now <= self.pending.expires_at:
-            p = self.pending
-            return (
-                f"pending {p.signal.kind.value} {p.signal.symbol}; /cancel first"
-            )
+            return f"pending {self.pending.label()}; /cancel first"
         decision = self.engine.preview(sig, manual=True)
         if not decision.allowed:
             return f"refused: {decision.reason}"
@@ -115,6 +121,25 @@ class Desk:
             f"source={source}{extra}\n/confirm within {ttl}s or /cancel"
         )
 
+    def _stage_close(self, advice: Advice) -> str:
+        now = time.time()
+        if self.pending is not None and now <= self.pending.expires_at:
+            return f"pending {self.pending.label()}; /cancel first"
+        ticket = advice.ticket
+        if ticket is None:
+            if advice.symbol:
+                return f"to flatten {advice.symbol}: /close {advice.symbol}"
+            return "close needs ticket"
+        pos = self.engine._pos(ticket)
+        if pos is None:
+            return "no such ticket"
+        ttl = int(self.engine.cfg.telegram.confirm_seconds)
+        self.pending = Pending(None, pos.volume, "advice", now + ttl, close_ticket=ticket)
+        return (
+            f"confirm close #{ticket} {pos.symbol} vol={pos.volume} "
+            f"source=advice\n/confirm within {ttl}s or /cancel"
+        )
+
     def _confirm(self) -> str:
         pending = self.pending
         if pending is None:
@@ -125,7 +150,17 @@ class Desk:
         if getattr(self.engine, "halted", False):
             self.pending = None
             return "refused: halted"
+        if pending.close_ticket is not None:
+            ticket = pending.close_ticket
+            reply = self.engine.close_ticket(ticket, pending.source)
+            self.pending = None
+            if reply.startswith("closed"):
+                return f"sent close #{ticket}"
+            return reply
         sig = pending.signal
+        if sig is None:
+            self.pending = None
+            return "nothing to confirm"
         if not sig.pending_kind:
             spec = self.engine.broker.symbol(sig.symbol)
             tick = self.engine.broker.tick(sig.symbol)
@@ -211,12 +246,19 @@ class Desk:
         if advice.action in {"buy", "sell"} and advice.symbol:
             kind = SignalKind.BUY if advice.action == "buy" else SignalKind.SELL
             try:
-                sig = self.engine.market_signal(kind, advice.symbol, sl=advice.sl, tp=advice.tp)
+                sig = self.engine.market_signal(
+                    kind,
+                    advice.symbol,
+                    sl=advice.sl,
+                    tp=advice.tp,
+                    limit=advice.limit,
+                    stop=advice.stop,
+                )
                 lines.append(self._stage(sig, "advice"))
             except (ValueError, RuntimeError) as exc:
                 lines.append(f"could not stage trade: {exc}")
-        elif advice.action == "close" and advice.symbol:
-            lines.append(f"to flatten {advice.symbol}: /close {advice.symbol}")
+        elif advice.action == "close":
+            lines.append(self._stage_close(advice))
         return "\n".join(x for x in lines if x)
 
     def _model(self, args: str) -> str:

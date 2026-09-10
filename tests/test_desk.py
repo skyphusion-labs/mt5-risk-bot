@@ -138,10 +138,59 @@ def test_model_and_missing_ask(tmp_path) -> None:
     assert "provider=claude" in engine2.handle_command(TgCommand("1", 1, "/model claude", 2))
 
 
+def test_advice_context_includes_risk_and_orders(tmp_path) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Hold.\n"
+                        '{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"x"}'
+                    )
+                }
+            }
+        ]
+    }
+    llm = FakeLlm(payload)
+    engine = _engine(tmp_path, llm=llm)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/ask what is risk?", 1))
+    blob = str(llm.sent[0][1])
+    assert "daily_loss=" in blob
+    assert "no pending orders" in blob or "PENDING" in blob or "pending" in blob.lower()
+    assert "no open positions" in blob or "#" in blob
+    assert "bid=" in blob
+    assert "never sends" in blob.lower() or "only send" in blob.lower()
+    engine.stop()
+
+
 def test_parse_advice_bad_json() -> None:
     adv = parse_advice("just text {not json}")
     assert adv.action == "hold"
     assert "just text" in adv.text
+
+
+def test_parse_advice_limit_stop_ticket() -> None:
+    adv = parse_advice(
+        'Join.\n{"action":"buy","symbol":"EURUSD","sl":1.07,"tp":1.09,'
+        '"limit":1.08,"stop":null,"ticket":null,"summary":"limit long"}'
+    )
+    assert adv.action == "buy"
+    assert adv.limit == 1.08
+    assert adv.stop is None
+    assert adv.ticket is None
+    close = parse_advice(
+        'Out.\n{"action":"close","symbol":"EURUSD","sl":null,"tp":null,'
+        '"limit":null,"stop":null,"ticket":42,"summary":"flatten"}'
+    )
+    assert close.action == "close"
+    assert close.ticket == 42
+    stop = parse_advice(
+        'Break.\n{"action":"sell","symbol":"EURUSD","sl":1.10,"tp":1.07,'
+        '"limit":null,"stop":1.09,"ticket":null,"summary":"stop short"}'
+    )
+    assert stop.stop == 1.09
+    assert stop.limit is None
 
 
 def test_quote_usage(tmp_path) -> None:
@@ -258,6 +307,116 @@ def test_be_missing_ticket_and_winner(tmp_path) -> None:
     assert reply.startswith("be #")
     updated = engine.broker.positions()[0]
     assert abs(updated.sl - updated.price_open) < 1e-9
+    engine.stop()
+
+
+def test_ask_stages_limit_then_confirm_places_order(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        llm=FakeLlm({"choices": [{"message": {"content": "x"}}]}),
+    )
+    engine.start()
+    tick = engine.broker.tick("EURUSD")
+    spec = engine.broker.symbol("EURUSD")
+    limit = spec.normalize_price(tick.ask - 0.002)
+    sl = spec.normalize_price(limit - 0.005)
+    tp = spec.normalize_price(limit + 0.010)
+    engine.advisor.transport.payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Limit long.\n"
+                        f'{{"action":"buy","symbol":"EURUSD","sl":{sl},"tp":{tp},'
+                        f'"limit":{limit},"stop":null,"ticket":null,"summary":"bid"}}'
+                    )
+                }
+            }
+        ]
+    }
+    reply = engine.handle_command(TgCommand("1", 1, "/ask buy a limit?", 1))
+    assert "confirm buy EURUSD" in reply
+    assert "limit" in reply
+    sent = engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    assert sent.startswith("sent buy")
+    assert engine.broker.orders()
+    assert not engine.broker.positions()
+    engine.stop()
+
+
+def test_ask_close_without_ticket_hints(tmp_path) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Out.\n"
+                        '{"action":"close","symbol":"EURUSD","sl":null,"tp":null,'
+                        '"limit":null,"stop":null,"ticket":null,"summary":"flatten"}'
+                    )
+                }
+            }
+        ]
+    }
+    engine = _engine(tmp_path, llm=FakeLlm(payload))
+    engine.start()
+    reply = engine.handle_command(TgCommand("1", 1, "/ask flatten euro?", 1))
+    assert "/close EURUSD" in reply
+    assert engine.desk.pending is None
+    engine.stop()
+
+
+def test_ask_limit_and_stop_refused(tmp_path) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Both.\n"
+                        '{"action":"buy","symbol":"EURUSD","sl":null,"tp":null,'
+                        '"limit":1.08,"stop":1.09,"ticket":null,"summary":"xor"}'
+                    )
+                }
+            }
+        ]
+    }
+    engine = _engine(tmp_path, llm=FakeLlm(payload))
+    engine.start()
+    reply = engine.handle_command(TgCommand("1", 1, "/ask both?", 1))
+    assert "could not stage" in reply
+    assert "not both" in reply
+    assert engine.desk.pending is None
+    engine.stop()
+
+
+def test_ask_stages_close_ticket_then_confirm(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        llm=FakeLlm({"choices": [{"message": {"content": "x"}}]}),
+    )
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    pos = engine.broker.positions()[0]
+    engine.advisor.transport.payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Close it.\n"
+                        f'{{"action":"close","symbol":"EURUSD","sl":null,"tp":null,'
+                        f'"limit":null,"stop":null,"ticket":{pos.ticket},"summary":"out"}}'
+                    )
+                }
+            }
+        ]
+    }
+    reply = engine.handle_command(TgCommand("1", 1, "/ask flatten that?", 3))
+    assert f"confirm close #{pos.ticket}" in reply
+    assert engine.broker.positions()
+    sent = engine.handle_command(TgCommand("1", 1, "/confirm", 4))
+    assert sent.startswith(f"sent close #{pos.ticket}")
+    assert not engine.broker.positions()
     engine.stop()
 
 

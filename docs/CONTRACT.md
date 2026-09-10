@@ -61,12 +61,14 @@ off until `/auto on`.
 | `/be TICKET` | move SL to entry; never loosen |
 | `/trail TICKET` | ATR trail / breakeven from the strategy; never loosen |
 | `/history` | last journal events |
-| `/ask ...` or free text | Grok or Claude (last 6 turns), may stage a trade |
+| `/ask ...` or free text | Grok or Claude (last 6 turns plus status, /risk, positions, working orders, quotes); JSON may stage market, `limit=`, `stop=`, or close TICKET; never sends |
 | `/model grok\|claude` | switch provider |
 | `/auto on\|off` | optional EMA regime; fill alerts do not wait for this |
 | `/status` `/positions` `/halt` `/resume` | account; `/halt` flattens, drops the confirm, and cancels working orders |
 
 `/confirm` for a market order reprices and re-runs `preview`. A limit or stop keeps the staged price. Halt, daily-loss, and drawdown still refuse. The reply includes `ok` and `retcode`; only `OrderResult.ok` starts with `sent `. A second `/buy` while a confirm is live is refused until `/cancel`. Advice never overwrites a live confirm. Close and SL/TP success replies come from `OrderResult.ok`, not from "the ticket existed".
+
+Advice JSON fields: `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `summary`. `limit` and `stop` are XOR. A close action with `ticket` stages that close; `/confirm` is still the only send. Context always includes `/risk`, positions, working orders, and quotes.
 
 Buy limit must be below ask; sell limit above bid; buy stop above ask; sell stop below bid. `limit=` and `stop=` together are refused.
 

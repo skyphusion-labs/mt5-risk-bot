@@ -75,10 +75,11 @@ is fully up.
 4. `python -m mt5_risk_bot telegram --message ping`
 5. `python -m mt5_risk_bot run --mode mt5 --loop --config config.toml`
 
-Free text is `/ask`. A recommended trade is staged; `/confirm` sends it
-through the risk engine. `/auto on` is the only way the EMA regime trades
-on its own. SL/TP hits and pending fills still alert in Telegram when
-auto is off.
+Free text is `/ask`. Context includes `/risk`, positions, working orders,
+and quotes. A recommended market, limit, stop, or close-ticket is staged;
+`/confirm` sends it through the risk engine. `/auto on` is the only way
+the EMA regime trades on its own. SL/TP hits and pending fills still
+alert in Telegram when auto is off.
 
 Paper is the default (`account.mode = "paper"`). Real accounts still need
 `--i-accept-risk`.

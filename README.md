@@ -48,8 +48,8 @@ loosens.
 SL/TP and pending fills still alert in Telegram when `/auto` is off.
 Paper is the default. Live real accounts need `--i-accept-risk`.
 
-Free text is advice; if the model recommends a trade, that is staged too.
-`/help` for the rest.
+Free text is advice. The model may stage a market, `limit=`, `stop=`, or
+close-ticket order. `/confirm` is the only send. `/help` for the rest.
 
 ## Docs
 
