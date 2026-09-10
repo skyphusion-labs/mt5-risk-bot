@@ -19,6 +19,35 @@ class _FakeTg:
         return {"ok": self.ok, "result": {"message_id": 1}}
 
 
+class _FakeConnectBroker:
+    def __init__(self, **kwargs) -> None:
+        del kwargs
+        self.calls: list[str] = []
+
+    def ensure_connected(self) -> None:
+        self.calls.append("ensure_connected")
+
+    def connect(self) -> None:
+        self.calls.append("connect")
+
+    def disconnect(self) -> None:
+        self.calls.append("disconnect")
+
+    def account(self):
+        self.calls.append("account")
+        return type(
+            "Acct",
+            (),
+            {
+                "login": 1,
+                "server": "Demo",
+                "equity": 10000.0,
+                "currency": "USD",
+                "trade_mode": 0,
+            },
+        )()
+
+
 def test_doctor(capsys, monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
@@ -26,6 +55,29 @@ def test_doctor(capsys, monkeypatch) -> None:
     out = capsys.readouterr().out
     assert "telegram ping: skip" in out
     assert "paper round-trip /buy /confirm /close: ok" in out
+
+
+def test_doctor_connect_calls_ensure_connected(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    created: list[_FakeConnectBroker] = []
+
+    def factory(**kwargs):
+        broker = _FakeConnectBroker(**kwargs)
+        created.append(broker)
+        return broker
+
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", lambda: object())
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.Mt5Broker", factory)
+    assert main(["doctor", "--connect"]) == 0
+    out = capsys.readouterr().out
+    assert len(created) == 1
+    assert created[0].calls[0] == "ensure_connected"
+    assert "connect" not in created[0].calls
+    assert created[0].calls.index("ensure_connected") < created[0].calls.index("account")
+    assert "disconnect" in created[0].calls
+    assert "connected login=1" in out
+    assert "trade_mode=0" in out
 
 
 def test_paper_round_trip_ok() -> None:
