@@ -70,6 +70,12 @@ class Mt5Broker:
     def connect(self) -> None:
         mt5 = self._mt5 or load_mt5_module()
         self._mt5 = mt5
+        # initialize is not reentrant; drop the old IPC handle first
+        if hasattr(mt5, "shutdown"):
+            try:
+                mt5.shutdown()
+            except (RuntimeError, OSError, AttributeError, ValueError):
+                pass
         kwargs: dict[str, Any] = {"timeout": self._timeout}
         if self._path:
             # initialize(path, login=..., ...) path is the unnamed first arg
@@ -105,13 +111,65 @@ class Mt5Broker:
         if self._mt5 is not None:
             self._mt5.shutdown()
 
+    def ensure_connected(self) -> None:
+        mt5 = self._mt5
+        if mt5 is not None:
+            try:
+                info = mt5.account_info() if hasattr(mt5, "account_info") else None
+            except (RuntimeError, OSError, AttributeError, ValueError):
+                info = None
+            if info is not None and not self._ipc_error():
+                return
+        self.connect()
+
+    def _last_error(self) -> Any:
+        mt5 = self._mt5
+        if mt5 is None or not hasattr(mt5, "last_error"):
+            return "unknown"
+        try:
+            return mt5.last_error()
+        except (RuntimeError, OSError, AttributeError, ValueError):
+            return "unknown"
+
+    def _ipc_error(self) -> bool:
+        err = self._last_error()
+        if err is None or err == "unknown":
+            return False
+        code: Any = err
+        desc = ""
+        if isinstance(err, (tuple, list)):
+            if not err:
+                return False
+            code = err[0]
+            if len(err) > 1 and err[1] is not None:
+                desc = str(err[1])
+        elif isinstance(err, str):
+            desc = err
+            code = 0
+        try:
+            code_i = int(code)
+        except (TypeError, ValueError):
+            code_i = 0
+        # MetaTrader5 RES_E_INTERNAL_FAIL* family (-10000..) is IPC death
+        if code_i <= -10000:
+            return True
+        return "ipc" in desc.lower()
+
+    def _with_reconnect(self, call: Any, what: str) -> Any:
+        result = call()
+        if result is not None and not self._ipc_error():
+            return result
+        self.connect()
+        result = call()
+        if result is None or self._ipc_error():
+            raise RuntimeError(f"{what} failed: {self._last_error()}")
+        return result
+
     def select_symbol(self, name: str) -> bool:
         return bool(self._mt5.symbol_select(name, True))
 
     def account(self) -> Account:
-        info = self._mt5.account_info()
-        if info is None:
-            raise RuntimeError(f"account_info failed: {self._mt5.last_error()}")
+        info = self._with_reconnect(lambda: self._mt5.account_info(), "account_info")
         d = _asdict(info)
         return Account(
             login=int(d.get("login", 0)),
@@ -163,9 +221,10 @@ class Mt5Broker:
         )
 
     def tick(self, name: str) -> Tick:
-        t = self._mt5.symbol_info_tick(name)
-        if t is None:
-            raise RuntimeError(f"symbol_info_tick({name}) failed: {self._mt5.last_error()}")
+        t = self._with_reconnect(
+            lambda: self._mt5.symbol_info_tick(name),
+            f"symbol_info_tick({name})",
+        )
         d = _asdict(t)
         return Tick(
             time=int(d.get("time", 0)),
@@ -200,7 +259,7 @@ class Mt5Broker:
         return out
 
     def positions(self, magic: int | None = None) -> list[Position]:
-        raw = self._mt5.positions_get()
+        raw = self._with_reconnect(lambda: self._mt5.positions_get(), "positions_get")
         if not raw:
             return []
         out: list[Position] = []
@@ -234,7 +293,7 @@ class Mt5Broker:
         mt5 = self._mt5
         if mt5 is None or not hasattr(mt5, "orders_get"):
             return []
-        raw = mt5.orders_get()
+        raw = self._with_reconnect(lambda: self._mt5.orders_get(), "orders_get")
         if not raw:
             return []
         buy_types = {
@@ -290,7 +349,8 @@ class Mt5Broker:
         return self._result(self._mt5.order_check(request), request)
 
     def order_send(self, request: dict) -> OrderResult:
-        result = self._result(self._mt5.order_send(request), request)
+        raw = self._with_reconnect(lambda: self._mt5.order_send(request), "order_send")
+        result = self._result(raw, request)
         if result.retcode != TRADE_RETCODE_INVALID_FILL:
             return result
         tried = {request.get("type_filling")}

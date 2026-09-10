@@ -24,6 +24,10 @@ class FakeMt5:
 
     def __init__(self) -> None:
         self.inited = False
+        self.init_count = 0
+        self.disconnected = False
+        self.force_ipc = False
+        self.dead_after_init = False
         self.sends: list[dict] = []
         self.fill_fail_once = False
         self.order_rows: list | None = [
@@ -75,6 +79,11 @@ class FakeMt5:
     def initialize(self, *args, **kwargs) -> bool:
         del args, kwargs
         self.inited = True
+        self.init_count += 1
+        self.disconnected = False
+        self.force_ipc = False
+        if self.dead_after_init:
+            self.disconnected = True
         return True
 
     def login(self, *args, **kwargs) -> bool:
@@ -85,12 +94,19 @@ class FakeMt5:
         self.inited = False
 
     def last_error(self):
-        return (1, "err")
+        if self.force_ipc or self.disconnected or not self.inited:
+            return (-10001, "IPC send failed")
+        return (1, "ok")
+
+    def _dead(self) -> bool:
+        return self.disconnected or not self.inited
 
     def terminal_info(self):
         return _nt(trade_allowed=True)
 
     def account_info(self):
+        if self._dead():
+            return None
         return _nt(
             login=1,
             trade_mode=0,
@@ -138,6 +154,8 @@ class FakeMt5:
 
     def symbol_info_tick(self, name):
         del name
+        if self._dead():
+            return None
         return _nt(time=1, bid=1.1, ask=1.1001, last=1.1, volume=1)
 
     def copy_rates_from_pos(self, name, tf, start, count):
@@ -148,15 +166,21 @@ class FakeMt5:
         ]
 
     def orders_get(self):
+        if self._dead():
+            return None
         return self.order_rows
 
     def positions_get(self):
+        if self._dead():
+            return None
         return self.position_rows
 
     def order_check(self, request):
         return _nt(retcode=0, comment="Done", deal=0, order=0, volume=request.get("volume", 0), price=1.1, bid=1.1, ask=1.1)
 
     def order_send(self, request):
+        if self._dead():
+            return None
         self.sends.append(request)
         if self.fill_fail_once:
             self.fill_fail_once = False
@@ -282,7 +306,11 @@ def test_adapter_maps_orders() -> None:
     fake.order_rows = []
     assert broker.orders() == []
     fake.order_rows = None
-    assert broker.orders() == []
+    try:
+        broker.orders()
+        raise AssertionError("expected RuntimeError on None orders_get")
+    except RuntimeError as exc:
+        assert "orders_get" in str(exc)
     broker.disconnect()
 
 
@@ -301,6 +329,78 @@ def test_invalid_fill_retries() -> None:
     assert result.ok
     assert len(fake.sends) == 2
     assert fake.sends[1]["type_filling"] == ORDER_FILLING_IOC
+
+
+def test_connect_is_reentrant() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    broker.connect()
+    assert fake.init_count == 2
+    assert fake.inited is True
+
+
+def test_ensure_connected_skips_when_healthy() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    broker.ensure_connected()
+    assert fake.init_count == 1
+    fake.disconnected = True
+    broker.ensure_connected()
+    assert fake.init_count == 2
+    assert fake.disconnected is False
+
+
+def test_reconnect_after_account_info_none() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    fake.disconnected = True
+    acct = broker.account()
+    assert acct.login == 1
+    assert fake.init_count == 2
+    assert fake.inited is True
+    tick = broker.tick("EURUSD")
+    assert tick.ask > tick.bid
+    assert broker.positions()
+    assert broker.orders()
+
+
+def test_reconnect_on_ipc_last_error() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    fake.force_ipc = True
+    acct = broker.account()
+    assert acct.login == 1
+    assert fake.init_count == 2
+    assert fake.force_ipc is False
+
+
+def test_reconnect_once_then_raises() -> None:
+    fake = FakeMt5()
+    fake.dead_after_init = True
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    assert fake.init_count == 1
+    try:
+        broker.account()
+        raise AssertionError("expected RuntimeError after one reconnect")
+    except RuntimeError as exc:
+        assert "account_info" in str(exc)
+    assert fake.init_count == 2
+
+
+def test_order_send_reconnects_on_none() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    fake.disconnected = True
+    result = broker.order_send({"action": 1, "type_filling": 0, "volume": 0.01})
+    assert result.ok
+    assert fake.init_count == 2
+    assert len(fake.sends) == 1
 
 
 # Paper mutates in tests/test_paper_pending.py. Live is a pass-through:
