@@ -2,6 +2,8 @@
 #   export MT5_LOGIN=12345678
 #   export MT5_PASSWORD=...
 #   export MT5_SERVER=YourBroker-Demo
+# Names: the bot = this Python process. the desk = Telegram chat commands.
+# the agent = Cloudflare Computer worker. the gateway = AI Gateway mt5-risk-bot.
 
 [account]
 mode = "paper"              # paper | mt5
@@ -10,7 +12,7 @@ initial_balance = 10000.0
 [mt5]
 terminal_path = ""
 timeout_ms = 60000
-# login / password / server: leave empty, use env vars
+# login / password / server: leave empty. Use env vars.
 
 [risk]
 risk_pct = 0.005            # 0.5% of equity per trade
@@ -26,7 +28,7 @@ halt_file = "HALT"          # create this file to flatten immediately
 deviation_points = 20
 
 [strategy]
-auto = false                # Telegram is the desk. /auto on enables the EMA regime.
+auto = false                # The desk is Telegram chat commands. /auto on enables the EMA regime.
 trail = false               # /trail on manages existing positions each tick. Not EMA entries.
 timeframe = "H1"
 fast_ema = 21
@@ -52,10 +54,10 @@ skip_friday_after_utc = "16:00"
 [engine]
 poll_seconds = 15
 comment = "mt5-risk-bot"
-# journal.jsonl and journal.tg_offset are chmod 0600; process umask 077
-# journal.heartbeat is written each successful step_all, chmod 0600
-# journal.jsonl rotates to journal.jsonl.1 at 10 MiB
-# journal.lock is an exclusive flock; a second run --loop on this path exits 2
+# journal.jsonl and journal.tg_offset are chmod 0600. Process umask 077.
+# journal.heartbeat is written each successful step_all. chmod 0600.
+# journal.jsonl rotates to journal.jsonl.1 at 10 MiB.
+# journal.lock is an exclusive flock. A second run --loop on this path exits 2.
 journal_path = "journal.jsonl"
 
 # Telegram is required for `run`. Secrets from the environment only:
@@ -64,7 +66,7 @@ journal_path = "journal.jsonl"
 #   export XAI_API_KEY=...            # Grok
 #   export ANTHROPIC_API_KEY=...      # Claude
 #   export AI_PROVIDER=grok           # grok | claude | computer
-# Computer worker (workspace memory, AI Gateway Unified Billing):
+# The agent (workspace memory, Unified Billing on the gateway):
 #   export AI_PROVIDER=computer
 #   export ADVICE_URL=https://mt5-risk-agent.skyphusion.workers.dev/ask
 #   export ADVICE_TOKEN=              # from agent/.dev.vars, never commit

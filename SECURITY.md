@@ -2,32 +2,50 @@
 
 Report vulnerabilities to conrad@skyphusion.org.
 
-WARNING: Do not open a public issue for a live trading defect that
-could move money.
+WARNING
+Do not open a public issue for a live trading defect that could move money.
 
-## Secrets
+The bot is the Python process on this computer.
+The desk is Telegram chat commands.
+The agent is the Cloudflare Computer worker.
+The gateway is Cloudflare AI Gateway `mt5-risk-bot`.
 
-Put secrets in the environment. Do not put them in `config.toml`.
+## Production secrets
 
-| Name | Use |
-| --- | --- |
-| `MT5_LOGIN` `MT5_PASSWORD` `MT5_SERVER` | terminal login |
-| `TELEGRAM_BOT_TOKEN` `TELEGRAM_CHAT_ID` | desk |
-| `XAI_API_KEY` | Grok direct |
-| `ANTHROPIC_API_KEY` | Claude direct |
-| `ADVICE_URL` `ADVICE_TOKEN` | Computer worker |
-| `CF_AIG_TOKEN` | AI Gateway (Worker secret only) |
+Secrets live in the environment.
+Do not put secrets in `config.toml`.
+`config.toml` is gitignored.
 
-Env vars override toml. The Computer worker uses Unified Billing. Do not
-put a provider key in that worker.
+Secret names:
 
-Journal writes replace keys named `token`, `password`, `api_key`,
-`grok_key`, and `claude_key` with `[REDACTED]`. BotFather token patterns
-are stripped from journal fields, loop stderr, and Telegram `send`.
+- `MT5_LOGIN`
+- `MT5_PASSWORD`
+- `MT5_SERVER`
+- `TELEGRAM_BOT_TOKEN`
+- `TELEGRAM_CHAT_ID`
+- `XAI_API_KEY`
+- `ANTHROPIC_API_KEY`
+- `ADVICE_URL`
+- `ADVICE_TOKEN`
 
-Only `TELEGRAM_CHAT_ID` is accepted. Replies go only to that chat.
+The agent uses `CF_AIG_TOKEN` and `ADVICE_TOKEN`.
+The agent bills through the gateway with Unified Billing.
+Do not put a provider key on the agent.
+Env vars override toml if both are set.
 
-These files are chmod 0600: `journal.jsonl`, `journal.jsonl.1`,
-`journal.tg_offset`, `journal.lock`, `journal.heartbeat`, `HALT`.
+Journal writes replace keys named `token`, `password`, `api_key`, `grok_key`, and `claude_key` with `[REDACTED]`.
+Journal writes also strip BotFather token patterns from string fields.
+Loop stderr and Telegram `send` strip the same BotFather pattern.
 
-A real-money account is refused unless you start with `--i-accept-risk`.
+Only `TELEGRAM_CHAT_ID` is accepted.
+Updates from any other chat are ignored.
+The bot still consumes those updates.
+Replies go only to that chat.
+
+`journal.jsonl` is chmod 0600 on open and after each write.
+`journal.tg_offset` is chmod 0600 on each persist.
+`journal.lock` is chmod 0600 when `run` takes the exclusive flock.
+`HALT` is chmod 0600 when the bot writes it.
+
+WARNING
+A real-money account is refused unless the bot started with `--i-accept-risk`.

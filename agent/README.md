@@ -1,23 +1,29 @@
 # mt5-risk-agent
 
-Cloudflare Computer worker. This is the advice brain for the bot.
-Working memory is the workspace: `notes.md`, `log.md`, `snapshot.md`.
-Inference is AI Gateway Unified Billing. The bot does not send trades
-from advice.
+The agent is the Cloudflare Computer worker.
+It is the desk's advice brain.
+The desk is Telegram chat commands.
+The bot is the Python process on this computer.
+The gateway is Cloudflare AI Gateway `mt5-risk-bot`.
 
-| Item | Value |
-| --- | --- |
-| Worker | `https://mt5-risk-agent.skyphusion.workers.dev` |
-| Health | `GET /health` |
-| Ask | `POST /ask` |
-| Gateway | `mt5-risk-bot` |
-| Model | `xai/grok-4.6` |
+Working memory is the workspace filesystem (`/workspace/notes.md`, `log.md`, `snapshot.md`) plus Computer tools (`read`/`write`/`edit`/`ls`/`grep`).
+Inference is Unified Billing on the gateway.
+It is not provider BYOK.
 
-Computer is a Cloudflare preview. The bot still runs next to MT5.
+Live:
 
-## Inference
+- Worker: `https://mt5-risk-agent.skyphusion.workers.dev`
+- Health: `GET /health` -> `ok`
+- Ask: `POST /ask` with `Authorization: Bearer ADVICE_TOKEN`
+- The gateway: `mt5-risk-bot` (account `fabcb25d9c7eb087110ec474a03e50d2`)
+- Model: `xai/grok-4.6`
 
-Use the AI Gateway REST API.
+This package is an early Computer preview.
+The bot still runs next to MT5.
+
+## Inference path (docs)
+
+New calls use the AI Gateway REST API, not `/compat`:
 
 ```
 POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions
@@ -27,25 +33,30 @@ cf-aig-collect-log-payload: false
 {"model":"xai/grok-4.6","messages":[...]}
 ```
 
-See https://developers.cloudflare.com/ai-gateway/usage/rest-api/
+See [REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/) and
+[Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/).
 
-CAUTION: Do not put `CF_AIG_TOKEN` in `Authorization` on
-`gateway.ai.cloudflare.com`. The gateway forwards that header to xAI
-as a provider key.
+WARNING
+Do not put `CF_AIG_TOKEN` on `gateway.ai.cloudflare.com` as `Authorization`.
+The gateway would forward that header to xAI as a provider key.
+Unified Billing would be skipped.
 
-## Secrets
+## Secrets (never in git)
 
-Worker secrets: `CF_AIG_TOKEN`, `ADVICE_TOKEN`. Never commit them.
+Agent secrets: `CF_AIG_TOKEN`, `ADVICE_TOKEN`.
 
-```
-cd agent
-npx wrangler secret put CF_AIG_TOKEN
-npx wrangler secret put ADVICE_TOKEN
-npx wrangler deploy
-```
+1. Change to the agent directory.
+   `cd agent`
+2. Put the gateway token.
+   `npx wrangler secret put CF_AIG_TOKEN`
+3. Put the desk token.
+   `npx wrangler secret put ADVICE_TOKEN`
+4. Deploy.
+   `npx wrangler deploy`
 
-Laptop copy: `agent/.dev.vars` (0600, gitignored). Source it. Do not
-paste tokens into chat.
+Laptop copy: `agent/.dev.vars` (0600, gitignored).
+Source it.
+Do not paste tokens into chat.
 
 ## Desk
 
@@ -55,5 +66,6 @@ export AI_PROVIDER=computer
 export ADVICE_URL=https://mt5-risk-agent.skyphusion.workers.dev/ask
 ```
 
-`/ask` posts `{session, question, context}`. Session is the Telegram
-chat id.
+`/ask` and free text POST `{session, question, context, model}`.
+Session is the Telegram chat id.
+The agent does not send trades.

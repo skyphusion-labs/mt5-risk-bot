@@ -195,11 +195,11 @@ Drawdown halt does not.
 Inspect and restart for drawdown.
 Daily-loss and max-drawdown cannot be cleared from Telegram.
 
-The `HALT` path is relative to the process working directory (LaunchAgent `WorkingDirectory`).
+The `HALT` path is relative to the bot working directory (LaunchAgent `WorkingDirectory`).
 Remove the file and send `/resume` when you intend to resume.
 Restart if you are clearing drawdown.
 
-`main()` sets umask 077 so files the process creates are owner-only.
+`main()` sets umask 077 so files the bot creates are owner-only.
 
 ## Confirm
 
@@ -211,7 +211,7 @@ After expiry, `/confirm` replies `nothing to confirm`.
 Restage with `/buy` `/sell` `/reverse` or advice.
 
 MT5 positions and working orders stay in the terminal.
-Paper positions and paper working orders die with the process.
+Paper positions and paper working orders die with the bot.
 
 ## Chat lock
 
@@ -246,7 +246,7 @@ It does not launch the terminal.
 3. Edit `WorkingDirectory`.
 4. Edit the venv `python` path.
 5. Edit `EnvironmentVariables` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
-6. Add `XAI_API_KEY` or `ANTHROPIC_API_KEY` if you want advice.
+6. Add `XAI_API_KEY` or `ANTHROPIC_API_KEY` if you use advice.
 7. For an MT5 loop, change `--mode paper` to `--mode mt5`.
 8. For a real account only, append `--i-accept-risk`.
 9. Put `--config` and the path before `run` in `ProgramArguments`.
@@ -259,7 +259,7 @@ Watchdog: `journal.heartbeat` next to `journal_path` under `WorkingDirectory`.
     `mkdir -p logs`
     Or point the log keys somewhere writable.
     `*.log` is gitignored.
-12. Load the agent.
+12. Load the LaunchAgent.
 
 ```bash
 launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.skyphusion.mt5-risk-bot.plist
@@ -276,10 +276,10 @@ launchctl bootout gui/$(id -u)/org.skyphusion.mt5-risk-bot
 `Umask` 63 is 077, matching `main()`.
 Watchdog liveness is `journal.heartbeat` next to the journal (ISO ts, chmod 0600).
 Stale mtime means the loop is not ticking.
-The flock is released when the process dies, so the new process can acquire `journal.lock`.
+The flock is released when the bot dies, so the new bot can acquire `journal.lock`.
 A leftover `journal.lock` file is not a held lock.
 The confirm is restored from the live journal if the TTL has not expired.
-Halt does not crash the process.
+Halt does not crash the bot.
 Do not bootout to halt.
 
 ## Desk setup
