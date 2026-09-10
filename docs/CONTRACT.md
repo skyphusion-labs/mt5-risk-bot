@@ -32,7 +32,8 @@ off until `/auto on`.
   `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`,
   `ANTHROPIC_API_KEY`, `AI_PROVIDER`. Journal writes, `loop_error`
   stderr, and Telegram `send` redact BotFather tokens. Named secret
-  keys in the journal become `[REDACTED]`.
+  keys in the journal become `[REDACTED]`. `journal.jsonl`,
+  `journal.tg_offset`, and `HALT` are chmod 0600. Process umask 077.
 
 ## Forbidden claims
 
