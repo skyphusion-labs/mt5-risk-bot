@@ -1,8 +1,40 @@
-from mt5_risk_bot.__main__ import main
+from mt5_risk_bot.__main__ import main, paper_round_trip, telegram_ping
+from mt5_risk_bot.config import BotConfig, TelegramConfig
 
 
-def test_doctor() -> None:
+class _FakeTg:
+    def __init__(self, ok: bool = True) -> None:
+        self.ok = ok
+        self.sent: list[str] = []
+
+    def post_json(self, url: str, payload: dict, timeout: float = 10.0, headers=None) -> dict:
+        del url, timeout, headers
+        self.sent.append(str(payload.get("text") or ""))
+        return {"ok": self.ok, "result": {"message_id": 1}}
+
+
+def test_doctor(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
     assert main(["doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "telegram ping: skip" in out
+    assert "paper round-trip /buy /confirm /close: ok" in out
+
+
+def test_paper_round_trip_ok() -> None:
+    assert paper_round_trip() == "ok"
+
+
+def test_telegram_ping_skip_and_ok() -> None:
+    cfg = BotConfig()
+    assert telegram_ping(cfg) == "skip"
+    cfg.telegram = TelegramConfig(token="t", chat_id="1")
+    fake = _FakeTg()
+    assert telegram_ping(cfg, transport=fake) == "ok"
+    assert any("doctor ping" in t for t in fake.sent)
+    fake.ok = False
+    assert telegram_ping(cfg, transport=fake) == "fail"
 
 
 def test_backtest_trend(tmp_path) -> None:

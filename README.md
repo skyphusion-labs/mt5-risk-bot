@@ -18,7 +18,7 @@ export XAI_API_KEY=...          # Grok (default)
 # export ANTHROPIC_API_KEY=...  # Claude
 # export AI_PROVIDER=claude
 pytest
-python -m mt5_risk_bot doctor
+python -m mt5_risk_bot doctor   # telegram ping + paper /buy /confirm /close
 python -m mt5_risk_bot run --mode paper --loop --config config.toml
 ```
 

@@ -3,9 +3,13 @@
 ## Paper first
 
 ```bash
+python -m mt5_risk_bot doctor
 python -m mt5_risk_bot backtest --market trend --no-session-filter
 python -m mt5_risk_bot backtest --market range --no-session-filter
 ```
+
+`doctor` pings Telegram if the token is set, then paper `/buy` `/confirm`
+`/close`. No live terminal. Non-zero if the paper round-trip fails.
 
 Trend should finish above start on the seeded generator. Range should not
 ruin the account. If either assertion fails on your machine, do not go live.

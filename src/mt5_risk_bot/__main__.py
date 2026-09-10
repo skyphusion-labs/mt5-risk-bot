@@ -11,14 +11,16 @@ import csv
 import json
 import os
 import sys
+from datetime import datetime, timezone
 from pathlib import Path
+from tempfile import TemporaryDirectory
 
 from mt5_risk_bot import __version__
 from mt5_risk_bot.config import BotConfig, load_config
 from mt5_risk_bot.engine import Engine, run_backtest
 from mt5_risk_bot.models import Bar
 from mt5_risk_bot.synthetic import generate_bars, generate_ranging
-from mt5_risk_bot.telegram import TelegramClient
+from mt5_risk_bot.telegram import TelegramClient, TgCommand
 
 
 def _cfg(args: argparse.Namespace) -> BotConfig:
@@ -28,22 +30,73 @@ def _cfg(args: argparse.Namespace) -> BotConfig:
     return cfg
 
 
+def telegram_ping(cfg: BotConfig, *, transport=None) -> str:
+    tg = TelegramClient.from_config(cfg.telegram, transport=transport)
+    if tg is None or not tg.enabled:
+        return "skip"
+    try:
+        ok = tg.send("mt5-risk-bot doctor ping")
+    except (ValueError, RuntimeError, OSError) as exc:
+        return f"fail ({exc})"
+    return "ok" if ok else "fail"
+
+
+def paper_round_trip() -> str:
+    """In-process /buy /confirm /close. No live terminal."""
+    from mt5_risk_bot.broker.paper import PaperBroker
+
+    with TemporaryDirectory() as tmp:
+        cfg = BotConfig()
+        cfg.session.enabled = False
+        cfg.risk.max_spread_atr_frac = 10.0
+        cfg.risk.halt_file = str(Path(tmp) / "HALT")
+        cfg.journal_path = str(Path(tmp) / "j.jsonl")
+        cfg.symbols = ["EURUSD"]
+        broker = PaperBroker(balance=10_000)
+        broker.seed_bars("EURUSD", generate_bars(120, drift=0.0004, vol=0.0002, seed=3))
+        engine = Engine(
+            cfg,
+            broker,
+            halt_dir=tmp,
+            now_fn=lambda: datetime(2024, 1, 3, 12, tzinfo=timezone.utc),
+        )
+        engine.start()
+        buy = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+        if "confirm buy" not in buy:
+            engine.stop()
+            return f"fail stage: {buy}"
+        sent = engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+        if not sent.startswith("sent buy"):
+            engine.stop()
+            return f"fail confirm: {sent}"
+        if not engine.broker.positions():
+            engine.stop()
+            return "fail confirm: no position"
+        closed = engine.handle_command(TgCommand("1", 1, "/close all", 3))
+        if not closed.startswith("closed"):
+            engine.stop()
+            return f"fail close: {closed}"
+        if engine.broker.positions():
+            engine.stop()
+            return "fail close: position remains"
+        engine.stop()
+        return "ok"
+
+
 def cmd_doctor(args: argparse.Namespace) -> int:
     print(f"mt5-risk-bot {__version__}")
     print(f"python {sys.version.split()[0]}  {sys.executable}")
     mt5_ok = False
-    mt5_name = "none"
     try:
         from mt5_risk_bot.broker.mt5_live import load_mt5_module
 
         mod = load_mt5_module()
         mt5_ok = True
-        mt5_name = getattr(mod, "__name__", "unknown")
-        print(f"mt5 binding: {mt5_name}")
+        print(f"mt5 binding: {getattr(mod, '__name__', 'unknown')}")
     except Exception as exc:
         print(f"mt5 binding: unavailable ({exc})")
+    cfg = load_config(args.config) if args.config else load_config()
     if args.config:
-        cfg = load_config(args.config)
         print(f"config: mode={cfg.mode} symbols={cfg.symbols} risk_pct={cfg.risk.risk_pct}")
     print("terminal: official MetaTrader5 package is Windows-only.")
     print("macOS: install MetaTrader 5.app from metatrader5.com, then pip install mt5-mac.")
@@ -53,6 +106,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("xai key:", "SET" if os.environ.get("XAI_API_KEY") else "unset")
     print("anthropic key:", "SET" if os.environ.get("ANTHROPIC_API_KEY") else "unset")
     print("ai provider:", os.environ.get("AI_PROVIDER", "grok"))
+    ping = telegram_ping(cfg)
+    print(f"telegram ping: {ping}")
+    paper = paper_round_trip()
+    print(f"paper round-trip /buy /confirm /close: {paper}")
+    rc = 0
+    if ping.startswith("fail") or paper != "ok":
+        rc = 1
     if args.connect and mt5_ok:
         cfg = _cfg(args) if args.config else load_config()
         from mt5_risk_bot.broker.mt5_live import Mt5Broker
@@ -71,7 +131,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             f"equity={acct.equity:.2f} {acct.currency} trade_mode={acct.trade_mode}"
         )
         broker.disconnect()
-    return 0
+    return rc
 
 
 def _load_csv(path: Path) -> list[Bar]:
@@ -208,7 +268,10 @@ def build_parser() -> argparse.ArgumentParser:
     p.add_argument("--config", help="path to TOML config")
     sub = p.add_subparsers(dest="cmd", required=True)
 
-    d = sub.add_parser("doctor", help="check Python, MT5 binding, optional login")
+    d = sub.add_parser(
+        "doctor",
+        help="telegram ping, paper /buy /confirm /close, optional MT5 login",
+    )
     d.add_argument("--connect", action="store_true")
     d.set_defaults(func=cmd_doctor)
 

@@ -81,6 +81,10 @@ Each loop tick resolves pending fills and SL/TP even when `/auto` is off. Pendin
 
 Manual `/buy` `/sell` skip the session window. Auto does not.
 
+`doctor` pings Telegram when the token is set, and always runs an
+in-process paper `/buy` `/confirm` `/close`. No live terminal required.
+`--connect` is the optional MT5 login check.
+
 ## Gate
 
 `pytest` with `--cov-fail-under=80`. CI jobs are named `ci` and `coverage`.
