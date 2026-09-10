@@ -252,4 +252,5 @@ JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`,
 if it never trades; `outside_session` and `no_regime` are the usual
 reasons. `reconnect` is an MT5 IPC drop then `initialize`. `loop_error`
 is a tick that raised; the process kept running. `journal.tg_offset` is
-the Telegram `getUpdates` cursor (not JSONL).
+the Telegram `getUpdates` cursor (not JSONL). `journal.jsonl` and
+`journal.tg_offset` are owner-only (chmod 0600).
