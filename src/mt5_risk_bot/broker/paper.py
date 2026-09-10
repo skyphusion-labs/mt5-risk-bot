@@ -515,7 +515,7 @@ class PaperBroker:
         tp = float(request.get("tp", 0) or 0)
         tick = self.tick(symbol)
         ticket = self._next_ticket
-        kind = _PENDING_KIND.get(type_code, "limit")
+        kind = _PENDING_KIND.get(type_code, "")
         if commit:
             self._next_ticket += 1
             self._orders[ticket] = PendingOrder(

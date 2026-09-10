@@ -11,11 +11,13 @@ import csv
 import json
 import os
 import sys
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
 from mt5_risk_bot import __version__
+from mt5_risk_bot.broker import broker_for
 from mt5_risk_bot.config import BotConfig, load_config
 from mt5_risk_bot.engine import Engine, run_backtest
 from mt5_risk_bot.journal import InstanceLock, InstanceLockError, redact_text
@@ -49,8 +51,6 @@ def telegram_ping(cfg: BotConfig, *, transport=None) -> str:
 
 def paper_round_trip() -> str:
     """In-process /buy /confirm /close. No live terminal."""
-    from mt5_risk_bot.broker.paper import PaperBroker
-
     with TemporaryDirectory() as tmp:
         cfg = BotConfig()
         cfg.session.enabled = False
@@ -58,7 +58,7 @@ def paper_round_trip() -> str:
         cfg.risk.halt_file = str(Path(tmp) / "HALT")
         cfg.journal_path = str(Path(tmp) / "j.jsonl")
         cfg.symbols = ["EURUSD"]
-        broker = PaperBroker(balance=10_000)
+        broker = broker_for(cfg)
         broker.seed_bars("EURUSD", generate_bars(120, drift=0.0004, vol=0.0002, seed=3))
         engine = Engine(
             cfg,
@@ -124,15 +124,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             print("connect: fail (no mt5 binding)")
             return 1
         cfg = _cfg(args) if args.config else load_config()
-        from mt5_risk_bot.broker.mt5_live import Mt5Broker
-
-        broker = Mt5Broker(
-            login=cfg.mt5.login,
-            password=cfg.mt5.password,
-            server=cfg.mt5.server,
-            path=cfg.mt5.terminal_path,
-            timeout_ms=cfg.mt5.timeout_ms,
-        )
+        broker = broker_for(replace(cfg, mode="mt5"))
         try:
             ensure = getattr(broker, "ensure_connected", None)
             if callable(ensure):
@@ -217,20 +209,8 @@ def cmd_run(args: argparse.Namespace) -> int:
 
 
 def _cmd_run_locked(args: argparse.Namespace, cfg: BotConfig) -> int:
-    if cfg.mode == "mt5":
-        from mt5_risk_bot.broker.mt5_live import Mt5Broker
-
-        broker = Mt5Broker(
-            login=cfg.mt5.login,
-            password=cfg.mt5.password,
-            server=cfg.mt5.server,
-            path=cfg.mt5.terminal_path,
-            timeout_ms=cfg.mt5.timeout_ms,
-        )
-    else:
-        from mt5_risk_bot.broker.paper import PaperBroker
-
-        broker = PaperBroker(balance=cfg.initial_balance)
+    broker = broker_for(cfg)
+    if cfg.mode != "mt5":
         if args.synthetic:
             from mt5_risk_bot.engine import run_backtest as _bt
             from mt5_risk_bot.synthetic import generate_bars as _gb
@@ -243,15 +223,7 @@ def _cmd_run_locked(args: argparse.Namespace, cfg: BotConfig) -> int:
             print(json.dumps({"mode": "paper-synthetic", **result}, indent=2))
             return 0
         elif args.feed_mt5:
-            from mt5_risk_bot.broker.mt5_live import Mt5Broker
-
-            live = Mt5Broker(
-                login=cfg.mt5.login,
-                password=cfg.mt5.password,
-                server=cfg.mt5.server,
-                path=cfg.mt5.terminal_path,
-                timeout_ms=cfg.mt5.timeout_ms,
-            )
+            live = broker_for(replace(cfg, mode="mt5"))
             live.connect()
             for name in cfg.symbols:
                 live.select_symbol(name)

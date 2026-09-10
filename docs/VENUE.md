@@ -10,6 +10,7 @@ Each venue adapter maps those types to its own API.
 
 Paper and MT5 implement `mt5_risk_bot.broker.base.Broker`.
 `account.mode` selects the adapter (`paper` or `mt5`) in `run`.
+`broker_for(cfg)` in `mt5_risk_bot.broker` returns PaperBroker or Mt5Broker.
 A new venue is a new adapter plus a factory branch.
 Do not teach the engine MT5 constants.
 

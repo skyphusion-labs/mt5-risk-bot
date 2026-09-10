@@ -29,6 +29,18 @@ from mt5_risk_bot.sizing import money_per_lot_at_stop, normalize_volume
 from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.telegram import TelegramClient, TgCommand
 
+_ORDER_TYPE_NAME = {
+    "limit": "LIMIT",
+    "stop": "STOP",
+}
+
+
+def _pending_label(order: PendingOrder) -> str:
+    suffix = _ORDER_TYPE_NAME.get(order.kind)
+    if suffix:
+        return f"{order.side.value.upper()}_{suffix}"
+    return order.side.value
+
 
 class Engine:
     def __init__(
@@ -470,7 +482,7 @@ class Engine:
         if not rows:
             return "no pending orders"
         return "\n".join(
-            f"#{o.ticket} {o.symbol} {o.side.value.upper()}_{o.kind.upper()} "
+            f"#{o.ticket} {o.symbol} {_pending_label(o)} "
             f"{o.volume} @ {o.price} sl={o.sl} tp={o.tp}"
             for o in rows
         )
@@ -808,7 +820,7 @@ class Engine:
             return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="buy needs sl < entry < tp")
         if order.side.value == "sell" and not (sl_n > entry and (tp_n <= 0 or tp_n < entry)):
             return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="sell needs tp < entry < sl")
-        kind = order.kind if order.kind in ("limit", "stop") else "limit"
+        kind = order.kind if order.kind in _ORDER_TYPE_NAME else "limit"
         result = self.broker.modify_working(
             order.ticket,
             price=entry,

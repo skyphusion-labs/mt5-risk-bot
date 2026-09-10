@@ -18,7 +18,6 @@ from mt5_risk_bot.constants import (
     ORDER_TYPE_BUY_STOP_LIMIT,
     ORDER_TYPE_SELL_LIMIT,
     ORDER_TYPE_SELL_STOP,
-    ORDER_TYPE_SELL_STOP_LIMIT,
     RETCODE_OK,
     TRADE_ACTION_CLOSE_BY,
     TRADE_ACTION_DEAL,
@@ -70,6 +69,14 @@ def _asdict(obj: Any) -> dict:
     if hasattr(obj, "_asdict"):
         return obj._asdict()
     return dict(getattr(obj, "__dict__", {}) or {})
+
+
+def _order_kind(type_code: int) -> str:
+    if type_code in (ORDER_TYPE_BUY_LIMIT, ORDER_TYPE_SELL_LIMIT):
+        return "limit"
+    if type_code in (ORDER_TYPE_BUY_STOP, ORDER_TYPE_SELL_STOP):
+        return "stop"
+    return ""
 
 
 class Mt5Broker:
@@ -325,12 +332,6 @@ class Mt5Broker:
             ORDER_TYPE_BUY_STOP,
             ORDER_TYPE_BUY_STOP_LIMIT,
         }
-        stop_types = {
-            ORDER_TYPE_BUY_STOP,
-            ORDER_TYPE_SELL_STOP,
-            ORDER_TYPE_BUY_STOP_LIMIT,
-            ORDER_TYPE_SELL_STOP_LIMIT,
-        }
         out: list[PendingOrder] = []
         for row in raw:
             d = _asdict(row)
@@ -351,7 +352,7 @@ class Mt5Broker:
                     tp=float(d.get("tp", 0) or 0),
                     magic=mag,
                     comment=str(d.get("comment", "") or ""),
-                    kind="stop" if ptype in stop_types else "limit",
+                    kind=_order_kind(ptype),
                     time=int(d.get("time_setup") or d.get("time") or 0),
                 )
             )
