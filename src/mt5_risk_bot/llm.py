@@ -1,14 +1,23 @@
-"""Grok (xAI) and Claude (Anthropic) chat. Stdlib HTTP. Keys never logged."""
+"""Grok (xAI) and Claude (Anthropic) chat. Stdlib HTTP. Keys never logged.
+
+Conversation turns persist next to the journal so a restart does not
+wipe desk context. Bound to KEEP_TURNS messages. Secrets redacted.
+"""
 
 from __future__ import annotations
 
 import json
+import os
 import re
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 from mt5_risk_bot.config import AdviceConfig
+from mt5_risk_bot.journal import redact_text
 from mt5_risk_bot.telegram import Transport, UrlLibTransport
+
+KEEP_TURNS = 40
 
 SYSTEM = (
     "You are a trading desk analyst for one MetaTrader 5 account. "
@@ -96,11 +105,23 @@ def _int(v: Any) -> int | None:
         return None
 
 
+def advice_path_for(journal_path: str | Path) -> Path:
+    p = Path(journal_path)
+    return p.with_name(p.stem + ".advice.json")
+
+
 class Advisor:
-    def __init__(self, cfg: AdviceConfig, transport: Transport | None = None) -> None:
+    def __init__(
+        self,
+        cfg: AdviceConfig,
+        transport: Transport | None = None,
+        persist_path: str | Path | None = None,
+    ) -> None:
         self.cfg = cfg
         self.transport = transport or UrlLibTransport()
+        self.persist_path = Path(persist_path) if persist_path else None
         self._memory: list[dict[str, str]] = []
+        self.load()
 
     def ask(self, question: str, context: str) -> Advice:
         if not self.cfg.enabled:
@@ -121,8 +142,44 @@ class Advisor:
         return advice
 
     def _remember(self, role: str, content: str) -> None:
-        self._memory.append({"role": role, "content": content})
-        self._memory = self._memory[-6:]
+        self._memory.append({"role": role, "content": redact_text(content)})
+        self._memory = self._memory[-KEEP_TURNS:]
+        self.save()
+
+    def load(self) -> None:
+        path = self.persist_path
+        if path is None or not path.exists():
+            return
+        try:
+            raw = json.loads(path.read_text(encoding="utf-8"))
+        except (OSError, json.JSONDecodeError):
+            return
+        turns = raw.get("turns") if isinstance(raw, dict) else raw
+        if not isinstance(turns, list):
+            return
+        out: list[dict[str, str]] = []
+        for item in turns:
+            if not isinstance(item, dict):
+                continue
+            role = str(item.get("role") or "")
+            if role not in {"user", "assistant"}:
+                continue
+            content = redact_text(str(item.get("content") or ""))
+            if content:
+                out.append({"role": role, "content": content})
+        self._memory = out[-KEEP_TURNS:]
+
+    def save(self) -> None:
+        path = self.persist_path
+        if path is None:
+            return
+        path.parent.mkdir(parents=True, exist_ok=True)
+        payload = json.dumps({"turns": self._memory}, ensure_ascii=False)
+        tmp = path.with_name(path.name + ".tmp")
+        tmp.write_text(payload, encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        tmp.replace(path)
+        os.chmod(path, 0o600)
 
     def _grok(self, user: str) -> str:
         messages = [{"role": "system", "content": SYSTEM}, *self._memory, {"role": "user", "content": user}]

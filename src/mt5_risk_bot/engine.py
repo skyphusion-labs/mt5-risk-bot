@@ -28,7 +28,7 @@ from mt5_risk_bot.desk import Desk
 from mt5_risk_bot.indicators import adx, ema, last_closed
 from mt5_risk_bot.indicators import atr as atr_bars
 from mt5_risk_bot.journal import Journal, redact_text
-from mt5_risk_bot.llm import Advisor
+from mt5_risk_bot.llm import Advisor, advice_path_for
 from mt5_risk_bot.models import Bar, OrderResult, PendingOrder, Position, Signal, SignalKind
 from mt5_risk_bot.risk import RiskDecision, RiskManager, day_key
 from mt5_risk_bot.sizing import money_per_lot_at_stop, normalize_volume
@@ -64,7 +64,14 @@ class Engine:
         self.last_bar_time: dict[str, int] = {}
         self.halted = False
         self.telegram = telegram
-        self.advisor = advisor if advisor is not None else Advisor(cfg.advice)
+        persist = advice_path_for(self.journal.path)
+        if advisor is not None:
+            self.advisor = advisor
+            if self.advisor.persist_path is None:
+                self.advisor.persist_path = persist
+                self.advisor.load()
+        else:
+            self.advisor = Advisor(cfg.advice, persist_path=persist)
         self.desk = Desk(self, self.advisor)
         self._seen_pos: set[int] | None = None
         self._opened_this_step: set[int] = set()
@@ -97,6 +104,7 @@ class Engine:
             p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
         }
         self.desk.restore_from_journal(self.journal)
+        self.advisor.load()
 
     def stop(self) -> None:
         self._emit("stop")

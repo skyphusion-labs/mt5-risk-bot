@@ -73,7 +73,7 @@ off until `/auto on`.
 | `/history` | last journal events |
 | `/recap` | equity vs UTC `day_start` plus `journal.tail`; also sent on UTC day roll as notify `recap` |
 | `/symbols list\|add\|remove [SYMBOL]` | configured book (runtime). Bare `/symbols` lists. Cannot drop the last name, or a name with positions/orders |
-| `/ask ...` or free text | Grok or Claude (last 6 turns plus status, /risk, positions, working orders, quotes); JSON may stage market, `limit=`, `stop=`, or close TICKET; never sends |
+| `/ask ...` or free text | Grok or Claude (last 40 turns in `journal.advice.json`, plus status, /risk, positions, working orders, quotes); JSON may stage market, `limit=`, `stop=`, or close TICKET; never sends. Restart restores the same turns. |
 | `/model grok\|claude` | switch provider |
 | `/auto on\|off` | optional EMA regime; fill alerts do not wait for this |
 | `/status` `/positions` `/halt` `/resume` | account; `/halt` flattens, drops the confirm, and cancels working orders |

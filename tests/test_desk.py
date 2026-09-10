@@ -723,6 +723,34 @@ def test_advisor_memory_includes_prior_turn(tmp_path) -> None:
     assert "first turn" in blob
 
 
+def test_advisor_memory_survives_restart(tmp_path) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Noted.\n"
+                        '{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"x"}'
+                    )
+                }
+            }
+        ]
+    }
+    first = _engine(tmp_path, llm=FakeLlm(payload))
+    first.start()
+    first.handle_command(TgCommand("1", 1, "/ask remember the EURUSD plan", 1))
+    path = first.advisor.persist_path
+    assert path is not None and path.exists()
+    assert path.stat().st_mode & 0o777 == 0o600
+    first.stop()
+    second = _engine(tmp_path, llm=FakeLlm(payload))
+    second.start()
+    second.handle_command(TgCommand("1", 1, "/ask what did I say", 2))
+    blob = str(second.advisor.transport.sent[-1][1]["messages"])
+    assert "remember the EURUSD plan" in blob
+    second.stop()
+
+
 def _fail_send(broker, *, opens: bool = False, closes: bool = False, sltp: bool = False) -> None:
     orig = broker.order_send
 
