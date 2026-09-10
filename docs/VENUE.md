@@ -30,6 +30,8 @@ Fields: `symbol`, `side`, `kind`, `volume`, `price`, `sl`, `tp`, `comment`, `mag
 
 `OrderResult.ok` is true when `retcode` is in `RETCODE_OK`.
 Only `OrderResult.ok` is a send.
+Engine uses `OrderResult.unchanged` and `OrderResult.invalid_stops`.
+It does not import MT5 retcode integers.
 
 ## Methods
 

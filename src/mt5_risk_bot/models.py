@@ -187,6 +187,18 @@ class OrderResult:
 
         return self.retcode in RETCODE_OK
 
+    @classmethod
+    def unchanged(cls) -> OrderResult:
+        from mt5_risk_bot.constants import TRADE_RETCODE_DONE
+
+        return cls(retcode=TRADE_RETCODE_DONE, comment="unchanged")
+
+    @classmethod
+    def invalid_stops(cls, comment: str) -> OrderResult:
+        from mt5_risk_bot.constants import TRADE_RETCODE_INVALID_STOPS
+
+        return cls(retcode=TRADE_RETCODE_INVALID_STOPS, comment=comment)
+
 
 @dataclass(frozen=True)
 class Signal:

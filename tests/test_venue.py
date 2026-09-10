@@ -305,3 +305,18 @@ def test_engine_flatten_uses_cancel_not_order_send(tmp_path: Path) -> None:
 def test_side_has_no_mt5_type_ints() -> None:
     assert "order_type" not in Side.__dict__
     assert "close_type" not in Side.__dict__
+
+
+def test_engine_does_not_import_mt5_retcodes() -> None:
+    import inspect
+
+    import mt5_risk_bot.engine as eng
+    from mt5_risk_bot.models import OrderResult
+
+    assert "TRADE_RETCODE" not in inspect.getsource(eng)
+    done = OrderResult.unchanged()
+    assert done.ok
+    assert done.comment == "unchanged"
+    bad = OrderResult.invalid_stops("sl required")
+    assert not bad.ok
+    assert bad.comment == "sl required"

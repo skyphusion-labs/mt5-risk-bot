@@ -15,6 +15,7 @@ See README.md and docs/CONTRACT.md.
 - `broker_for(cfg)` selects PaperBroker or Mt5Broker from `account.mode`. `PendingOrder.kind` is `limit` or `stop`; engine lists and replaces from that string, not MT5 type ints.
 - `PendingOrder.kind` is `limit` or `stop`. Engine and desk never read MT5 `type_code`.
 - `Side` has no MT5 order type integers. Adapters map buy/sell for `order_send`.
+- Engine uses `OrderResult.unchanged` and `OrderResult.invalid_stops`. It does not import MT5 retcode integers.
 
 ## 0.3.0
 

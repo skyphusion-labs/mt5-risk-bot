@@ -8,7 +8,6 @@ from typing import Any
 
 from mt5_risk_bot.broker.base import Broker
 from mt5_risk_bot.config import BotConfig
-from mt5_risk_bot.constants import TRADE_RETCODE_DONE, TRADE_RETCODE_INVALID_STOPS
 from mt5_risk_bot.desk import Desk
 from mt5_risk_bot.indicators import adx, ema, last_closed
 from mt5_risk_bot.indicators import atr as atr_bars
@@ -168,7 +167,7 @@ class Engine:
 
     def _modify(self, pos: Position, sl: float, tp: float) -> OrderResult:
         if abs(sl - pos.sl) < 1e-12 and abs((tp or 0) - (pos.tp or 0)) < 1e-12:
-            return OrderResult(retcode=TRADE_RETCODE_DONE, comment="unchanged")
+            return OrderResult.unchanged()
         result = self.broker.modify_position(pos.ticket, sl, tp, symbol=pos.symbol)
         self.journal.write(
             "modify",
@@ -814,12 +813,12 @@ class Engine:
         sl_n = spec.normalize_price(sl) if sl else 0.0
         tp_n = spec.normalize_price(tp) if tp else 0.0
         if sl_n <= 0:
-            return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="sl required")
+            return OrderResult.invalid_stops("sl required")
         entry = spec.normalize_price(price) if price is not None else order.price
         if order.side.value == "buy" and not (sl_n < entry and (tp_n <= 0 or entry < tp_n)):
-            return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="buy needs sl < entry < tp")
+            return OrderResult.invalid_stops("buy needs sl < entry < tp")
         if order.side.value == "sell" and not (sl_n > entry and (tp_n <= 0 or tp_n < entry)):
-            return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="sell needs tp < entry < sl")
+            return OrderResult.invalid_stops("sell needs tp < entry < sl")
         kind = order.kind if order.kind in _ORDER_TYPE_NAME else "limit"
         result = self.broker.modify_working(
             order.ticket,
