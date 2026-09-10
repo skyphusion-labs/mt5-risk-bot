@@ -32,6 +32,38 @@ class Pending:
         return f"{self.signal.kind.value} {self.signal.symbol}{extra}"
 
 
+def pending_from_record(rec: dict) -> Pending | None:
+    if not isinstance(rec, dict):
+        return None
+    try:
+        expires_at = float(rec.get("expires_at") or 0)
+        volume = float(rec.get("volume") or 0)
+        source = str(rec.get("source") or "")
+        raw_ticket = rec.get("close_ticket")
+        close_ticket = int(raw_ticket) if raw_ticket not in (None, "") else None
+        sig_raw = rec.get("signal")
+        signal = None
+        if isinstance(sig_raw, dict) and sig_raw.get("kind") in {"buy", "sell"}:
+            signal = Signal(
+                kind=SignalKind(sig_raw["kind"]),
+                symbol=str(sig_raw["symbol"]),
+                entry=float(sig_raw["entry"]),
+                sl=float(sig_raw["sl"]),
+                tp=float(sig_raw["tp"]),
+                atr=float(sig_raw.get("atr") or 0),
+                reason=str(sig_raw.get("reason") or ""),
+                fast_ema=float(sig_raw.get("fast_ema") or 0),
+                slow_ema=float(sig_raw.get("slow_ema") or 0),
+                adx=float(sig_raw.get("adx") or 0),
+                pending_kind=str(sig_raw.get("pending_kind") or ""),
+            )
+        if signal is None and close_ticket is None:
+            return None
+        return Pending(signal, volume, source, expires_at, close_ticket=close_ticket)
+    except (TypeError, ValueError, KeyError):
+        return None
+
+
 def parse_kv(args: str) -> tuple[str, dict[str, str], list[str]]:
     parts = args.split()
     symbol = parts[0].upper() if parts else ""
@@ -51,6 +83,54 @@ class Desk:
         self.engine = engine
         self.advisor = advisor
         self.pending: Pending | None = None
+
+    def restore_from_journal(self, journal: object, now: float | None = None) -> None:
+        last_fn = getattr(journal, "last_event", None)
+        if not callable(last_fn):
+            return
+        rec = last_fn("confirm_stage", "confirm_cancel", "confirm_sent")
+        if not isinstance(rec, dict) or rec.get("event") != "confirm_stage":
+            return
+        stamp = time.time() if now is None else now
+        try:
+            expires_at = float(rec.get("expires_at") or 0)
+        except (TypeError, ValueError):
+            return
+        if stamp > expires_at:
+            return
+        pending = pending_from_record(rec)
+        if pending is not None:
+            self.pending = pending
+
+    def _write_confirm(self, event: str, pending: Pending | None = None) -> None:
+        fields: dict = {}
+        if pending is not None:
+            fields = {
+                "volume": pending.volume,
+                "source": pending.source,
+                "expires_at": pending.expires_at,
+                "close_ticket": pending.close_ticket,
+            }
+            if pending.signal is not None:
+                fields["signal"] = pending.signal
+        emit = getattr(self.engine, "_emit", None)
+        if callable(emit):
+            emit(event, **fields)
+            return
+        journal = getattr(self.engine, "journal", None)
+        write = getattr(journal, "write", None)
+        if callable(write):
+            write(event, **fields)
+
+    def _set_pending(self, pending: Pending) -> None:
+        self.pending = pending
+        self._write_confirm("confirm_stage", pending)
+
+    def _clear_pending(self, event: str) -> None:
+        pending = self.pending
+        self.pending = None
+        if pending is not None:
+            self._write_confirm(event, pending)
 
     def handle(self, cmd: TgCommand) -> str:
         try:
@@ -123,7 +203,7 @@ class Desk:
         if not decision.allowed:
             return f"refused: {decision.reason}"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
-        self.pending = Pending(sig, decision.volume, source, now + ttl)
+        self._set_pending(Pending(sig, decision.volume, source, now + ttl))
         extra = f" {sig.pending_kind}" if sig.pending_kind else ""
         return (
             f"confirm {sig.kind.value} {sig.symbol} vol={decision.volume} "
@@ -144,7 +224,7 @@ class Desk:
         if pos is None:
             return "no such ticket"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
-        self.pending = Pending(None, pos.volume, "advice", now + ttl, close_ticket=ticket)
+        self._set_pending(Pending(None, pos.volume, "advice", now + ttl, close_ticket=ticket))
         return (
             f"confirm close #{ticket} {pos.symbol} vol={pos.volume} "
             f"source=advice\n/confirm within {ttl}s or /cancel"
@@ -155,23 +235,24 @@ class Desk:
         if pending is None:
             return "nothing to confirm"
         if time.time() > pending.expires_at:
-            self.pending = None
+            self._clear_pending("confirm_cancel")
             return "confirm expired"
         if getattr(self.engine, "halted", False):
-            self.pending = None
+            self._clear_pending("confirm_cancel")
             return "refused: halted"
         if pending.close_ticket is not None and pending.signal is None:
             ticket = pending.close_ticket
             reply = self.engine.close_ticket(ticket, pending.source)
-            self.pending = None
             if reply.startswith("closed"):
+                self._clear_pending("confirm_sent")
                 return f"sent close #{ticket}"
+            self._clear_pending("confirm_cancel")
             return reply
         if pending.close_ticket is not None and pending.signal is not None:
             return self._confirm_reverse(pending)
         sig = pending.signal
         if sig is None:
-            self.pending = None
+            self._clear_pending("confirm_cancel")
             return "nothing to confirm"
         if not sig.pending_kind:
             spec = self.engine.broker.symbol(sig.symbol)
@@ -181,14 +262,15 @@ class Desk:
         decision = self.engine.preview(sig, manual=True)
         if not decision.allowed:
             if decision.halt:
-                self.pending = None
+                self._clear_pending("confirm_cancel")
             return f"refused: {decision.reason}"
         result = self.engine.submit(sig, decision.volume)
-        self.pending = None
         if not result.ok:
+            self._clear_pending("confirm_cancel")
             return (
                 f"send failed ok={result.ok} retcode={result.retcode} {result.comment}"
             ).strip()
+        self._clear_pending("confirm_sent")
         return (
             f"sent {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"ok={result.ok} retcode={result.retcode}"
@@ -199,7 +281,7 @@ class Desk:
         if not token:
             if self.pending is None:
                 return "nothing to cancel"
-            self.pending = None
+            self._clear_pending("confirm_cancel")
             return "cancelled"
         if not token.isdigit():
             return "usage: /cancel [TICKET]"
@@ -221,7 +303,7 @@ class Desk:
         if not decision.allowed:
             return f"refused: {decision.reason}"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
-        self.pending = Pending(sig, decision.volume, "telegram", now + ttl, close_ticket=ticket)
+        self._set_pending(Pending(sig, decision.volume, "telegram", now + ttl, close_ticket=ticket))
         return (
             f"confirm reverse #{ticket} {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"@ {sig.entry} sl={sig.sl} tp={sig.tp} rr={sig.rr:.2f} "
@@ -232,11 +314,11 @@ class Desk:
         ticket = pending.close_ticket
         sig = pending.signal
         if ticket is None or sig is None:
-            self.pending = None
+            self._clear_pending("confirm_cancel")
             return "nothing to confirm"
         pos = self.engine._pos(ticket)
         if pos is None:
-            self.pending = None
+            self._clear_pending("confirm_cancel")
             return "no such ticket"
         spec = self.engine.broker.symbol(sig.symbol)
         tick = self.engine.broker.tick(sig.symbol)
@@ -245,23 +327,24 @@ class Desk:
         decision = self.engine.preview(sig, manual=True, exclude_ticket=ticket)
         if not decision.allowed:
             if decision.halt:
-                self.pending = None
+                self._clear_pending("confirm_cancel")
             return f"refused: {decision.reason}"
         closed = self.engine.close_ticket(ticket, pending.source)
         if not closed.startswith("closed"):
-            self.pending = None
+            self._clear_pending("confirm_cancel")
             return closed
         decision = self.engine.preview(sig, manual=True)
         if not decision.allowed:
-            self.pending = None
+            self._clear_pending("confirm_cancel")
             return f"closed #{ticket}; reverse refused: {decision.reason}"
         result = self.engine.submit(sig, decision.volume)
-        self.pending = None
         if not result.ok:
+            self._clear_pending("confirm_cancel")
             return (
                 f"closed #{ticket}; send failed ok={result.ok} "
                 f"retcode={result.retcode} {result.comment}"
             ).strip()
+        self._clear_pending("confirm_sent")
         return (
             f"sent reverse #{ticket} {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"ok={result.ok} retcode={result.retcode}"
@@ -403,7 +486,7 @@ class Desk:
         return f"auto={'on' if self.engine.cfg.strategy.auto else 'off'}"
 
     def _halt(self) -> str:
-        self.pending = None
+        self._clear_pending("confirm_cancel")
         self.engine.risk.write_halt_file("telegram")
         self.engine.flatten("telegram")
         acct = self.engine.broker.account()

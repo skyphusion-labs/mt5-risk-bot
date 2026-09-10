@@ -95,14 +95,20 @@ class Engine:
         self._seen_pos = {
             p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
         }
+        self.desk.restore_from_journal(self.journal)
 
     def stop(self) -> None:
         self._emit("stop")
         self.broker.disconnect()
 
     def flatten(self, reason: str) -> None:
-        if getattr(self, "desk", None) is not None:
-            self.desk.pending = None
+        desk = getattr(self, "desk", None)
+        if desk is not None:
+            clearer = getattr(desk, "_clear_pending", None)
+            if callable(clearer):
+                clearer("confirm_cancel")
+            else:
+                desk.pending = None
         for order in list(self.broker.orders(magic=self.cfg.risk.magic)):
             self.broker.order_send({"action": TRADE_ACTION_REMOVE, "order": order.ticket})
         for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):

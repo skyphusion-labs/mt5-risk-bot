@@ -1,3 +1,5 @@
+import json
+import time
 from datetime import datetime, timezone
 
 from mt5_risk_bot.broker.paper import PaperBroker
@@ -11,6 +13,7 @@ from mt5_risk_bot.constants import (
     TRADE_RETCODE_INVALID,
     TRADE_RETCODE_INVALID_STOPS,
 )
+from mt5_risk_bot.desk import pending_from_record
 from mt5_risk_bot.engine import Engine
 from mt5_risk_bot.llm import Advisor, parse_advice
 from mt5_risk_bot.models import OrderResult
@@ -1006,4 +1009,180 @@ def test_close_success_only_when_applied(tmp_path) -> None:
     assert "fail" in reply.lower() or "retcode" in reply.lower()
     assert engine.broker.positions()
     engine.stop()
+
+
+def test_staged_confirm_survives_restart(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    reply = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    assert "confirm buy EURUSD" in reply
+    pending = engine.desk.pending
+    assert pending is not None
+    assert pending.signal is not None
+    vol = pending.volume
+    expires = pending.expires_at
+    kind = pending.signal.kind
+    symbol = pending.signal.symbol
+    sl, tp, entry = pending.signal.sl, pending.signal.tp, pending.signal.entry
+    rec = engine.journal.last_event("confirm_stage")
+    assert rec is not None
+    assert rec["event"] == "confirm_stage"
+    assert rec["volume"] == vol
+    engine.stop()
+
+    engine2 = _engine(tmp_path)
+    assert engine2.desk.pending is None
+    engine2.start()
+    restored = engine2.desk.pending
+    assert restored is not None
+    assert restored.signal is not None
+    assert restored.signal.kind == kind
+    assert restored.signal.symbol == symbol
+    assert restored.signal.entry == entry
+    assert restored.signal.sl == sl
+    assert restored.signal.tp == tp
+    assert restored.volume == vol
+    assert restored.expires_at == expires
+    assert restored.source == "telegram"
+    reply = engine2.handle_command(TgCommand("1", 1, "/confirm", 2))
+    assert reply.startswith("sent buy")
+    assert engine2.broker.positions()
+    engine2.stop()
+
+
+def test_cancelled_confirm_does_not_restore(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    assert "cancelled" in engine.handle_command(TgCommand("1", 1, "/cancel", 2))
+    last = engine.journal.last_event("confirm_stage", "confirm_cancel", "confirm_sent")
+    assert last is not None
+    assert last["event"] == "confirm_cancel"
+    engine.stop()
+    engine2 = _engine(tmp_path)
+    engine2.start()
+    assert engine2.desk.pending is None
+    engine2.stop()
+
+
+def test_sent_confirm_does_not_restore(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    reply = engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    assert reply.startswith("sent buy")
+    last = engine.journal.last_event("confirm_stage", "confirm_cancel", "confirm_sent")
+    assert last is not None
+    assert last["event"] == "confirm_sent"
+    engine.stop()
+    engine2 = _engine(tmp_path)
+    engine2.start()
+    assert engine2.desk.pending is None
+    engine2.stop()
+
+
+def test_expired_staged_confirm_does_not_restore(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    rec = engine.journal.last_event("confirm_stage")
+    assert rec is not None
+    engine.journal.write(
+        "confirm_stage",
+        signal=rec["signal"],
+        volume=rec["volume"],
+        source=rec["source"],
+        expires_at=1.0,
+        close_ticket=rec.get("close_ticket"),
+    )
+    engine.stop()
+    engine2 = _engine(tmp_path)
+    engine2.start()
+    assert engine2.desk.pending is None
+    engine2.stop()
+
+
+def test_halted_confirm_does_not_restore(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/halt", 2))
+    assert engine.desk.pending is None
+    last = engine.journal.last_event("confirm_stage", "confirm_cancel", "confirm_sent")
+    assert last is not None
+    assert last["event"] == "confirm_cancel"
+    engine.stop()
+    engine2 = _engine(tmp_path)
+    engine2.start()
+    assert engine2.desk.pending is None
+    engine2.stop()
+
+
+def test_staged_limit_survives_restart(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    tick = engine.broker.tick("EURUSD")
+    spec = engine.broker.symbol("EURUSD")
+    limit = spec.normalize_price(tick.ask - 0.002)
+    engine.handle_command(TgCommand("1", 1, f"/buy EURUSD limit={limit}", 1))
+    assert engine.desk.pending is not None
+    assert engine.desk.pending.signal is not None
+    assert engine.desk.pending.signal.pending_kind == "limit"
+    engine.stop()
+    engine2 = _engine(tmp_path)
+    engine2.start()
+    restored = engine2.desk.pending
+    assert restored is not None
+    assert restored.signal is not None
+    assert restored.signal.pending_kind == "limit"
+    assert restored.signal.entry == limit
+    engine2.stop()
+
+
+def test_confirm_stage_journal_has_no_secrets(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    rec = engine.journal.last_event("confirm_stage")
+    assert rec is not None
+    blob = json.dumps(rec).lower()
+    for needle in ("token", "password", "api_key", "grok_key", "claude_key"):
+        assert needle not in blob
+    assert rec.get("signal", {}).get("symbol") == "EURUSD"
+    assert "expires_at" in rec
+    engine.stop()
+
+
+def test_pending_from_record_close_and_garbage() -> None:
+    rec = {
+        "event": "confirm_stage",
+        "volume": 0.1,
+        "source": "advice",
+        "expires_at": time.time() + 60,
+        "close_ticket": 7,
+        "signal": None,
+    }
+    pending = pending_from_record(rec)
+    assert pending is not None
+    assert pending.signal is None
+    assert pending.close_ticket == 7
+    assert pending.volume == 0.1
+    assert pending_from_record({"volume": "nope"}) is None
+    assert pending_from_record({}) is None
+    assert pending_from_record({"kind": "buy"}) is None
+
+
+def test_journal_last_event_skips_garbage(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    path = engine.journal.path
+    path.write_text("{not json}\n\n", encoding="utf-8")
+    assert engine.journal.last_event("confirm_stage") is None
+    engine.journal.write("open", symbol="EURUSD")
+    engine.journal.write("confirm_stage", volume=0.2, source="telegram", expires_at=9.0)
+    engine.journal.write("open", symbol="GBPUSD")
+    last = engine.journal.last_event("confirm_stage", "confirm_cancel", "confirm_sent")
+    assert last is not None
+    assert last["event"] == "confirm_stage"
+    assert last["volume"] == 0.2
+    assert engine.journal.last_event() is None
 

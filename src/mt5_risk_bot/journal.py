@@ -48,6 +48,25 @@ class Journal:
                 out.append(rec)
         return out
 
+    def last_event(self, *names: str) -> dict[str, Any] | None:
+        """Last record whose event is one of names. Full scan; start is rare."""
+        if not names or not self.path.exists():
+            return None
+        wanted = set(names)
+        found: dict[str, Any] | None = None
+        with self.path.open("r", encoding="utf-8") as fh:
+            for line in fh:
+                line = line.strip()
+                if not line:
+                    continue
+                try:
+                    rec = json.loads(line)
+                except json.JSONDecodeError:
+                    continue
+                if isinstance(rec, dict) and rec.get("event") in wanted:
+                    found = rec
+        return found
+
 
 def _redact(v: Any) -> Any:
     if isinstance(v, dict):
