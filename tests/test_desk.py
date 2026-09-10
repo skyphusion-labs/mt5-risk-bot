@@ -784,6 +784,96 @@ def test_sl_tp_success_only_when_applied(tmp_path) -> None:
     engine.stop()
 
 
+def test_reverse_confirm_flips_side(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    pos = engine.broker.positions()[0]
+    assert pos.side.value == "buy"
+    risk_dist = abs(pos.price_open - pos.sl)
+    reward_dist = abs(pos.tp - pos.price_open)
+    reply = engine.handle_command(TgCommand("1", 1, f"/reverse {pos.ticket}", 3))
+    assert f"confirm reverse #{pos.ticket} sell EURUSD" in reply
+    assert "/confirm" in reply
+    assert engine.broker.positions()[0].ticket == pos.ticket
+    sent = engine.handle_command(TgCommand("1", 1, "/confirm", 4))
+    assert sent.startswith(f"sent reverse #{pos.ticket} sell")
+    rows = engine.broker.positions()
+    assert len(rows) == 1
+    flipped = rows[0]
+    assert flipped.side.value == "sell"
+    assert flipped.ticket != pos.ticket
+    spec = engine.broker.symbol("EURUSD")
+    assert abs(abs(flipped.price_open - flipped.sl) - risk_dist) < spec.point * 2
+    assert abs(abs(flipped.tp - flipped.price_open) - reward_dist) < spec.point * 2
+    assert flipped.tp < flipped.price_open < flipped.sl
+    engine.stop()
+
+
+def test_reverse_sell_to_buy(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/sell EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    pos = engine.broker.positions()[0]
+    assert pos.side.value == "sell"
+    reply = engine.handle_command(TgCommand("1", 1, f"/reverse {pos.ticket}", 3))
+    assert f"confirm reverse #{pos.ticket} buy EURUSD" in reply
+    sent = engine.handle_command(TgCommand("1", 1, "/confirm", 4))
+    assert sent.startswith(f"sent reverse #{pos.ticket} buy")
+    flipped = engine.broker.positions()[0]
+    assert flipped.side.value == "buy"
+    assert flipped.sl < flipped.price_open < flipped.tp
+    engine.stop()
+
+
+def test_reverse_refuses_halt_and_usage(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    pos = engine.broker.positions()[0]
+    staged = engine.handle_command(TgCommand("1", 1, f"/reverse {pos.ticket}", 3))
+    assert "confirm reverse" in staged
+    blocked = engine.handle_command(TgCommand("1", 1, f"/reverse {pos.ticket}", 4))
+    assert "pending" in blocked
+    engine.handle_command(TgCommand("1", 1, "/cancel", 5))
+    engine.risk.write_halt_file("operator")
+    halted = engine.handle_command(TgCommand("1", 1, f"/reverse {pos.ticket}", 6))
+    assert "refused" in halted
+    assert engine.broker.positions()
+    engine.risk.clear_operator_halt()
+    engine.handle_command(TgCommand("1", 1, f"/reverse {pos.ticket}", 7))
+    engine.risk.write_halt_file("operator")
+    confirm_halt = engine.handle_command(TgCommand("1", 1, "/confirm", 8))
+    assert "refused" in confirm_halt
+    assert engine.broker.positions()[0].ticket == pos.ticket
+    engine.risk.clear_operator_halt()
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/reverse", 9))
+    assert "no such ticket" in engine.handle_command(TgCommand("1", 1, "/reverse 999", 10))
+    engine.stop()
+
+
+def test_reverse_pending_order_refused(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    tick = engine.broker.tick("EURUSD")
+    spec = engine.broker.symbol("EURUSD")
+    limit = spec.normalize_price(tick.ask - 0.002)
+    sl = spec.normalize_price(limit - 0.005)
+    tp = spec.normalize_price(limit + 0.010)
+    engine.handle_command(
+        TgCommand("1", 1, f"/buy EURUSD limit={limit} sl={sl} tp={tp}", 1)
+    )
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    order = engine.broker.orders()[0]
+    reply = engine.handle_command(TgCommand("1", 1, f"/reverse {order.ticket}", 3))
+    assert "open positions" in reply
+    assert engine.broker.orders()
+    engine.stop()
+
+
 def test_close_success_only_when_applied(tmp_path) -> None:
     engine = _engine(tmp_path)
     engine.start()

@@ -367,15 +367,76 @@ class Engine:
             pending_kind=pending_kind,
         )
 
-    def preview(self, signal: Signal, *, manual: bool = True) -> RiskDecision:
+    def preview(
+        self,
+        signal: Signal,
+        *,
+        manual: bool = True,
+        exclude_ticket: int | None = None,
+    ) -> RiskDecision:
+        positions = self.broker.positions(magic=self.cfg.risk.magic)
+        if exclude_ticket is not None:
+            positions = [p for p in positions if p.ticket != exclude_ticket]
         return self.risk.evaluate(
             account=self.broker.account(),
             signal=signal,
             spec=self.broker.symbol(signal.symbol),
             tick=self.broker.tick(signal.symbol),
-            positions=self.broker.positions(magic=self.cfg.risk.magic),
+            positions=positions,
             now=self.now_fn(),
             manual=manual,
+        )
+
+    def reverse_signal(
+        self,
+        ticket: int,
+        sl: float | None = None,
+        tp: float | None = None,
+    ) -> Signal:
+        if self._order(ticket) is not None:
+            raise RuntimeError("reverse is for open positions")
+        pos = self._pos(ticket)
+        if pos is None:
+            raise RuntimeError("no such ticket")
+        kind = SignalKind.SELL if pos.side.value == "buy" else SignalKind.BUY
+        spec = self.broker.symbol(pos.symbol)
+        tick = self.broker.tick(pos.symbol)
+        if tick.bid <= 0 or tick.ask <= 0:
+            raise RuntimeError(f"no tick for {pos.symbol}")
+        entry = tick.ask if kind is SignalKind.BUY else tick.bid
+        bars = self.broker.rates(
+            pos.symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+        )
+        a0 = 0.0
+        if bars:
+            vals = [v for v in atr_bars(bars, self.cfg.strategy.atr_period) if v == v]
+            if vals:
+                a0 = vals[-1]
+        risk_dist = abs(pos.price_open - pos.sl) if pos.sl > 0 else 0.0
+        reward_dist = abs(pos.tp - pos.price_open) if pos.tp > 0 else 0.0
+        if sl is None:
+            if risk_dist <= 0:
+                raise RuntimeError("position has no sl; pass sl=")
+            sl = entry - risk_dist if kind is SignalKind.BUY else entry + risk_dist
+        if tp is None:
+            if reward_dist <= 0:
+                raise RuntimeError("position has no tp; pass tp=")
+            tp = entry + reward_dist if kind is SignalKind.BUY else entry - reward_dist
+        entry = spec.normalize_price(entry)
+        sl = spec.normalize_price(sl)
+        tp = spec.normalize_price(tp)
+        if kind is SignalKind.BUY and not (sl < entry < tp):
+            raise RuntimeError("buy needs sl < entry < tp")
+        if kind is SignalKind.SELL and not (tp < entry < sl):
+            raise RuntimeError("sell needs tp < entry < sl")
+        return Signal(
+            kind=kind,
+            symbol=pos.symbol,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            atr=a0,
+            reason="reverse",
         )
 
     def submit(self, signal: Signal, volume: float) -> OrderResult:

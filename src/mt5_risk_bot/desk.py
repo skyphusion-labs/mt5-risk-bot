@@ -19,11 +19,16 @@ class Pending:
     close_ticket: int | None = None
 
     def label(self) -> str:
-        if self.close_ticket is not None:
+        if self.close_ticket is not None and self.signal is None:
             return f"close #{self.close_ticket}"
         if self.signal is None:
             return "order"
         extra = f" {self.signal.pending_kind}" if self.signal.pending_kind else ""
+        if self.close_ticket is not None:
+            return (
+                f"reverse #{self.close_ticket} {self.signal.kind.value} "
+                f"{self.signal.symbol}{extra}"
+            )
         return f"{self.signal.kind.value} {self.signal.symbol}{extra}"
 
 
@@ -61,6 +66,7 @@ class Desk:
                 "trail": lambda: self._trail(cmd.args),
                 "buy": lambda: self._trade(SignalKind.BUY, cmd.args, "telegram"),
                 "sell": lambda: self._trade(SignalKind.SELL, cmd.args, "telegram"),
+                "reverse": lambda: self._reverse(cmd.args),
                 "close": lambda: self._close(cmd.args),
                 "sl": lambda: self._stop(cmd.args, "sl"),
                 "tp": lambda: self._stop(cmd.args, "tp"),
@@ -153,13 +159,15 @@ class Desk:
         if getattr(self.engine, "halted", False):
             self.pending = None
             return "refused: halted"
-        if pending.close_ticket is not None:
+        if pending.close_ticket is not None and pending.signal is None:
             ticket = pending.close_ticket
             reply = self.engine.close_ticket(ticket, pending.source)
             self.pending = None
             if reply.startswith("closed"):
                 return f"sent close #{ticket}"
             return reply
+        if pending.close_ticket is not None and pending.signal is not None:
+            return self._confirm_reverse(pending)
         sig = pending.signal
         if sig is None:
             self.pending = None
@@ -195,6 +203,68 @@ class Desk:
         if not token.isdigit():
             return "usage: /cancel [TICKET]"
         return self.engine.cancel_order(int(token))
+
+    def _reverse(self, args: str) -> str:
+        parts = args.split()
+        if not parts or not parts[0].isdigit():
+            return "usage: /reverse TICKET [sl=] [tp=]"
+        ticket = int(parts[0])
+        _, kv, _ = parse_kv(args)
+        sl = _opt_float(kv.get("sl"))
+        tp = _opt_float(kv.get("tp"))
+        now = time.time()
+        if self.pending is not None and now <= self.pending.expires_at:
+            return f"pending {self.pending.label()}; /cancel first"
+        sig = self.engine.reverse_signal(ticket, sl=sl, tp=tp)
+        decision = self.engine.preview(sig, manual=True, exclude_ticket=ticket)
+        if not decision.allowed:
+            return f"refused: {decision.reason}"
+        ttl = int(self.engine.cfg.telegram.confirm_seconds)
+        self.pending = Pending(sig, decision.volume, "telegram", now + ttl, close_ticket=ticket)
+        return (
+            f"confirm reverse #{ticket} {sig.kind.value} {sig.symbol} vol={decision.volume} "
+            f"@ {sig.entry} sl={sig.sl} tp={sig.tp} rr={sig.rr:.2f} "
+            f"source=telegram\n/confirm within {ttl}s or /cancel"
+        )
+
+    def _confirm_reverse(self, pending: Pending) -> str:
+        ticket = pending.close_ticket
+        sig = pending.signal
+        if ticket is None or sig is None:
+            self.pending = None
+            return "nothing to confirm"
+        pos = self.engine._pos(ticket)
+        if pos is None:
+            self.pending = None
+            return "no such ticket"
+        spec = self.engine.broker.symbol(sig.symbol)
+        tick = self.engine.broker.tick(sig.symbol)
+        entry = tick.ask if sig.kind is SignalKind.BUY else tick.bid
+        sig = sig.reprice(entry, spec)
+        decision = self.engine.preview(sig, manual=True, exclude_ticket=ticket)
+        if not decision.allowed:
+            if decision.halt:
+                self.pending = None
+            return f"refused: {decision.reason}"
+        closed = self.engine.close_ticket(ticket, pending.source)
+        if not closed.startswith("closed"):
+            self.pending = None
+            return closed
+        decision = self.engine.preview(sig, manual=True)
+        if not decision.allowed:
+            self.pending = None
+            return f"closed #{ticket}; reverse refused: {decision.reason}"
+        result = self.engine.submit(sig, decision.volume)
+        self.pending = None
+        if not result.ok:
+            return (
+                f"closed #{ticket}; send failed ok={result.ok} "
+                f"retcode={result.retcode} {result.comment}"
+            ).strip()
+        return (
+            f"sent reverse #{ticket} {sig.kind.value} {sig.symbol} vol={decision.volume} "
+            f"ok={result.ok} retcode={result.retcode}"
+        )
 
     def _close(self, args: str) -> str:
         parts = args.split()
