@@ -203,6 +203,7 @@ def test_step_all_reconnects_after_account_drop(tmp_path: Path) -> None:
     assert "reconnect" in events
     rec = [r for r in engine.journal.tail(20) if r.get("event") == "reconnect"][-1]
     assert rec.get("ok") is True
+    assert (tmp_path / "j.heartbeat").stat().st_mode & 0o777 == 0o600
     engine.stop()
 
 

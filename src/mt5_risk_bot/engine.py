@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from typing import Any
 
@@ -1083,6 +1084,14 @@ class Engine:
             self.journal.write("reconnect", ok=False, error=str(exc)[:200])
             return False
 
+    def _write_heartbeat(self, now: datetime | None = None) -> None:
+        dest = self.journal.path.with_name(self.journal.path.stem + ".heartbeat")
+        tmp = dest.with_name(dest.name + ".tmp")
+        ts = (now or self.now_fn()).isoformat()
+        tmp.write_text(ts + "\n", encoding="utf-8")
+        os.chmod(tmp, 0o600)
+        tmp.replace(dest)
+
     def step_all(self) -> None:
         self.poll_telegram()
         try:
@@ -1100,8 +1109,10 @@ class Engine:
         now = self.now_fn()
         self._maybe_daily_recap(acct, now)
         if self.halted:
+            self._write_heartbeat(now)
             return
         if self._apply_circuit(acct, now):
+            self._write_heartbeat(now)
             return
         self._opened_this_step.clear()
         self._closed_this_step.clear()
@@ -1115,6 +1126,7 @@ class Engine:
                     break
                 self.step_symbol(symbol)
         self._detect_fills()
+        self._write_heartbeat(now)
 
 
 def _format_event(event: str, fields: dict[str, Any]) -> str:
