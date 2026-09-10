@@ -63,7 +63,14 @@ def _push_close(engine: Engine, symbol: str, close: float, dt: int = 3600) -> No
 
 
 def test_limit_buy_stages_pending_then_fills(tmp_path) -> None:
-    engine = _engine(tmp_path)
+    tr = FakeTransport()
+    tg = TelegramClient(
+        token="t",
+        chat_id="1",
+        transport=tr,
+        notify_events=frozenset({"start", "stop", "open", "close", "halt", "pending"}),
+    )
+    engine = _engine(tmp_path, telegram=tg)
     engine.start()
     tick = engine.broker.tick("EURUSD")
     spec = engine.broker.symbol("EURUSD")
@@ -87,6 +94,9 @@ def test_limit_buy_stages_pending_then_fills(tmp_path) -> None:
     engine.step_all()
     assert engine.broker.orders() == []
     assert engine.broker.positions()
+    texts = [payload.get("text", "") for _, payload in tr.sent]
+    blob = " ".join(texts)
+    assert "PENDING" in blob or "FILL" in blob or "OPEN" in blob
     engine.stop()
 
 

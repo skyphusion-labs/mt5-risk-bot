@@ -94,3 +94,52 @@ def test_invalid_volume_rejected() -> None:
     assert res.retcode == TRADE_RETCODE_INVALID_VOLUME
     assert broker.orders() == []
     assert broker.positions() == []
+
+
+def test_buy_limit_fills_on_bar() -> None:
+    broker = _paper()
+    spec = broker.symbol("EURUSD")
+    tick = broker.tick("EURUSD")
+    limit = spec.normalize_price(tick.ask - 0.002)
+    res = _place(broker, ORDER_TYPE_BUY_LIMIT, limit)
+    last = broker.rates("EURUSD", 0, 1)[-1]
+    bar = Bar(
+        time=last.time + 3600,
+        open=limit,
+        high=limit,
+        low=limit - 0.001,
+        close=limit - 0.0005,
+    )
+    broker.on_bar("EURUSD", bar)
+    assert broker.orders() == []
+    assert len(broker.positions()) == 1
+    assert broker.positions()[0].ticket == res.order
+
+
+def test_sell_limit_fills_when_bid_rises() -> None:
+    from mt5_risk_bot.constants import ORDER_TYPE_SELL_LIMIT
+
+    broker = _paper()
+    spec = broker.symbol("EURUSD")
+    tick = broker.tick("EURUSD")
+    limit = spec.normalize_price(tick.bid + 0.002)
+    res = broker.order_send(
+        {
+            "action": TRADE_ACTION_PENDING,
+            "symbol": "EURUSD",
+            "volume": 0.10,
+            "type": ORDER_TYPE_SELL_LIMIT,
+            "price": limit,
+            "sl": spec.normalize_price(limit + 0.005),
+            "tp": spec.normalize_price(limit - 0.010),
+            "magic": 1,
+        }
+    )
+    assert res.ok
+    assert broker.resolve_pending("EURUSD") == []
+    _set_close(broker, limit + 0.001)
+    filled = broker.resolve_pending("EURUSD")
+    assert filled == [res.order]
+    assert len(broker.positions()) == 1
+    assert broker.orders() == []
+
