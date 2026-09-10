@@ -30,7 +30,9 @@ off until `/auto on`.
   `day_start`). That is not a trade. `/recap` dumps the same snapshot.
 - Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`,
   `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`,
-  `ANTHROPIC_API_KEY`, `AI_PROVIDER`.
+  `ANTHROPIC_API_KEY`, `AI_PROVIDER`. Journal writes, `loop_error`
+  stderr, and Telegram `send` redact BotFather tokens. Named secret
+  keys in the journal become `[REDACTED]`.
 
 ## Forbidden claims
 

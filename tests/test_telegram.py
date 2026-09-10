@@ -206,6 +206,20 @@ def test_poll_survives_freetext_llm_error(tmp_path) -> None:
     assert any("grok down" in t for t in texts)
 
 
+def test_send_redacts_botfather_token() -> None:
+    secret = "1234567890:AA" + "x" * 35
+    tr = FakeTransport()
+    tg = TelegramClient(token="t", chat_id="42", transport=tr)
+    assert tg.send(f"failed token {secret} leftover")
+    assert tr.sent
+    body = tr.sent[0][1]["text"]
+    assert secret not in body
+    assert "leftover" in body
+    assert "[REDACTED]" in body
+    blob = " ".join(str(item) for item in tr.sent)
+    assert secret not in blob
+
+
 class SeqTransport:
     def __init__(self, responses: list) -> None:
         self.responses = list(responses)
@@ -323,7 +337,9 @@ def test_offset_not_persisted_until_ack(tmp_path) -> None:
     assert tg.offset == 11
     assert not (tmp_path / "journal.tg_offset").exists()
     tg.ack(10)
-    assert (tmp_path / "journal.tg_offset").read_text(encoding="utf-8").strip() == "11"
+    dest = tmp_path / "journal.tg_offset"
+    assert dest.read_text(encoding="utf-8").strip() == "11"
+    assert dest.stat().st_mode & 0o777 == 0o600
     loaded = TelegramClient(token="t", chat_id="42", transport=FakeTransport(), offset_path=path)
     assert loaded.offset == 11
 

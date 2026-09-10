@@ -26,7 +26,7 @@ from mt5_risk_bot.constants import (
 from mt5_risk_bot.desk import Desk
 from mt5_risk_bot.indicators import adx, ema, last_closed
 from mt5_risk_bot.indicators import atr as atr_bars
-from mt5_risk_bot.journal import Journal
+from mt5_risk_bot.journal import Journal, redact_text
 from mt5_risk_bot.llm import Advisor
 from mt5_risk_bot.models import Bar, OrderResult, PendingOrder, Position, Signal, SignalKind
 from mt5_risk_bot.risk import RiskDecision, RiskManager, day_key
@@ -1028,7 +1028,7 @@ class Engine:
                 self.telegram.send(self.desk.handle(cmd))
             except (ValueError, RuntimeError, OSError) as exc:
                 try:
-                    self.telegram.send(f"error: {exc}")
+                    self.telegram.send(f"error: {redact_text(str(exc))}")
                 except (ValueError, RuntimeError, OSError):
                     pass
             finally:

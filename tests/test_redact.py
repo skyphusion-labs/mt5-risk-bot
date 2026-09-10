@@ -1,7 +1,7 @@
 from dataclasses import dataclass
 from pathlib import Path
 
-from mt5_risk_bot.journal import Journal
+from mt5_risk_bot.journal import Journal, redact_text
 
 FAKE_TOKEN = "123456789:XXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXXX"
 FAKE_PASSWORD = "s3cr3t-pass-value"
@@ -57,3 +57,19 @@ def test_journal_write_redacts_nested_and_embedded_token(tmp_path: Path) -> None
     assert rec["creds"]["login"] == 42
     assert rec["items"][0]["n"] == 1
     assert FAKE_TOKEN not in rec["error"]
+
+
+def test_redact_text_strips_bot_token_keeps_rest() -> None:
+    msg = f"loop error: telegram http failed token={FAKE_TOKEN} ok"
+    out = redact_text(msg)
+    assert FAKE_TOKEN not in out
+    assert "[REDACTED]" in out
+    assert "loop error" in out
+
+
+def test_redact_text_strips_botfather_token() -> None:
+    secret = "1234567890:AA" + "x" * 35
+    out = redact_text("token " + secret + " leftover")
+    assert secret not in out
+    assert "leftover" in out
+    assert "[REDACTED]" in out

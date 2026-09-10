@@ -5,6 +5,7 @@ from __future__ import annotations
 import time
 from dataclasses import dataclass
 
+from mt5_risk_bot.journal import redact_text
 from mt5_risk_bot.llm import Advice, Advisor
 from mt5_risk_bot.models import Signal, SignalKind
 from mt5_risk_bot.telegram import HELP, TgCommand
@@ -169,7 +170,7 @@ class Desk:
                 return "unknown command. /help"
             return fn()
         except (ValueError, RuntimeError) as exc:
-            return str(exc)
+            return redact_text(str(exc))
 
     def _quote(self, args: str) -> str:
         symbol = args.split()[0].upper() if args.strip() else ""
@@ -457,7 +458,7 @@ class Desk:
                     )
                     lines.append(self._stage(sig, "advice"))
                 except (ValueError, RuntimeError) as exc:
-                    lines.append(f"could not stage trade: {exc}")
+                    lines.append(f"could not stage trade: {redact_text(str(exc))}")
         elif advice.action == "close":
             lines.append(self._stage_close(advice))
         return "\n".join(x for x in lines if x)

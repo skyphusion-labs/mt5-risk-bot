@@ -204,3 +204,25 @@ def test_run_loop_survives_step_error(tmp_path, capsys) -> None:
     assert "broker hiccup" in err
     events = [rec.get("event") for rec in eng.journal.tail(10)]
     assert "loop_error" in events
+
+
+def test_run_loop_stderr_redacts_botfather_token(capsys) -> None:
+    secret = "1234567890:AA" + "x" * 35
+
+    class Boom:
+        def __init__(self) -> None:
+            self.n = 0
+            self.halted = False
+            self.journal = type("J", (), {"write": staticmethod(lambda *a, **k: None)})()
+
+        def step_all(self) -> None:
+            self.n += 1
+            if self.n == 1:
+                raise RuntimeError("token 1234567890:AA" + "x" * 35)
+            self.halted = True
+
+    run_loop(Boom(), loop=True, keep_on_halt=False)
+    err = capsys.readouterr().err
+    assert "loop error" in err
+    assert secret not in err
+    assert "[REDACTED]" in err

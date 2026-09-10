@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import json
+import os
 import re
 from collections import deque
 from datetime import datetime, timezone
@@ -19,6 +20,8 @@ class Journal:
     def __init__(self, path: str | Path) -> None:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
+        if self.path.exists():
+            os.chmod(self.path, 0o600)
 
     def write(self, event: str, **fields: Any) -> None:
         rec = {
@@ -29,6 +32,7 @@ class Journal:
         rec = redact(rec)
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, default=str) + "\n")
+        os.chmod(self.path, 0o600)
 
     def tail(self, n: int = 20) -> list[dict[str, Any]]:
         if n <= 0 or not self.path.exists():
@@ -73,17 +77,18 @@ def redact_text(s: str) -> str:
     return _TG_TOKEN_RE.sub(_REDACTED, s)
 
 
-def _redact(v: Any) -> Any:
+def redact(v: Any) -> Any:
+    """Strip secret-named keys and BotFather tokens from logs and chat."""
     if isinstance(v, dict):
         out: dict[str, Any] = {}
         for k, val in v.items():
             if str(k).lower() in _SECRET_KEYS:
                 out[k] = _REDACTED
             else:
-                out[k] = _redact(val)
+                out[k] = redact(val)
         return out
     if isinstance(v, (list, tuple)):
-        return [_redact(x) for x in v]
+        return [redact(x) for x in v]
     if isinstance(v, str):
         return redact_text(v)
     return v

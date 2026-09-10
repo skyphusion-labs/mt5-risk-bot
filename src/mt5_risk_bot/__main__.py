@@ -21,7 +21,6 @@ from mt5_risk_bot.engine import Engine, run_backtest
 from mt5_risk_bot.journal import redact_text
 from mt5_risk_bot.models import Bar
 from mt5_risk_bot.synthetic import generate_bars, generate_ranging
-from mt5_risk_bot.journal import redact
 from mt5_risk_bot.telegram import TelegramClient, TgCommand, offset_path_for
 
 
