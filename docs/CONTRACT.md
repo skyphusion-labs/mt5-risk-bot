@@ -22,7 +22,7 @@ Auto EMA trading is off until `/auto on`.
 | Desk required | Telegram is required for `run`. |
 | Desk trades | Slash commands place, close, and modify trades. |
 | Free text | Free text goes to the configured model. |
-| Advice send | AI advice never sends an order. |
+| Advice send | Default: advice is staged. `/confirm` sends. `/approve always`: after risk preview, send. Risk can still refuse. |
 | Confirm | A staged suggestion waits for `/confirm` (default 120s). `/approve always` skips that wait after a successful risk preview. |
 | Approve | `/approve always` sends after risk preview. No `/confirm`. Default off. `/approve off` restores staging. Circuit and `risk_pct` still refuse. Halt still refuses. Paper and demo accept `/approve always` at any time. On `trade_mode=2` without live armed, `/approve always` is refused until `/live on I-ACCEPT-RISK`. Last of `approve_always` / `approve_off` in `journal.jsonl` restores on start. |
 | Live from chat | Real-money sends need `live_accepted`. Set it with `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat. The phrase is required. `/live on` without it is usage. `/live off` clears it. Last of `live_on` / `live_off` restores on start. Same fuse as `--i-accept-risk`. Risk still sizes and can refuse. |
