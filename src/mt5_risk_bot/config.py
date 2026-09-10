@@ -29,6 +29,7 @@ class RiskConfig:
 @dataclass
 class StrategyConfig:
     auto: bool = False
+    trail: bool = False
     timeframe: str = "H1"
     fast_ema: int = 21
     slow_ema: int = 55
@@ -192,6 +193,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
         ),
         strategy=StrategyConfig(
             auto=bool(strat_s.get("auto", False)),
+            trail=bool(strat_s.get("trail", False)),
             timeframe=str(strat_s.get("timeframe", "H1")),
             fast_ema=int(strat_s.get("fast_ema", 21)),
             slow_ema=int(strat_s.get("slow_ema", 55)),

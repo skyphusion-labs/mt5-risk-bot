@@ -78,7 +78,8 @@ is fully up.
 Free text is `/ask`. Context includes `/risk`, positions, working orders,
 and quotes. A recommended market, limit, stop, or close-ticket is staged;
 `/confirm` sends it through the risk engine. `/auto on` is the only way
-the EMA regime trades on its own. SL/TP hits and pending fills still
+the EMA regime trades on its own. `/trail on` trails open positions
+each tick without turning auto on. SL/TP hits and pending fills still
 alert in Telegram when auto is off.
 
 Paper is the default (`account.mode = "paper"`). Real accounts still need
@@ -94,6 +95,7 @@ Stage a working order, then confirm:
 /quote
 /risk
 /trail TICKET
+/trail on
 ```
 
 `stop=` is the same shape (`/sell EURUSD stop=... sl=... tp=...`). Do not

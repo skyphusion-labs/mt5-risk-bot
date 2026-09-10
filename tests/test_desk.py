@@ -104,6 +104,63 @@ def test_auto_toggle(tmp_path) -> None:
     assert engine.cfg.strategy.auto is True
 
 
+def test_trail_toggle_does_not_enable_auto(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    assert engine.cfg.strategy.trail is False
+    assert engine.cfg.strategy.auto is False
+    assert "trail=off" in engine.handle_command(TgCommand("1", 1, "/trail", 1))
+    assert "trail on" in engine.handle_command(TgCommand("1", 1, "/trail on", 2))
+    assert engine.cfg.strategy.trail is True
+    assert engine.cfg.strategy.auto is False
+    assert "trail=on" in engine.handle_command(TgCommand("1", 1, "/trail", 3))
+    assert "trail off" in engine.handle_command(TgCommand("1", 1, "/trail off", 4))
+    assert engine.cfg.strategy.trail is False
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/trail nope", 5))
+
+
+def test_trail_on_manages_without_auto_entries(tmp_path) -> None:
+    from mt5_risk_bot.models import Bar
+
+    engine = _engine(tmp_path)
+    engine.start()
+    tick = engine.broker.tick("EURUSD")
+    spec = engine.broker.symbol("EURUSD")
+    sl = spec.normalize_price(tick.ask - 0.005)
+    tp = spec.normalize_price(tick.ask + 0.100)
+    engine.handle_command(TgCommand("1", 1, f"/buy EURUSD sl={sl} tp={tp}", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    pos = engine.broker.positions()[0]
+    old_sl = pos.sl
+    last = engine.broker.rates("EURUSD", engine.cfg.strategy.timeframe_id, 1)[-1]
+    winner = spec.normalize_price(pos.price_open + 0.020)
+    engine.broker.seed_bars(
+        "EURUSD",
+        engine.broker.rates("EURUSD", engine.cfg.strategy.timeframe_id, 200)
+        + [
+            Bar(
+                time=last.time + 3600,
+                open=last.close,
+                high=max(last.close, winner),
+                low=min(last.close, winner),
+                close=winner,
+            )
+        ],
+    )
+    engine.step_all()
+    assert engine.cfg.strategy.auto is False
+    assert engine.last_bar_time == {}
+    still = engine.broker.positions()[0]
+    assert abs(still.sl - old_sl) < spec.point
+    assert "trail on" in engine.handle_command(TgCommand("1", 1, "/trail on", 3))
+    assert engine.cfg.strategy.auto is False
+    engine.step_all()
+    assert engine.last_bar_time == {}
+    moved = engine.broker.positions()[0]
+    assert moved.sl > old_sl
+    assert len(engine.broker.positions()) == 1
+    engine.stop()
+
+
 def test_cancel_and_help(tmp_path) -> None:
     engine = _engine(tmp_path)
     engine.start()
@@ -210,8 +267,9 @@ def test_risk_and_trail(tmp_path) -> None:
     risk = engine.handle_command(TgCommand("1", 1, "/risk", 1))
     assert "risk_pct=" in risk
     assert "daily_loss=" in risk
-    assert "usage" in engine.handle_command(TgCommand("1", 1, "/trail", 2))
+    assert "trail=off" in engine.handle_command(TgCommand("1", 1, "/trail", 2))
     assert "no such ticket" in engine.handle_command(TgCommand("1", 1, "/trail 999", 3))
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/trail nope", 7))
     engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 4))
     engine.handle_command(TgCommand("1", 1, "/confirm", 5))
     pos = engine.broker.positions()[0]

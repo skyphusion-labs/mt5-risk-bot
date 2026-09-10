@@ -217,8 +217,17 @@ class Desk:
 
     def _trail(self, args: str) -> str:
         token = args.split()[0] if args.strip() else ""
-        if not token or not token.isdigit():
-            return "usage: /trail TICKET"
+        if not token:
+            return f"trail={'on' if self.engine.cfg.strategy.trail else 'off'}"
+        low = token.lower()
+        if low in {"on", "true"}:
+            self.engine.cfg.strategy.trail = True
+            return "trail on"
+        if low in {"off", "false"}:
+            self.engine.cfg.strategy.trail = False
+            return "trail off"
+        if not token.isdigit():
+            return "usage: /trail on|off|TICKET"
         return self.engine.trail(int(token))
 
     def _history(self) -> str:

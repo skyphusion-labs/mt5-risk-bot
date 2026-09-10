@@ -59,7 +59,7 @@ off until `/auto on`.
 | `/close TICKET\|SYMBOL\|all [VOL]` | flatten or partial close |
 | `/sl` `/tp` TICKET PRICE | modify; success only if the broker applied it |
 | `/be TICKET` | move SL to entry; never loosen |
-| `/trail TICKET` | ATR trail / breakeven from the strategy; never loosen |
+| `/trail on\|off\|TICKET` | on: `manage()` existing positions every tick, no EMA entries (default off). TICKET: one-shot. never loosen |
 | `/history` | last journal events |
 | `/ask ...` or free text | Grok or Claude (last 6 turns plus status, /risk, positions, working orders, quotes); JSON may stage market, `limit=`, `stop=`, or close TICKET; never sends |
 | `/model grok\|claude` | switch provider |
@@ -72,7 +72,7 @@ Advice JSON fields: `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `
 
 Buy limit must be below ask; sell limit above bid; buy stop above ask; sell stop below bid. `limit=` and `stop=` together are refused.
 
-Each loop tick resolves pending fills and SL/TP even when `/auto` is off. Pending fills notify as `FILL/OPEN`; SL/TP hits notify as `CLOSE` with `reason=sl` or `reason=tp`.
+Each loop tick resolves pending fills and SL/TP even when `/auto` is off. Pending fills notify as `FILL/OPEN`; SL/TP hits notify as `CLOSE` with `reason=sl` or `reason=tp`. `/trail on` runs `manage()` on open positions every `step_all` tick and does not enable EMA entries. `/auto on` still owns entries. Trail default is off.
 
 Manual `/buy` `/sell` skip the session window. Auto does not.
 

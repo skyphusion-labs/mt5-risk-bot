@@ -43,7 +43,8 @@ drops one. Bare `/cancel` drops a staged confirm.
 
 `/quote` with no symbol lists the book. `/risk` shows daily-loss and
 drawdown room. `/trail TICKET` moves SL using the ATR trail and never
-loosens.
+loosens. `/trail on` does that every tick for open positions and does
+not enable EMA entries. Default off.
 
 SL/TP and pending fills still alert in Telegram when `/auto` is off.
 Paper is the default. Live real accounts need `--i-accept-risk`.

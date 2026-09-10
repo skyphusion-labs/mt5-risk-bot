@@ -27,6 +27,7 @@ deviation_points = 20
 
 [strategy]
 auto = false                # Telegram is the desk. /auto on enables the EMA regime.
+trail = false               # /trail on manages existing positions each tick. Not EMA entries.
 timeframe = "H1"
 fast_ema = 21
 slow_ema = 55

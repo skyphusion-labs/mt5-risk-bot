@@ -452,6 +452,15 @@ class Engine:
             return
         fn()
 
+    def _manage_open(self) -> None:
+        for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
+            bars = self.broker.rates(
+                pos.symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+            )
+            spec = self.broker.symbol(pos.symbol)
+            new_sl, new_tp = self.strategy.manage(pos, bars, spec)
+            self._modify(pos, new_sl, new_tp)
+
     def _check_stops(self) -> None:
         for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
             tick = self.broker.tick(pos.symbol)
@@ -652,7 +661,8 @@ class Engine:
             self.positions_text(),
             self.orders_text(),
             f"symbols={','.join(self.cfg.symbols)} risk_pct={self.cfg.risk.risk_pct}",
-            f"auto={self.cfg.strategy.auto} provider={self.cfg.advice.provider}",
+            f"auto={self.cfg.strategy.auto} trail={self.cfg.strategy.trail} "
+            f"provider={self.cfg.advice.provider}",
             "Advice may stage a trade. It never sends. /confirm is the only send.",
             "If daily_loss or drawdown room is gone, action must be hold or close.",
         ]
@@ -716,6 +726,8 @@ class Engine:
         self._closed_this_step.clear()
         self._resolve_pending()
         self._check_stops()
+        if self.cfg.strategy.trail:
+            self._manage_open()
         if self.cfg.strategy.auto:
             for symbol in self.cfg.symbols:
                 if self.halted:

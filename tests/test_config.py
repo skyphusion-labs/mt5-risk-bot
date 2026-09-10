@@ -10,5 +10,7 @@ def test_example_config_loads() -> None:
     assert cfg.risk.risk_pct == 0.005
     assert "EURUSD" in cfg.symbols
     assert cfg.strategy.timeframe_id == 16385
+    assert cfg.strategy.auto is False
+    assert cfg.strategy.trail is False
     assert cfg.telegram.enabled is False
     assert "open" in cfg.telegram.notify_events
