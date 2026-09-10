@@ -10,6 +10,7 @@ from mt5_risk_bot.constants import (
     TRADE_ACTION_REMOVE,
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID_FILL,
+    TRADE_RETCODE_INVALID_ORDER,
 )
 from mt5_risk_bot.models import Side
 
@@ -22,7 +23,8 @@ class FakeMt5:
     TRADE_RETCODE_DONE = TRADE_RETCODE_DONE
     TRADE_RETCODE_INVALID_FILL = TRADE_RETCODE_INVALID_FILL
 
-    def __init__(self) -> None:
+    def __init__(self, *, netting: bool = False) -> None:
+        self.netting = netting
         self.inited = False
         self.init_count = 0
         self.disconnected = False
@@ -236,6 +238,17 @@ class FakeMt5:
                 ask=1.1,
             )
         if action == TRADE_ACTION_CLOSE_BY:
+            if self.netting:
+                return _nt(
+                    retcode=TRADE_RETCODE_INVALID_ORDER,
+                    comment="hedge only",
+                    deal=0,
+                    order=0,
+                    volume=0,
+                    price=0,
+                    bid=1.1,
+                    ask=1.1,
+                )
             gone = {
                 int(request.get("position") or 0),
                 int(request.get("position_by") or 0),
@@ -490,4 +503,44 @@ def test_adapter_close_by() -> None:
     assert len(mapped) == 2
     assert mapped[0].ticket == 11
     assert mapped[1].ticket == 12
+    broker.disconnect()
+
+
+def test_adapter_close_by_refused_on_netting() -> None:
+    fake = FakeMt5(netting=True)
+    fake.position_rows.append(
+        _nt(
+            ticket=8,
+            symbol="EURUSD",
+            type=1,
+            volume=0.1,
+            price_open=1.11,
+            sl=1.12,
+            tp=1.09,
+            price_current=1.1,
+            profit=-10.0,
+            swap=0.0,
+            magic=20260909,
+            comment="y",
+            time=2,
+            identifier=8,
+        )
+    )
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    assert len(broker.positions()) == 2
+    result = broker.order_send(
+        {
+            "action": TRADE_ACTION_CLOSE_BY,
+            "position": 7,
+            "position_by": 8,
+        }
+    )
+    assert result.retcode == TRADE_RETCODE_INVALID_ORDER
+    assert not result.ok
+    assert result.comment == "hedge only"
+    assert fake.sends[-1]["action"] == TRADE_ACTION_CLOSE_BY
+    remaining = broker.positions()
+    assert len(remaining) == 2
+    assert {row.ticket for row in remaining} == {7, 8}
     broker.disconnect()
