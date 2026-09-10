@@ -18,8 +18,10 @@ from tempfile import TemporaryDirectory
 from mt5_risk_bot import __version__
 from mt5_risk_bot.config import BotConfig, load_config
 from mt5_risk_bot.engine import Engine, run_backtest
+from mt5_risk_bot.journal import redact_text
 from mt5_risk_bot.models import Bar
 from mt5_risk_bot.synthetic import generate_bars, generate_ranging
+from mt5_risk_bot.journal import redact
 from mt5_risk_bot.telegram import TelegramClient, TgCommand, offset_path_for
 
 
@@ -252,7 +254,7 @@ def run_loop(engine: Engine, *, loop: bool, keep_on_halt: bool = True) -> None:
         try:
             engine.step_all()
         except Exception as exc:
-            print(f"loop error: {exc}", file=sys.stderr)
+            print(f"loop error: {redact_text(str(exc))}", file=sys.stderr)
             try:
                 engine.journal.write("loop_error", error=str(exc)[:200])
             except Exception:

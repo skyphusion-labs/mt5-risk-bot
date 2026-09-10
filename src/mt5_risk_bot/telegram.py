@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Protocol
 
 from mt5_risk_bot.config import TelegramConfig
+from mt5_risk_bot.journal import redact_text
 
 API_ROOT = "https://api.telegram.org"
 RETRY_TRIES = 4
@@ -322,13 +323,13 @@ class TelegramClient:
         if not self.enabled or not text:
             return False
         ok = True
-        for chunk in _chunks(text, 3900):
+        for chunk in _chunks(redact_text(text), 3900):
             try:
                 data = self._post(
                     "sendMessage",
                     {
                         "chat_id": self.chat_id,
-                        "text": chunk,
+                        "text": redact_text(chunk),
                         "disable_web_page_preview": True,
                     },
                 )

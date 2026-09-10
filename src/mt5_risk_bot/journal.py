@@ -26,7 +26,7 @@ class Journal:
             "event": event,
             **{k: _jsonable(v) for k, v in fields.items()},
         }
-        rec = _redact(rec)
+        rec = redact(rec)
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, default=str) + "\n")
 
@@ -68,6 +68,11 @@ class Journal:
         return found
 
 
+def redact_text(s: str) -> str:
+    """Replace BotFather tokens in free text (stderr, Telegram echoes)."""
+    return _TG_TOKEN_RE.sub(_REDACTED, s)
+
+
 def _redact(v: Any) -> Any:
     if isinstance(v, dict):
         out: dict[str, Any] = {}
@@ -80,7 +85,7 @@ def _redact(v: Any) -> Any:
     if isinstance(v, (list, tuple)):
         return [_redact(x) for x in v]
     if isinstance(v, str):
-        return _TG_TOKEN_RE.sub(_REDACTED, v)
+        return redact_text(v)
     return v
 
 
