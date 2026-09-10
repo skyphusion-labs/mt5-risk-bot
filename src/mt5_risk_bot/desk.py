@@ -452,6 +452,12 @@ class Desk:
             return "ask a question, or /buy /sell"
         if self.advisor is None:
             return "AI not configured"
+        tg = getattr(self.engine, "telegram", None)
+        if tg is not None and getattr(tg, "enabled", False):
+            try:
+                tg.send("seen. working...")
+            except (ValueError, RuntimeError, OSError):
+                pass
         advice = self.advisor.ask(
             question,
             self.engine.advice_context(),

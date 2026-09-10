@@ -818,6 +818,36 @@ def test_advisor_memory_survives_restart(tmp_path) -> None:
     second.stop()
 
 
+def test_ask_sends_seen_ack(tmp_path) -> None:
+    class Tg:
+        enabled = True
+
+        def __init__(self) -> None:
+            self.sent: list[str] = []
+
+        def send(self, text: str) -> bool:
+            self.sent.append(text)
+            return True
+
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Hold.\n"
+                        '{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"x"}'
+                    )
+                }
+            }
+        ]
+    }
+    engine = _engine(tmp_path, llm=FakeLlm(payload))
+    tg = Tg()
+    engine.telegram = tg
+    engine.handle_command(TgCommand("1", 1, "/ask ping", 1))
+    assert tg.sent and tg.sent[0] == "seen. working..."
+
+
 def test_computer_ask_posts_session(tmp_path) -> None:
     payload = {
         "text": (
