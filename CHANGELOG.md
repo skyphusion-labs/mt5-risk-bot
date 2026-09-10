@@ -12,6 +12,7 @@ See README.md and docs/CONTRACT.md.
 - launchd example: `KeepAlive`, `Umask` 63 (077), `journal.heartbeat` path comment. Secrets stay `REPLACE_ME`.
 - Advice conversation persists in `journal.advice.json` (last 40 turns, chmod 0600) and restores on restart. This is the desk context, not an in-memory buffer.
 - `AI_PROVIDER=computer` sends `/ask` to a Cloudflare Computer Durable Object. Working memory is the workspace filesystem. Inference is AI Gateway Unified Billing (`CF_AIG_TOKEN`), not provider BYOK.
+- `PendingOrder.kind` is `limit` or `stop`. Engine and desk never read MT5 `type_code`.
 
 ## 0.3.0
 

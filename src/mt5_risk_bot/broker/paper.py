@@ -55,6 +55,12 @@ _PENDING_SIDE = {
     ORDER_TYPE_BUY_STOP: Side.BUY,
     ORDER_TYPE_SELL_STOP: Side.SELL,
 }
+_PENDING_KIND = {
+    ORDER_TYPE_BUY_LIMIT: "limit",
+    ORDER_TYPE_SELL_LIMIT: "limit",
+    ORDER_TYPE_BUY_STOP: "stop",
+    ORDER_TYPE_SELL_STOP: "stop",
+}
 
 # Filling IOC allowed (bit 2) so live-style filling selection works in paper.
 _IOC = 2
@@ -509,6 +515,7 @@ class PaperBroker:
         tp = float(request.get("tp", 0) or 0)
         tick = self.tick(symbol)
         ticket = self._next_ticket
+        kind = _PENDING_KIND.get(type_code, "limit")
         if commit:
             self._next_ticket += 1
             self._orders[ticket] = PendingOrder(
@@ -521,7 +528,7 @@ class PaperBroker:
                 tp=spec.normalize_price(tp) if tp else 0.0,
                 magic=int(request.get("magic", 0) or 0),
                 comment=str(request.get("comment", "")),
-                type_code=type_code,
+                kind=kind,
                 time=tick.time,
             )
         return OrderResult(
@@ -552,28 +559,26 @@ class PaperBroker:
         )
 
     def _pending_hit_tick(self, order: PendingOrder, tick: Tick) -> bool:
-        t = order.type_code
         p = order.price
-        if t == ORDER_TYPE_BUY_LIMIT:
-            return tick.ask <= p
-        if t == ORDER_TYPE_SELL_LIMIT:
+        if order.kind == "limit":
+            if order.side is Side.BUY:
+                return tick.ask <= p
             return tick.bid >= p
-        if t == ORDER_TYPE_BUY_STOP:
-            return tick.ask >= p
-        if t == ORDER_TYPE_SELL_STOP:
+        if order.kind == "stop":
+            if order.side is Side.BUY:
+                return tick.ask >= p
             return tick.bid <= p
         return False
 
     def _pending_hit_bar(self, order: PendingOrder, bar: Bar) -> bool:
-        t = order.type_code
         p = order.price
-        if t == ORDER_TYPE_BUY_LIMIT:
-            return bar.low <= p
-        if t == ORDER_TYPE_SELL_LIMIT:
+        if order.kind == "limit":
+            if order.side is Side.BUY:
+                return bar.low <= p
             return bar.high >= p
-        if t == ORDER_TYPE_BUY_STOP:
-            return bar.high >= p
-        if t == ORDER_TYPE_SELL_STOP:
+        if order.kind == "stop":
+            if order.side is Side.BUY:
+                return bar.high >= p
             return bar.low <= p
         return False
 

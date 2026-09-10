@@ -326,7 +326,7 @@ def test_adapter_maps_orders() -> None:
     assert order.price == 1.08
     assert order.sl == 1.07
     assert order.tp == 1.10
-    assert order.type_code == ORDER_TYPE_BUY_LIMIT
+    assert order.kind == "limit"
     assert order.time == 99
     all_orders = broker.orders()
     assert len(all_orders) == 2
@@ -477,7 +477,7 @@ def test_adapter_remove_pending() -> None:
     assert len(remaining) == 1
     assert remaining[0].ticket == 12
     assert remaining[0].side is Side.SELL
-    assert remaining[0].type_code == ORDER_TYPE_SELL_LIMIT
+    assert remaining[0].kind == "limit"
     assert broker.orders(magic=20260909) == []
     broker.disconnect()
 

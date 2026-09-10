@@ -153,7 +153,7 @@ class PendingOrder:
     tp: float
     magic: int = 0
     comment: str = ""
-    type_code: int = 0
+    kind: str = "limit"
     time: int = 0
 
 

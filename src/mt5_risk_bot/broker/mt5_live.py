@@ -18,6 +18,7 @@ from mt5_risk_bot.constants import (
     ORDER_TYPE_BUY_STOP_LIMIT,
     ORDER_TYPE_SELL_LIMIT,
     ORDER_TYPE_SELL_STOP,
+    ORDER_TYPE_SELL_STOP_LIMIT,
     RETCODE_OK,
     TRADE_ACTION_CLOSE_BY,
     TRADE_ACTION_DEAL,
@@ -324,6 +325,12 @@ class Mt5Broker:
             ORDER_TYPE_BUY_STOP,
             ORDER_TYPE_BUY_STOP_LIMIT,
         }
+        stop_types = {
+            ORDER_TYPE_BUY_STOP,
+            ORDER_TYPE_SELL_STOP,
+            ORDER_TYPE_BUY_STOP_LIMIT,
+            ORDER_TYPE_SELL_STOP_LIMIT,
+        }
         out: list[PendingOrder] = []
         for row in raw:
             d = _asdict(row)
@@ -344,7 +351,7 @@ class Mt5Broker:
                     tp=float(d.get("tp", 0) or 0),
                     magic=mag,
                     comment=str(d.get("comment", "") or ""),
-                    type_code=ptype,
+                    kind="stop" if ptype in stop_types else "limit",
                     time=int(d.get("time_setup") or d.get("time") or 0),
                 )
             )

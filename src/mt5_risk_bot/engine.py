@@ -29,13 +29,6 @@ from mt5_risk_bot.sizing import money_per_lot_at_stop, normalize_volume
 from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.telegram import TelegramClient, TgCommand
 
-_ORDER_TYPE_NAME = {
-    2: "BUY_LIMIT",
-    3: "SELL_LIMIT",
-    4: "BUY_STOP",
-    5: "SELL_STOP",
-}
-
 
 class Engine:
     def __init__(
@@ -477,7 +470,7 @@ class Engine:
         if not rows:
             return "no pending orders"
         return "\n".join(
-            f"#{o.ticket} {o.symbol} {_ORDER_TYPE_NAME.get(o.type_code, o.side.value)} "
+            f"#{o.ticket} {o.symbol} {o.side.value.upper()}_{o.kind.upper()} "
             f"{o.volume} @ {o.price} sl={o.sl} tp={o.tp}"
             for o in rows
         )
@@ -772,15 +765,18 @@ class Engine:
         spec = self.broker.symbol(order.symbol)
         tick = self.broker.tick(order.symbol)
         px = spec.normalize_price(price)
-        kind = order.type_code
-        if kind == 2 and not (px < tick.ask):
-            return "buy limit must be below ask"
-        if kind == 3 and not (px > tick.bid):
-            return "sell limit must be above bid"
-        if kind == 4 and not (px > tick.ask):
-            return "buy stop must be above ask"
-        if kind == 5 and not (px < tick.bid):
-            return "sell stop must be below bid"
+        if order.kind == "limit":
+            if order.side.value == "buy" and not (px < tick.ask):
+                return "buy limit must be below ask"
+            if order.side.value == "sell" and not (px > tick.bid):
+                return "sell limit must be above bid"
+        elif order.kind == "stop":
+            if order.side.value == "buy" and not (px > tick.ask):
+                return "buy stop must be above ask"
+            if order.side.value == "sell" and not (px < tick.bid):
+                return "sell stop must be below bid"
+        else:
+            return "working kind must be limit or stop"
         sl, tp = order.sl, order.tp
         if order.side.value == "buy" and not (sl < px and (tp <= 0 or px < tp)):
             return "buy needs sl < entry < tp"
@@ -812,7 +808,7 @@ class Engine:
             return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="buy needs sl < entry < tp")
         if order.side.value == "sell" and not (sl_n > entry and (tp_n <= 0 or tp_n < entry)):
             return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="sell needs tp < entry < sl")
-        kind = "stop" if order.type_code in (4, 5) else "limit"
+        kind = order.kind if order.kind in ("limit", "stop") else "limit"
         result = self.broker.modify_working(
             order.ticket,
             price=entry,
