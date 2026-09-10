@@ -215,3 +215,32 @@ def test_step_all_skips_tick_if_reconnect_fails(tmp_path: Path) -> None:
     assert rec.get("ok") is False
     assert "initialize" in str(rec.get("error") or "")
     engine.stop()
+
+
+def test_step_all_calls_ensure_connected_before_account(tmp_path: Path) -> None:
+    cfg = _cfg(journal=str(tmp_path / "j.jsonl"))
+    cfg.risk.halt_file = str(tmp_path / "HALT")
+    inner = PaperBroker(balance=10_000)
+    inner.seed_bars("EURUSD", generate_bars(80, drift=0.0004, seed=3))
+    broker = FlakyBroker(inner)
+    order: list[str] = []
+
+    def ensure_connected() -> None:
+        order.append("ensure")
+
+    inner_account = broker.account
+
+    def account():
+        order.append("account")
+        return inner_account()
+
+    broker.ensure_connected = ensure_connected  # type: ignore[method-assign]
+    broker.account = account  # type: ignore[method-assign]
+    engine = Engine(cfg, broker, halt_dir=str(tmp_path))
+    engine.start()
+    order.clear()
+    engine.step_all()
+    assert order[0] == "ensure"
+    assert "account" in order
+    assert order.index("ensure") < order.index("account")
+    engine.stop()

@@ -1086,6 +1086,9 @@ class Engine:
     def step_all(self) -> None:
         self.poll_telegram()
         try:
+            ensure = getattr(self.broker, "ensure_connected", None)
+            if callable(ensure):
+                ensure()
             acct = self.broker.account()
         except (RuntimeError, OSError, ValueError):
             if not self._reconnect_broker():
