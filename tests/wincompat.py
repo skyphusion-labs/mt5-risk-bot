@@ -8,3 +8,8 @@ def assert_owner_mode(path: Path) -> None:
     if sys.platform == "win32":
         return
     assert path.stat().st_mode & 0o777 == 0o600
+
+
+def assert_same_path(got: str | Path, expected: str | Path) -> None:
+    """Path equality. Do not compare str(path); Windows uses backslash."""
+    assert Path(got) == Path(expected)

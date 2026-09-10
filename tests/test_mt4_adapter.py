@@ -314,25 +314,27 @@ def test_broker_for_mt4(tmp_path: Path) -> None:
 
 
 def test_load_config_mt4(tmp_path: Path, monkeypatch) -> None:
+    files = tmp_path / "mt4"
     path = tmp_path / "c.toml"
     path.write_text(
-        '[account]\nmode = "mt4"\n[mt4]\nfiles_dir = "/tmp/mt4"\ntimeout_ms = 3000\n',
+        f'[account]\nmode = "mt4"\n[mt4]\nfiles_dir = "{files.as_posix()}"\ntimeout_ms = 3000\n',
         encoding="utf-8",
     )
     monkeypatch.delenv("ACCOUNT_MODE", raising=False)
     monkeypatch.delenv("MT4_FILES_DIR", raising=False)
     cfg = load_config(path)
     assert cfg.mode == "mt4"
-    assert cfg.mt4.files_dir == "/tmp/mt4"
+    assert Path(cfg.mt4.files_dir) == Path(files)
     assert cfg.mt4.timeout_ms == 3000
 
 
-def test_account_mode_env_mt4(monkeypatch) -> None:
+def test_account_mode_env_mt4(tmp_path: Path, monkeypatch) -> None:
+    dest = tmp_path / "common"
     monkeypatch.setenv("ACCOUNT_MODE", "mt4")
-    monkeypatch.setenv("MT4_FILES_DIR", "/tmp/common")
+    monkeypatch.setenv("MT4_FILES_DIR", str(dest))
     cfg = load_config()
     assert cfg.mode == "mt4"
-    assert cfg.mt4.files_dir == "/tmp/common"
+    assert Path(cfg.mt4.files_dir) == dest
 
 
 def test_validate_rejects_unknown_mode() -> None:
