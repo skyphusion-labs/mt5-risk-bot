@@ -3,10 +3,23 @@
 Report vulnerabilities to conrad@skyphusion.org. Do not open a public issue
 for a live trading defect that could move money.
 
-Secrets never belong in this repo. Account login, password, server, and
-Telegram token are environment variables. `config.toml` is gitignored.
-Journal lines, `loop_error` stderr, and Telegram sends replace BotFather
-tokens with `[REDACTED]`.
+## Production secrets
+
+Secrets live in the environment, never in `config.toml` (gitignored):
+`MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`,
+`TELEGRAM_CHAT_ID`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`. Env vars override
+toml if both are set.
+
+Journal writes replace keys named `token`, `password`, `api_key`,
+`grok_key`, and `claude_key` with `[REDACTED]`, and strip BotFather
+token patterns from string fields. Loop stderr and Telegram `send`
+strip the same BotFather pattern.
+
+Only `TELEGRAM_CHAT_ID` is accepted. Updates from any other chat are
+ignored (the update is still consumed). Replies go only to that chat.
+
+`journal.jsonl` is chmod 0600 on open and after each write.
+`journal.tg_offset` is chmod 0600 on each persist.
 
 A real-money account is refused unless the process was started with
 `--i-accept-risk`.
