@@ -41,7 +41,8 @@ python -m mt5_risk_bot run --mode mt5 --loop --config config.toml
 ```
 
 Real accounts (`trade_mode=2`) also need `--i-accept-risk`.
-`TELEGRAM_CHAT_ID` is the only accepted chat. `/confirm` is restored
+`TELEGRAM_CHAT_ID` is the only accepted chat. Journal, stderr, and
+chat echoes redact BotFather tokens (`[REDACTED]`). `/confirm` is restored
 from the journal if the 120s TTL has not expired. Halt is `touch HALT`
 or `/halt` (process stays up).
 
