@@ -16,6 +16,7 @@ See README.md and docs/CONTRACT.md.
 - `PendingOrder.kind` is `limit` or `stop`. Engine and desk never read MT5 `type_code`.
 - `Side` has no MT5 order type integers. Adapters map buy/sell for `order_send`.
 - Engine uses `OrderResult.unchanged` and `OrderResult.invalid_stops`. It does not import MT5 retcode integers.
+- Advice send: default is `/confirm`. `/approve always` sends after risk preview. README and advice context match CONTRACT.
 
 ## 0.3.0
 

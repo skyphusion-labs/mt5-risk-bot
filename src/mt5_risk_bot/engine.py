@@ -935,7 +935,8 @@ class Engine:
             f"symbols={','.join(self.cfg.symbols)} risk_pct={self.cfg.risk.risk_pct}",
             f"auto={self.cfg.strategy.auto} trail={self.cfg.strategy.trail} "
             f"provider={self.cfg.advice.provider}",
-            "Advice may stage a trade. It never sends. /confirm is the only send.",
+            "Advice may stage a trade. Default send is /confirm. "
+            "/approve always sends after risk preview.",
         ]
         reason = self.advice_circuit_reason()
         if reason:

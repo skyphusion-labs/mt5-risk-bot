@@ -8,7 +8,7 @@ The gateway is Cloudflare AI Gateway `mt5-risk-bot`.
 You send desk commands from one Telegram chat.
 The bot sizes every order.
 The bot can refuse an order.
-Advice never sends an order.
+Default: advice is staged.
 `/confirm` is the default send.
 `/approve always` sends after risk preview.
 

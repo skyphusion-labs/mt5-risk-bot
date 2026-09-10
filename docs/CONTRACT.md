@@ -85,7 +85,7 @@ Auto EMA trading is off until `/auto on`.
 | `/history` | Last journal events. |
 | `/recap` | Equity vs UTC `day_start` plus `journal.tail`. Also sent on UTC day roll as notify `recap`. |
 | `/symbols list\|add\|remove [SYMBOL]` | Configured book (runtime). Bare `/symbols` lists. Cannot drop the last name, or a name with positions/orders. |
-| `/ask ...` or free text | Grok, Claude, or the agent. Local: last 40 turns in `journal.advice.json`. `AI_PROVIDER=computer`: Durable Object SQLite workspace (`/workspace/notes.md`, `log.md`, `snapshot.md`, `history.json` from `journal.tail`) plus Computer tools. Session is the Telegram chat id. JSON can stage. Never sends. Not Cloudflare D1. |
+| `/ask ...` or free text | Grok, Claude, or the agent. Local: last 40 turns in `journal.advice.json`. `AI_PROVIDER=computer`: Durable Object SQLite workspace (`/workspace/notes.md`, `log.md`, `snapshot.md`, `history.json` from `journal.tail`) plus Computer tools. Session is the Telegram chat id. JSON can stage. Default send is `/confirm`. `/approve always` sends after risk preview. Not Cloudflare D1. |
 | `/model grok\|claude\|computer` | Switch provider. |
 | `/auto on\|off` | Optional EMA regime. Fill alerts do not wait for this. |
 | `/status` `/positions` `/halt` `/resume` | Account. `/halt` flattens, drops the confirm, and cancels working orders. |

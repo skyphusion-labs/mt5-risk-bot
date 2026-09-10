@@ -373,7 +373,8 @@ def test_advice_context_includes_risk_and_orders(tmp_path) -> None:
     assert "no pending orders" in blob or "PENDING" in blob or "pending" in blob.lower()
     assert "no open positions" in blob or "#" in blob
     assert "bid=" in blob
-    assert "never sends" in blob.lower() or "only send" in blob.lower()
+    assert "approve always" in blob.lower()
+    assert "/confirm" in blob.lower()
     engine.stop()
 
 
