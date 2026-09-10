@@ -1,0 +1,15 @@
+# Paper only. Secrets in env file, never in the image.
+services:
+  desk:
+    build: .
+    image: mt5-risk-bot:paper
+    container_name: mt5-risk-bot
+    restart: unless-stopped
+    env_file:
+      - .env
+    environment:
+      AI_PROVIDER: computer
+      ADVICE_URL: https://mt5-risk-agent.skyphusion.workers.dev/ask
+    volumes:
+      - ./data:/data
+    working_dir: /data

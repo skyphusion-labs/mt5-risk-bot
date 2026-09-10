@@ -52,6 +52,22 @@ python -m mt5_risk_bot --config config.toml run --mode paper --feed-mt5
 
 Orders stay in the in-process broker.
 
+## Docker paper (fleet)
+
+Paper only. No MetaTrader in the image. Do not run this and a laptop
+`--loop` on the same bot token. Two loops fight `getUpdates`.
+
+Host: a fleet box that is not dischord. Example: jello.
+
+1. Copy the repo to the host.
+2. Copy `.env` (0600) to the repo root on the host. Do not put secrets in the image.
+3. Run `docker compose build`.
+4. Run `docker compose up -d`.
+5. Check `docker compose logs -f desk`.
+6. Send `/help` in Telegram.
+
+Data is `./data` (journal, lock, heartbeat). Stop: `docker compose down`.
+
 ## Production long-run (macOS)
 
 Telegram is required.
