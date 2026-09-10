@@ -3,6 +3,8 @@
 from __future__ import annotations
 
 import os
+import re
+import sys
 import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -56,6 +58,29 @@ class SessionConfig:
     start_utc: str = "07:00"
     end_utc: str = "17:00"
     skip_friday_after_utc: str = "16:00"
+
+
+def _expand_win_vars(s: str) -> str:
+    """Expand %VAR% (Windows) after $VAR. Safe on Unix so configs travel."""
+    s = os.path.expandvars(s)
+
+    def repl(m: re.Match[str]) -> str:
+        return os.environ.get(m.group(1), m.group(0))
+
+    return re.sub(r"%([^%]+)%", repl, s)
+
+
+def resolve_mt4_files_dir(raw: str, *, platform: str | None = None) -> str:
+    """Expand %APPDATA% / ~. On Windows, empty means Common Files."""
+    s = _expand_win_vars(os.path.expanduser((raw or "").strip().strip('"')))
+    if s:
+        return str(Path(s))
+    plat = platform if platform is not None else sys.platform
+    if plat == "win32":
+        appdata = os.environ.get("APPDATA", "")
+        if appdata:
+            return str(Path(appdata) / "MetaQuotes" / "Terminal" / "Common" / "Files")
+    return ""
 
 
 @dataclass
@@ -262,7 +287,9 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             server=server,
         ),
         mt4=Mt4Config(
-            files_dir=os.environ.get("MT4_FILES_DIR", str(mt4_s.get("files_dir", "") or "")),
+            files_dir=resolve_mt4_files_dir(
+                os.environ.get("MT4_FILES_DIR", str(mt4_s.get("files_dir", "") or ""))
+            ),
             timeout_ms=int(mt4_s.get("timeout_ms", 5000)),
         ),
         telegram=TelegramConfig(

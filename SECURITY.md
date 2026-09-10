@@ -45,7 +45,7 @@ Replies go only to that chat.
 `journal.jsonl` is chmod 0600 on open and after each write.
 `journal.jsonl.1` stays chmod 0600 after rotate.
 `journal.tg_offset` is chmod 0600 on each persist.
-`journal.lock` is chmod 0600 when `run` takes the exclusive flock.
+`journal.lock` is chmod 0600 when `run` takes the exclusive lock (flock / msvcrt).
 `journal.heartbeat` is chmod 0600 after each write.
 `HALT` is chmod 0600 when the bot writes it.
 

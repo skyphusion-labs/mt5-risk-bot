@@ -106,7 +106,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
         print(f"config: mode={cfg.mode} symbols={cfg.symbols} risk_pct={cfg.risk.risk_pct}")
     print("terminal: official MetaTrader5 package is Windows-only.")
     print("macOS: install MetaTrader 5.app from metatrader5.com, then pip install mt5-mac.")
-    print("MT4: attach mt4/Experts/Mt4RiskBot.mq4 and set mt4.files_dir to Common Files.")
+    print("MT4: attach mt4/Experts/Mt4RiskBot.mq4. files_dir is Common Files.")
+    print("Windows default: %APPDATA%\\MetaQuotes\\Terminal\\Common\\Files")
+    if cfg.mode == "mt4":
+        print(f"mt4 files_dir: {cfg.mt4.files_dir or 'unset'}")
     print("Homebrew has no MetaTrader cask; Python is enough for paper/backtest.")
     print("telegram token:", "SET" if os.environ.get("TELEGRAM_BOT_TOKEN") else "unset")
     print("telegram chat:", "SET" if os.environ.get("TELEGRAM_CHAT_ID") else "unset")

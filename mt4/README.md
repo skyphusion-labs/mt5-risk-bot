@@ -9,18 +9,29 @@ The bot talks to this Expert through a file mailbox in Common Files.
 2. Compile it in MetaEditor.
 3. Attach `Mt4RiskBot` to one chart. One chart is enough. The mailbox is global.
 4. Enable AutoTrading. Allow live trading on the Expert.
-5. Set `mt4.files_dir` (or `MT4_FILES_DIR`) to the Common Files folder:
+5. Set `mt4.files_dir` (or `MT4_FILES_DIR`) to the Common Files folder.
+   On Windows you can omit it. The bot uses:
 
 ```
 %APPDATA%\MetaQuotes\Terminal\Common\Files
 ```
 
-On Wine, that path is under the Wine prefix.
+On Wine, that path is under the Wine prefix. Set it by hand.
 
 6. `account.mode = "mt4"`.
 7. `python -m mt5_risk_bot --config config.toml doctor --connect`
 8. Stop if doctor is not 0.
 9. `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop`
+
+cmd.exe:
+
+```
+set ACCOUNT_MODE=mt4
+set TELEGRAM_BOT_TOKEN=...
+set TELEGRAM_CHAT_ID=...
+python -m mt5_risk_bot --config config.toml doctor --connect
+python -m mt5_risk_bot --config config.toml run --mode mt4 --loop
+```
 
 Demo (`trade_mode=0`) does not need `--i-accept-risk`.
 Real money (`trade_mode=2`) needs `--i-accept-risk` or `/live on I-ACCEPT-RISK`.

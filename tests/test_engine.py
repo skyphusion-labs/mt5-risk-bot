@@ -6,6 +6,7 @@ from mt5_risk_bot.engine import Engine, run_backtest
 from mt5_risk_bot.models import Side
 from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.synthetic import generate_bars, generate_ranging
+from wincompat import assert_owner_mode
 
 
 class FlakyBroker:
@@ -203,7 +204,7 @@ def test_step_all_reconnects_after_account_drop(tmp_path: Path) -> None:
     assert "reconnect" in events
     rec = [r for r in engine.journal.tail(20) if r.get("event") == "reconnect"][-1]
     assert rec.get("ok") is True
-    assert (tmp_path / "j.heartbeat").stat().st_mode & 0o777 == 0o600
+    assert_owner_mode(tmp_path / "j.heartbeat")
     engine.stop()
 
 

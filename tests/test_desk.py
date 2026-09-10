@@ -2,6 +2,7 @@ import json
 import time
 from datetime import datetime, timezone
 
+from wincompat import assert_owner_mode
 from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.config import AdviceConfig, BotConfig
 from mt5_risk_bot.constants import (
@@ -809,7 +810,7 @@ def test_advisor_memory_survives_restart(tmp_path) -> None:
     first.handle_command(TgCommand("1", 1, "/ask remember the EURUSD plan", 1))
     path = first.advisor.persist_path
     assert path is not None and path.exists()
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert_owner_mode(path)
     first.stop()
     second = _engine(tmp_path, llm=FakeLlm(payload))
     second.start()

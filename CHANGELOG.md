@@ -4,6 +4,13 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.1.1
+
+- Windows can run the bot next to MT4. `journal.lock` uses `msvcrt.locking` on Windows and `flock` on Unix. `import fcntl` no longer happens at module load.
+- MT4 mailbox retries `unlink` / `replace` on `PermissionError` (NTFS sharing). Writes LF even on Windows. Reads FILE_ANSI via `mbcs`.
+- Empty `mt4.files_dir` on Windows defaults to `%APPDATA%\\MetaQuotes\\Terminal\\Common\\Files`. `%APPDATA%` in the path expands.
+- Expert opens the mailbox with `FILE_SHARE_READ|FILE_SHARE_WRITE` and writes `.res` via `.res.tmp` + `FileMove`.
+
 ## 1.1.0
 
 - MetaTrader 4 is a third venue. `account.mode = "mt4"` selects `Mt4Broker`.

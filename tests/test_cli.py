@@ -3,6 +3,8 @@ import subprocess
 import sys
 from pathlib import Path
 
+import pytest
+
 from mt5_risk_bot.__main__ import build_parser, main, paper_round_trip, run_loop, telegram_ping
 from mt5_risk_bot.config import BotConfig, TelegramConfig
 from mt5_risk_bot.journal import InstanceLock, InstanceLockError, Journal, lock_path_for
@@ -109,6 +111,7 @@ def test_doctor_connect_mt4(capsys, monkeypatch, tmp_path) -> None:
     assert "trade_mode=0" in out
 
 
+@pytest.mark.skipif(sys.platform == "win32", reason="Windows defaults files_dir to Common Files")
 def test_doctor_connect_mt4_missing_files_dir(capsys, monkeypatch) -> None:
     monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
     monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)

@@ -12,7 +12,7 @@ from mt5_risk_bot.broker.mt4_live import (
     encode,
     parse_rows,
 )
-from mt5_risk_bot.config import BotConfig, Mt4Config, load_config
+from mt5_risk_bot.config import BotConfig, Mt4Config, load_config, resolve_mt4_files_dir
 from mt5_risk_bot.constants import TRADE_RETCODE_DONE, TRADE_RETCODE_PLACED
 from mt5_risk_bot.models import MarketOrder, Side, WorkingOrder
 
@@ -339,3 +339,64 @@ def test_validate_rejects_unknown_mode() -> None:
     cfg = BotConfig(mode="ibkr")
     with pytest.raises(ValueError, match="paper, mt5, or mt4"):
         cfg.validate()
+
+
+def test_resolve_mt4_expands_appdata(monkeypatch) -> None:
+    monkeypatch.setenv("APPDATA", r"C:\Users\x\AppData\Roaming")
+    got = resolve_mt4_files_dir(
+        r"%APPDATA%\MetaQuotes\Terminal\Common\Files", platform="win32"
+    )
+    norm = got.replace("\\", "/")
+    assert "Roaming" in norm
+    assert norm.endswith("MetaQuotes/Terminal/Common/Files")
+
+
+def test_resolve_mt4_windows_default_common_files(monkeypatch) -> None:
+    monkeypatch.setenv("APPDATA", r"C:\Users\x\AppData\Roaming")
+    got = resolve_mt4_files_dir("", platform="win32")
+    norm = got.replace("\\", "/")
+    assert norm.endswith("MetaQuotes/Terminal/Common/Files")
+
+
+def test_resolve_mt4_empty_on_unix() -> None:
+    assert resolve_mt4_files_dir("", platform="linux") == ""
+
+
+def test_file_bridge_retries_permissionerror(tmp_path: Path, monkeypatch) -> None:
+    hits = {"n": 0}
+    real = Path.unlink
+
+    def flaky(self, *args, **kwargs):
+        if self.name == "mt4_risk_bot.res" and hits["n"] < 1:
+            hits["n"] += 1
+            raise PermissionError(13, "locked")
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "unlink", flaky)
+    stop = threading.Event()
+
+    def ea() -> None:
+        req = tmp_path / "mt4_risk_bot.req"
+        res = tmp_path / "mt4_risk_bot.res"
+        while not stop.is_set():
+            if req.exists():
+                try:
+                    text = req.read_text(encoding="utf-8")
+                    req.unlink()
+                except OSError:
+                    time.sleep(0.01)
+                    continue
+                data = decode(text)
+                res.write_text(f"id={data['id']}\nok=1\n", encoding="utf-8", newline="\n")
+            time.sleep(0.01)
+
+    t = threading.Thread(target=ea, daemon=True)
+    t.start()
+    try:
+        bridge = FileBridge(tmp_path, timeout_sec=2.0)
+        ping = bridge.call("ping", {})
+        assert ping["ok"] == 1
+        assert hits["n"] == 1
+    finally:
+        stop.set()
+        t.join(timeout=1.0)

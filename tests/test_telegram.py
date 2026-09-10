@@ -3,6 +3,7 @@ from io import BytesIO
 
 import urllib.error
 
+from wincompat import assert_owner_mode
 from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.config import AdviceConfig, BotConfig, TelegramConfig
 from mt5_risk_bot.engine import Engine
@@ -339,7 +340,7 @@ def test_offset_not_persisted_until_ack(tmp_path) -> None:
     tg.ack(10)
     dest = tmp_path / "journal.tg_offset"
     assert dest.read_text(encoding="utf-8").strip() == "11"
-    assert dest.stat().st_mode & 0o777 == 0o600
+    assert_owner_mode(dest)
     loaded = TelegramClient(token="t", chat_id="42", transport=FakeTransport(), offset_path=path)
     assert loaded.offset == 11
 
