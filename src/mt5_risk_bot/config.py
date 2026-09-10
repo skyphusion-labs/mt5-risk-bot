@@ -93,7 +93,7 @@ class AdviceConfig:
     claude_url: str = "https://api.anthropic.com/v1/messages"
     computer_url: str = ""
     computer_token: str = ""
-    computer_model: str = "xai/grok-4"
+    computer_model: str = "grok/grok-4.3"
 
     @property
     def enabled(self) -> bool:
@@ -269,7 +269,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             claude_url=str(advice_s.get("claude_url", "https://api.anthropic.com/v1/messages")),
             computer_url=computer_url,
             computer_token=computer_token,
-            computer_model=str(advice_s.get("computer_model", "xai/grok-4")),
+            computer_model=str(advice_s.get("computer_model", "grok/grok-4.3")),
         ),
     )
     cfg.validate()

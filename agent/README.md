@@ -17,6 +17,10 @@ npx wrangler secret put ADVICE_TOKEN
 Create an AI Gateway named `mt5-risk-bot` (matches `vars.AI_GATEWAY_ID`) on account
 `fabcb25d9c7eb087110ec474a03e50d2`. Unified Billing, no provider keys in the Worker.
 
+Compat chat model must be `grok/grok-4.3` (not `xai/grok-*`; the gateway 400s that
+prefix). `grok-4.5` is not on this HTTP path (needs Workers AI binding). Prompts
+are not stored (`cf-aig-collect-log-payload: false`).
+
 ## Desk
 
 ```

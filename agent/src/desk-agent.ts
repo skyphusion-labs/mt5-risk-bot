@@ -79,13 +79,14 @@ export class DeskAgent extends DurableObject<Env> {
       baseURL: `https://gateway.ai.cloudflare.com/v1/${account}/${gateway}/compat`,
       headers: {
         "cf-aig-authorization": `Bearer ${token}`,
+        "cf-aig-collect-log-payload": "false",
         "cf-aig-metadata": JSON.stringify({
           bot: "mt5-risk-bot",
           surface: "computer",
         }),
       },
     });
-    const model = openai.chat(modelId || this.env.ADVICE_MODEL || "xai/grok-4");
+    const model = openai.chat(modelId || this.env.ADVICE_MODEL || "grok/grok-4.3");
     const tools = createAITools({
       workspace: this.workspace,
       read: { maxBytes: 32 * 1024, maxLines: 800 },
