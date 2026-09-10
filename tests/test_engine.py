@@ -14,6 +14,8 @@ class FlakyBroker:
         self.fail_account = 0
         self.fail_connect = False
         self.connects = 0
+        self.ensure_calls = 0
+        self.call_order: list[str] = []
 
     def connect(self) -> None:
         self.connects += 1
@@ -24,7 +26,12 @@ class FlakyBroker:
     def disconnect(self) -> None:
         self._inner.disconnect()
 
+    def ensure_connected(self) -> None:
+        self.ensure_calls += 1
+        self.call_order.append("ensure")
+
     def account(self):
+        self.call_order.append("account")
         if self.fail_account > 0:
             self.fail_account -= 1
             raise RuntimeError("account_info failed: IPC timeout")
@@ -223,24 +230,16 @@ def test_step_all_calls_ensure_connected_before_account(tmp_path: Path) -> None:
     inner = PaperBroker(balance=10_000)
     inner.seed_bars("EURUSD", generate_bars(80, drift=0.0004, seed=3))
     broker = FlakyBroker(inner)
-    order: list[str] = []
-
-    def ensure_connected() -> None:
-        order.append("ensure")
-
-    inner_account = broker.account
-
-    def account():
-        order.append("account")
-        return inner_account()
-
-    broker.ensure_connected = ensure_connected  # type: ignore[method-assign]
-    broker.account = account  # type: ignore[method-assign]
     engine = Engine(cfg, broker, halt_dir=str(tmp_path))
     engine.start()
-    order.clear()
+    broker.call_order.clear()
+    broker.fail_account = 1
     engine.step_all()
-    assert order[0] == "ensure"
-    assert "account" in order
-    assert order.index("ensure") < order.index("account")
+    assert broker.ensure_calls >= 1
+    assert broker.call_order[0] == "ensure"
+    assert "account" in broker.call_order
+    assert broker.call_order.index("ensure") < broker.call_order.index("account")
+    assert not engine.halted
+    rec = [r for r in engine.journal.tail(20) if r.get("event") == "reconnect"][-1]
+    assert rec.get("ok") is True
     engine.stop()
