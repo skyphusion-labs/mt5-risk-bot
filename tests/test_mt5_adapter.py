@@ -1,6 +1,7 @@
+import sys
 from types import SimpleNamespace
 
-from mt5_risk_bot.broker.mt5_live import Mt5Broker
+from mt5_risk_bot.broker.mt5_live import Mt5Broker, _asdict, load_mt5_module
 from mt5_risk_bot.constants import (
     ORDER_FILLING_IOC,
     ORDER_TYPE_BUY_LIMIT,
@@ -30,6 +31,14 @@ class FakeMt5:
         self.disconnected = False
         self.force_ipc = False
         self.dead_after_init = False
+        self.init_ok = True
+        self.login_ok = True
+        self.trade_allowed = True
+        self.shutdown_raises = False
+        self.last_error_raises = False
+        self.fill_always = False
+        self.init_calls: list = []
+        self.login_calls: list = []
         self.sends: list[dict] = []
         self.fill_fail_once = False
         self.order_rows: list | None = [
@@ -79,9 +88,11 @@ class FakeMt5:
         ]
 
     def initialize(self, *args, **kwargs) -> bool:
-        del args, kwargs
-        self.inited = True
+        self.init_calls.append((args, kwargs))
         self.init_count += 1
+        if not self.init_ok:
+            return False
+        self.inited = True
         self.disconnected = False
         self.force_ipc = False
         if self.dead_after_init:
@@ -89,13 +100,17 @@ class FakeMt5:
         return True
 
     def login(self, *args, **kwargs) -> bool:
-        del args, kwargs
-        return True
+        self.login_calls.append((args, kwargs))
+        return self.login_ok
 
     def shutdown(self) -> None:
+        if self.shutdown_raises:
+            raise RuntimeError("shutdown")
         self.inited = False
 
     def last_error(self):
+        if self.last_error_raises:
+            raise RuntimeError("last_error")
         if self.force_ipc or self.disconnected or not self.inited:
             return (-10001, "IPC send failed")
         return (1, "ok")
@@ -104,7 +119,7 @@ class FakeMt5:
         return self.disconnected or not self.inited
 
     def terminal_info(self):
-        return _nt(trade_allowed=True)
+        return _nt(trade_allowed=self.trade_allowed)
 
     def account_info(self):
         if self._dead():
@@ -184,8 +199,9 @@ class FakeMt5:
         if self._dead():
             return None
         self.sends.append(request)
-        if self.fill_fail_once:
-            self.fill_fail_once = False
+        if self.fill_always or self.fill_fail_once:
+            if self.fill_fail_once:
+                self.fill_fail_once = False
             return _nt(
                 retcode=TRADE_RETCODE_INVALID_FILL,
                 comment="invalid fill",
@@ -544,3 +560,317 @@ def test_adapter_close_by_refused_on_netting() -> None:
     assert len(remaining) == 2
     assert {row.ticket for row in remaining} == {7, 8}
     broker.disconnect()
+
+
+def test_asdict_none_and_plain_object() -> None:
+    assert _asdict(None) == {}
+    class Plain:
+        def __init__(self) -> None:
+            self.a = 1
+    assert _asdict(Plain()) == {"a": 1}
+
+
+def test_load_mt5_module_official_then_mac_then_missing() -> None:
+    import types
+
+    official = types.ModuleType("MetaTrader5")
+    mac = types.ModuleType("mt5_mac")
+    saved_official = sys.modules.get("MetaTrader5")
+    saved_mac = sys.modules.get("mt5_mac")
+    sys.modules["MetaTrader5"] = official
+    try:
+        assert load_mt5_module() is official
+    finally:
+        if saved_official is None:
+            sys.modules.pop("MetaTrader5", None)
+        else:
+            sys.modules["MetaTrader5"] = saved_official
+    sys.modules["MetaTrader5"] = None  # type: ignore[assignment]
+    sys.modules["mt5_mac"] = mac
+    try:
+        assert load_mt5_module() is mac
+        sys.modules["mt5_mac"] = None  # type: ignore[assignment]
+        try:
+            load_mt5_module()
+            raise AssertionError("expected RuntimeError when no MT5 binding")
+        except RuntimeError as exc:
+            assert "No MT5" in str(exc)
+    finally:
+        if saved_official is None:
+            sys.modules.pop("MetaTrader5", None)
+        else:
+            sys.modules["MetaTrader5"] = saved_official
+        if saved_mac is None:
+            sys.modules.pop("mt5_mac", None)
+        else:
+            sys.modules["mt5_mac"] = saved_mac
+
+
+def test_connect_with_path_and_login() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake, login=42, password="pw", server="Demo", path="/tmp/term")
+    broker.connect()
+    assert fake.init_count == 1
+    args, kwargs = fake.init_calls[-1]
+    assert args[0] == "/tmp/term"
+    assert kwargs["login"] == 42
+    assert kwargs["password"] == "pw"
+    assert kwargs["server"] == "Demo"
+    assert fake.login_calls
+    broker.disconnect()
+
+
+def test_connect_passes_login_password_server() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake, login=7, password="pw", server="Demo")
+    broker.connect()
+    _args, kwargs = fake.init_calls[-1]
+    assert kwargs["login"] == 7
+    assert kwargs["password"] == "pw"
+    assert kwargs["server"] == "Demo"
+    assert fake.login_calls[-1][0][0] == 7
+    broker.disconnect()
+
+
+def test_initialize_failure() -> None:
+    fake = FakeMt5()
+    fake.init_ok = False
+    broker = Mt5Broker(mt5=fake)
+    try:
+        broker.connect()
+        raise AssertionError("expected RuntimeError on initialize")
+    except RuntimeError as exc:
+        assert "initialize" in str(exc)
+
+
+def test_login_failure() -> None:
+    fake = FakeMt5()
+    fake.login_ok = False
+    broker = Mt5Broker(mt5=fake, login=1, password="pw", server="Demo")
+    try:
+        broker.connect()
+        raise AssertionError("expected RuntimeError on login")
+    except RuntimeError as exc:
+        assert "login" in str(exc)
+
+
+def test_trade_allowed_false() -> None:
+    fake = FakeMt5()
+    fake.trade_allowed = False
+    broker = Mt5Broker(mt5=fake)
+    try:
+        broker.connect()
+        raise AssertionError("expected RuntimeError on trade_allowed")
+    except RuntimeError as exc:
+        assert "trade_allowed" in str(exc)
+
+
+def test_shutdown_error_is_ignored_on_connect() -> None:
+    fake = FakeMt5()
+    fake.shutdown_raises = True
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    assert fake.init_count == 1
+
+
+def test_connect_without_shutdown_attr() -> None:
+    class Bare:
+        def initialize(self, **kwargs):
+            del kwargs
+            return True
+
+        def terminal_info(self):
+            return _nt(trade_allowed=True)
+
+    broker = Mt5Broker(mt5=Bare())
+    broker.connect()
+
+
+def test_terminal_info_none() -> None:
+    fake = FakeMt5()
+    fake.terminal_info = lambda: None
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    assert fake.init_count == 1
+
+
+def test_disconnect_when_never_connected() -> None:
+    Mt5Broker().disconnect()
+
+
+def test_ensure_connected_when_unbound() -> None:
+    import mt5_risk_bot.broker.mt5_live as live
+
+    fake = FakeMt5()
+    orig = live.load_mt5_module
+    live.load_mt5_module = lambda: fake
+    try:
+        broker = Mt5Broker()
+        broker.ensure_connected()
+        assert fake.init_count == 1
+        assert fake.inited is True
+    finally:
+        live.load_mt5_module = orig
+
+
+def test_ensure_connected_when_account_info_raises() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+
+    def boom():
+        raise RuntimeError("dead")
+
+    fake.account_info = boom
+    broker.ensure_connected()
+    assert fake.init_count == 2
+
+
+def test_last_error_shapes_and_exceptions() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    fake.last_error = lambda: None
+    assert broker._ipc_error() is False
+    fake.last_error = lambda: "unknown"
+    assert broker._ipc_error() is False
+    fake.last_error = lambda: ()
+    assert broker._ipc_error() is False
+    fake.last_error = lambda: "IPC timeout"
+    assert broker._ipc_error() is True
+    fake.last_error = lambda: "not this"
+    assert broker._ipc_error() is False
+    fake.last_error = lambda: (-10001,)
+    assert broker._ipc_error() is True
+    fake.last_error = lambda: [-10001, None]
+    assert broker._ipc_error() is True
+    fake.last_error = lambda: (object(), "IPC")
+    assert broker._ipc_error() is True
+    fake.last_error_raises = True
+    fake.last_error = FakeMt5.last_error.__get__(fake, FakeMt5)
+    assert broker._last_error() == "unknown"
+    broker._mt5 = None
+    assert broker._last_error() == "unknown"
+    assert broker._ipc_error() is False
+    broker._mt5 = object()
+    assert broker._last_error() == "unknown"
+
+
+def test_symbol_info_none() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    fake.symbol_info = lambda name: None
+    try:
+        broker.symbol("EURUSD")
+        raise AssertionError("expected RuntimeError on symbol_info")
+    except RuntimeError as exc:
+        assert "symbol_info" in str(exc)
+
+
+def test_symbol_not_visible_selects() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    orig = fake.symbol_info
+    calls = {"n": 0}
+
+    def info(name):
+        calls["n"] += 1
+        row = orig(name)
+        data = dict(row._asdict())
+        data["visible"] = calls["n"] > 1
+        return _nt(**data)
+
+    fake.symbol_info = info
+    spec = broker.symbol("EURUSD")
+    assert spec.visible is True
+    assert calls["n"] == 2
+    assert fake.inited is True
+
+
+def test_rates_none() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    fake.copy_rates_from_pos = lambda *a, **k: None
+    assert broker.rates("EURUSD", 16385, 3) == []
+
+
+def test_rates_numpy_dtype_rows() -> None:
+    class Row:
+        __slots__ = ()
+        dtype = SimpleNamespace(
+            names=("time", "open", "high", "low", "close", "tick_volume", "spread", "real_volume")
+        )
+
+        def __getitem__(self, name):
+            return {
+                "time": 1,
+                "open": 1.1,
+                "high": 1.11,
+                "low": 1.09,
+                "close": 1.105,
+                "tick_volume": 10,
+                "spread": 10,
+                "real_volume": 0,
+            }[name]
+
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    fake.copy_rates_from_pos = lambda *a, **k: [Row()]
+    bars = broker.rates("EURUSD", 16385, 1)
+    assert len(bars) == 1
+    assert bars[0].close == 1.105
+
+
+def test_positions_skips_other_magic() -> None:
+    fake = FakeMt5()
+    fake.position_rows.append(
+        _nt(
+            ticket=9,
+            symbol="GBPUSD",
+            type=1,
+            volume=0.2,
+            price_open=1.2,
+            sl=0.0,
+            tp=0.0,
+            price_current=1.2,
+            profit=0.0,
+            swap=0.0,
+            magic=1,
+            comment="",
+            time=2,
+            identifier=9,
+        )
+    )
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    pos = broker.positions(magic=20260909)
+    assert len(pos) == 1
+    assert pos[0].ticket == 7
+    broker.disconnect()
+
+
+def test_order_check_and_none_result() -> None:
+    fake = FakeMt5()
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    ok = broker.order_check({"action": 1, "volume": 0.01})
+    assert ok.comment == "Done"
+    fake.order_check = lambda request: None
+    missing = broker.order_check({"action": 1})
+    assert missing.retcode == 0
+    assert "no result" in missing.comment
+
+
+def test_invalid_fill_exhausts_retries() -> None:
+    fake = FakeMt5()
+    fake.fill_always = True
+    broker = Mt5Broker(mt5=fake)
+    broker.connect()
+    result = broker.order_send({"action": 1, "type_filling": 0, "volume": 0.01})
+    assert result.retcode == TRADE_RETCODE_INVALID_FILL
+    assert not result.ok
+    assert len(fake.sends) == 3
