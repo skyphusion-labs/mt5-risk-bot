@@ -7,6 +7,7 @@ drawdown. The engine is expected to flatten when flatten=True.
 
 from __future__ import annotations
 
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -125,6 +126,7 @@ class RiskManager:
     def write_halt_file(self, reason: str = "operator") -> Path:
         path = self.halt_path()
         path.write_text(reason + "\n", encoding="utf-8")
+        os.chmod(path, 0o600)
         return path
 
     def clear_operator_halt(self) -> str:
