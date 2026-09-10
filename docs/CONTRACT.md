@@ -73,7 +73,7 @@ off until `/auto on`.
 
 `/confirm` for a market order reprices and re-runs `preview`. A limit or stop keeps the staged price. Halt, daily-loss, and drawdown still refuse. The reply includes `ok` and `retcode`; only `OrderResult.ok` starts with `sent `. A second `/buy` while a confirm is live is refused until `/cancel`. Advice never overwrites a live confirm. Close and SL/TP success replies come from `OrderResult.ok`, not from "the ticket existed". `/sl` `/tp` on a working order uses `TRADE_ACTION_MODIFY` (paper supported) and keeps side geometry (`buy: sl < price < tp`). `/tp TICKET PRICE VOL` is a scale-out: when PRICE is hit, only VOL closes. Remainder keeps its SL. Halt/daily-loss/drawdown still refuse. VOL must snap to lot step; remainder 0 or at least `volume_min`.
 
-Advice JSON fields: `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `summary`. `limit` and `stop` are XOR. A close action with `ticket` stages that close; `/confirm` is still the only send. Context always includes `/risk`, positions, working orders, and quotes.
+Advice JSON fields: `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `summary`. `limit` and `stop` are XOR. A close action with `ticket` stages that close; `/confirm` is still the only send. Context always includes `/risk`, positions, working orders, and quotes. If the circuit would halt, context says hold/close only and buy/sell is not staged.
 
 Buy limit must be below ask; sell limit above bid; buy stop above ask; sell stop below bid. `limit=` and `stop=` together are refused.
 

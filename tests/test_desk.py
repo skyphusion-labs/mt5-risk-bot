@@ -91,6 +91,89 @@ def test_ask_stages_grok_trade(tmp_path) -> None:
     engine.stop()
 
 
+def test_advice_circuit_blocks_buy_allows_close(tmp_path) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Buy.\n"
+                        '{"action":"buy","symbol":"EURUSD","sl":null,"tp":null,'
+                        '"limit":null,"stop":null,"ticket":null,"summary":"long"}'
+                    )
+                }
+            }
+        ]
+    }
+    engine = _engine(tmp_path, llm=FakeLlm(payload))
+    engine.start()
+    engine.risk.write_halt_file("operator")
+    blob = engine.advice_context()
+    assert "CIRCUIT would halt" in blob
+    assert "halt_file" in blob
+    assert "hold or close" in blob.lower()
+    reply = engine.handle_command(TgCommand("1", 1, "/ask buy?", 1))
+    assert "not staging buy" in reply
+    assert "hold or close only" in reply
+    assert engine.desk.pending is None
+    engine.stop()
+
+
+def test_advice_circuit_allows_close(tmp_path) -> None:
+    engine = _engine(
+        tmp_path,
+        llm=FakeLlm({"choices": [{"message": {"content": "x"}}]}),
+    )
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    pos = engine.broker.positions()[0]
+    engine.advisor.transport.payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Out.\n"
+                        f'{{"action":"close","symbol":"EURUSD","sl":null,"tp":null,'
+                        f'"limit":null,"stop":null,"ticket":{pos.ticket},"summary":"out"}}'
+                    )
+                }
+            }
+        ]
+    }
+    engine.risk.write_halt_file("operator")
+    reply = engine.handle_command(TgCommand("1", 1, "/ask flatten?", 3))
+    assert f"confirm close #{pos.ticket}" in reply
+    engine.stop()
+
+
+def test_advice_daily_loss_blocks_buy_without_flatten(tmp_path) -> None:
+    payload = {
+        "choices": [
+            {
+                "message": {
+                    "content": (
+                        "Buy.\n"
+                        '{"action":"buy","symbol":"EURUSD","sl":null,"tp":null,'
+                        '"limit":null,"stop":null,"ticket":null,"summary":"long"}'
+                    )
+                }
+            }
+        ]
+    }
+    engine = _engine(tmp_path, llm=FakeLlm(payload))
+    engine.start()
+    engine.broker._balance = 9_700.0
+    blob = engine.advice_context()
+    assert "CIRCUIT would halt" in blob
+    assert "daily_loss" in blob
+    reply = engine.handle_command(TgCommand("1", 1, "/ask buy?", 1))
+    assert "not staging buy" in reply
+    assert engine.desk.pending is None
+    assert engine.halted is False
+    engine.stop()
+
+
 def test_parse_advice_json() -> None:
     adv = parse_advice('Stay out.\n{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"range"}')
     assert adv.action == "hold"

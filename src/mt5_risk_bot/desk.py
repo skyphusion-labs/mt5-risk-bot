@@ -272,19 +272,25 @@ class Desk:
         if advice.summary:
             lines.append(advice.summary)
         if advice.action in {"buy", "sell"} and advice.symbol:
-            kind = SignalKind.BUY if advice.action == "buy" else SignalKind.SELL
-            try:
-                sig = self.engine.market_signal(
-                    kind,
-                    advice.symbol,
-                    sl=advice.sl,
-                    tp=advice.tp,
-                    limit=advice.limit,
-                    stop=advice.stop,
+            reason = self.engine.advice_circuit_reason()
+            if reason:
+                lines.append(
+                    f"not staging {advice.action}: circuit {reason}; hold or close only"
                 )
-                lines.append(self._stage(sig, "advice"))
-            except (ValueError, RuntimeError) as exc:
-                lines.append(f"could not stage trade: {exc}")
+            else:
+                kind = SignalKind.BUY if advice.action == "buy" else SignalKind.SELL
+                try:
+                    sig = self.engine.market_signal(
+                        kind,
+                        advice.symbol,
+                        sl=advice.sl,
+                        tp=advice.tp,
+                        limit=advice.limit,
+                        stop=advice.stop,
+                    )
+                    lines.append(self._stage(sig, "advice"))
+                except (ValueError, RuntimeError) as exc:
+                    lines.append(f"could not stage trade: {exc}")
         elif advice.action == "close":
             lines.append(self._stage_close(advice))
         return "\n".join(x for x in lines if x)

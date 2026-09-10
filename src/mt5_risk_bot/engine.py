@@ -791,6 +791,9 @@ class Engine:
                 return pos
         return None
 
+    def advice_circuit_reason(self) -> str:
+        return self.risk.circuit_reason(self.broker.account(), self.now_fn())
+
     def advice_context(self) -> str:
         lines = [
             self.status_text(),
@@ -801,8 +804,17 @@ class Engine:
             f"auto={self.cfg.strategy.auto} trail={self.cfg.strategy.trail} "
             f"provider={self.cfg.advice.provider}",
             "Advice may stage a trade. It never sends. /confirm is the only send.",
-            "If daily_loss or drawdown room is gone, action must be hold or close.",
         ]
+        reason = self.advice_circuit_reason()
+        if reason:
+            lines.append(
+                f"CIRCUIT would halt ({reason}). Action must be hold or close. "
+                "Do not buy or sell."
+            )
+        else:
+            lines.append(
+                "If daily_loss or drawdown room is gone, action must be hold or close."
+            )
         for name in self.cfg.symbols:
             try:
                 lines.append(self.quote_text(name))

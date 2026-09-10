@@ -161,6 +161,29 @@ class RiskManager:
         self._halt_reason = reason
         return RiskDecision(allowed=False, reason=reason, halt=True, flatten=flatten)
 
+    def circuit_reason(self, account: Account, now: datetime) -> str:
+        """Why a new entry would be refused. Empty if the circuit is clear.
+
+        Does not set halt state or flatten.
+        """
+        self.observe(account, now)
+        r = self.cfg.risk
+        if self.halt_path().exists():
+            return "halt_file"
+        if self._halted:
+            return self._halt_reason or "halted"
+        if not account.trade_allowed or not account.trade_expert:
+            return "trade_not_allowed"
+        if self.cfg.mode == "mt5" and account.trade_mode == 2 and not self.cfg.live_accepted:
+            return "live_not_accepted"
+        daily_loss = self.snapshot.day_start_equity - account.equity
+        if daily_loss >= self.snapshot.day_start_equity * r.daily_loss_pct:
+            return "daily_loss"
+        dd = self.snapshot.peak_equity - account.equity
+        if self.snapshot.peak_equity > 0 and dd >= self.snapshot.peak_equity * r.max_drawdown_pct:
+            return "max_drawdown"
+        return ""
+
     def circuit(self, account: Account, now: datetime) -> RiskDecision:
         """Account-level halt gates. No signal, no sizing."""
         self.observe(account, now)

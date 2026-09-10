@@ -55,7 +55,8 @@ A UTC day roll sends a recap (equity vs day start, last journal lines).
 Paper is the default. Live real accounts need `--i-accept-risk`.
 
 Free text is advice. The model may stage a market, `limit=`, `stop=`, or
-close-ticket order. `/confirm` is the only send. `/help` for the rest.
+close-ticket order. `/confirm` is the only send. If the circuit would
+halt, advice is hold/close only. `/help` for the rest.
 
 ## Docs
 
