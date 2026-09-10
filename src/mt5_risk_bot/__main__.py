@@ -34,7 +34,11 @@ def _cfg(args: argparse.Namespace) -> BotConfig:
 
 
 def telegram_ping(cfg: BotConfig, *, transport=None) -> str:
-    tg = TelegramClient.from_config(cfg.telegram, transport=transport)
+    tg = TelegramClient.from_config(
+        cfg.telegram,
+        transport=transport,
+        offset_path=offset_path_for(cfg.journal_path),
+    )
     if tg is None or not tg.enabled:
         return "skip"
     try:

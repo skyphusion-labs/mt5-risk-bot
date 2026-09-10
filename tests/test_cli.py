@@ -1,15 +1,20 @@
+from pathlib import Path
+
 from mt5_risk_bot.__main__ import main, paper_round_trip, run_loop, telegram_ping
 from mt5_risk_bot.config import BotConfig, TelegramConfig
 from mt5_risk_bot.journal import Journal
+from mt5_risk_bot.telegram import TelegramClient, offset_path_for
 
 
 class _FakeTg:
     def __init__(self, ok: bool = True) -> None:
         self.ok = ok
         self.sent: list[str] = []
+        self.urls: list[str] = []
 
     def post_json(self, url: str, payload: dict, timeout: float = 10.0, headers=None) -> dict:
-        del url, timeout, headers
+        del timeout, headers
+        self.urls.append(url)
         self.sent.append(str(payload.get("text") or ""))
         return {"ok": self.ok, "result": {"message_id": 1}}
 
@@ -36,6 +41,29 @@ def test_telegram_ping_skip_and_ok() -> None:
     assert any("doctor ping" in t for t in fake.sent)
     fake.ok = False
     assert telegram_ping(cfg, transport=fake) == "fail"
+
+
+def test_telegram_ping_preserves_update_offset(tmp_path, monkeypatch) -> None:
+    seen: dict[str, str | None] = {}
+    orig = TelegramClient.from_config
+
+    def wrapped(cfg, transport=None, *, offset_path=None):
+        seen["offset_path"] = offset_path
+        return orig(cfg, transport=transport, offset_path=offset_path)
+
+    monkeypatch.setattr("mt5_risk_bot.__main__.TelegramClient.from_config", wrapped)
+    journal = tmp_path / "desk.jsonl"
+    path = offset_path_for(journal)
+    Path(path).write_text("99", encoding="utf-8")
+    cfg = BotConfig()
+    cfg.journal_path = str(journal)
+    cfg.telegram = TelegramConfig(token="t", chat_id="1")
+    fake = _FakeTg()
+    assert telegram_ping(cfg, transport=fake) == "ok"
+    assert seen["offset_path"] == path
+    assert Path(path).read_text(encoding="utf-8") == "99"
+    assert any("doctor ping" in t for t in fake.sent)
+    assert not any(u.endswith("/getUpdates") for u in fake.urls)
 
 
 def test_backtest_trend(tmp_path) -> None:
