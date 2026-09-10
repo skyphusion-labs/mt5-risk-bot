@@ -90,6 +90,9 @@ Stage a working order, then confirm:
 /confirm
 /orders
 /cancel TICKET
+/quote
+/risk
+/trail TICKET
 ```
 
 `stop=` is the same shape (`/sell EURUSD stop=... sl=... tp=...`). Do not

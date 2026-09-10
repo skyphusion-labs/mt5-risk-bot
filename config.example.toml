@@ -60,7 +60,7 @@ journal_path = "journal.jsonl"
 #   export ANTHROPIC_API_KEY=...      # Claude
 #   export AI_PROVIDER=grok           # grok | claude
 [telegram]
-notify_events = ["start", "stop", "open", "close", "halt", "order_check_fail"]
+notify_events = ["start", "stop", "open", "close", "halt", "order_check_fail", "pending"]
 confirm_seconds = 120
 
 [advice]
