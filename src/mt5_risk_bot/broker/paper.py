@@ -10,6 +10,8 @@ Pending limit/stop orders fill on tick (bid/ask vs price) or on bar
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from mt5_risk_bot.constants import (
     ORDER_TYPE_BUY,
     ORDER_TYPE_BUY_LIMIT,
@@ -17,11 +19,13 @@ from mt5_risk_bot.constants import (
     ORDER_TYPE_SELL_LIMIT,
     ORDER_TYPE_SELL_STOP,
     TRADE_ACTION_DEAL,
+    TRADE_ACTION_MODIFY,
     TRADE_ACTION_PENDING,
     TRADE_ACTION_REMOVE,
     TRADE_ACTION_SLTP,
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID,
+    TRADE_RETCODE_INVALID_ORDER,
     TRADE_RETCODE_INVALID_PRICE,
     TRADE_RETCODE_INVALID_STOPS,
     TRADE_RETCODE_INVALID_VOLUME,
@@ -214,6 +218,8 @@ class PaperBroker:
         action = int(request.get("action", 0))
         if action == TRADE_ACTION_SLTP:
             return self._modify_sltp(request, commit=commit)
+        if action == TRADE_ACTION_MODIFY:
+            return self._modify_pending(request, commit=commit)
         if action == TRADE_ACTION_PENDING:
             return self._place_pending(request, commit=commit)
         if action == TRADE_ACTION_REMOVE:
@@ -319,6 +325,32 @@ class PaperBroker:
             pos.sl = spec.normalize_price(sl)
             pos.tp = spec.normalize_price(tp) if tp else 0.0
         return OrderResult(retcode=TRADE_RETCODE_DONE, comment="Done", order=ticket, request=request)
+
+    def _modify_pending(self, request: dict, *, commit: bool) -> OrderResult:
+        ticket = int(request.get("order") or 0)
+        order = self._orders.get(ticket)
+        if order is None:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_ORDER, comment="gone", request=request)
+        spec = self.symbol(order.symbol)
+        price = float(request.get("price", order.price) or order.price)
+        sl = float(request.get("sl", order.sl) or 0)
+        tp = float(request.get("tp", order.tp) or 0)
+        if price <= 0:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_PRICE, comment="price", request=request)
+        if commit:
+            self._orders[ticket] = replace(
+                order,
+                price=spec.normalize_price(price),
+                sl=spec.normalize_price(sl) if sl else 0.0,
+                tp=spec.normalize_price(tp) if tp else 0.0,
+            )
+        return OrderResult(
+            retcode=TRADE_RETCODE_DONE,
+            comment="Done",
+            order=ticket,
+            price=spec.normalize_price(price),
+            request=request,
+        )
 
     def _place_pending(self, request: dict, *, commit: bool) -> OrderResult:
         symbol = str(request.get("symbol", ""))

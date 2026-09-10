@@ -14,10 +14,12 @@ from mt5_risk_bot.constants import (
     ORDER_TYPE_SELL_LIMIT,
     ORDER_TYPE_SELL_STOP,
     TRADE_ACTION_DEAL,
+    TRADE_ACTION_MODIFY,
     TRADE_ACTION_PENDING,
     TRADE_ACTION_REMOVE,
     TRADE_ACTION_SLTP,
     TRADE_RETCODE_DONE,
+    TRADE_RETCODE_INVALID_STOPS,
     choose_filling,
 )
 from mt5_risk_bot.desk import Desk
@@ -25,7 +27,7 @@ from mt5_risk_bot.indicators import adx, ema, last_closed
 from mt5_risk_bot.indicators import atr as atr_bars
 from mt5_risk_bot.journal import Journal
 from mt5_risk_bot.llm import Advisor
-from mt5_risk_bot.models import Bar, OrderResult, Position, Signal, SignalKind
+from mt5_risk_bot.models import Bar, OrderResult, PendingOrder, Position, Signal, SignalKind
 from mt5_risk_bot.risk import RiskDecision, RiskManager
 from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.telegram import TelegramClient, TgCommand
@@ -561,21 +563,75 @@ class Engine:
 
     def set_sl(self, ticket: int, price: float) -> str:
         pos = self._pos(ticket)
-        if pos is None:
+        if pos is not None:
+            result = self._modify(pos, price, pos.tp)
+            if not result.ok:
+                return f"sl failed retcode={result.retcode} {result.comment}"
+            return f"sl #{ticket} -> {price}"
+        order = self._order(ticket)
+        if order is None:
             return "no such ticket"
-        result = self._modify(pos, price, pos.tp)
+        result = self._modify_pending(order, sl=price, tp=order.tp)
         if not result.ok:
             return f"sl failed retcode={result.retcode} {result.comment}"
         return f"sl #{ticket} -> {price}"
 
     def set_tp(self, ticket: int, price: float) -> str:
         pos = self._pos(ticket)
-        if pos is None:
+        if pos is not None:
+            result = self._modify(pos, pos.sl, price)
+            if not result.ok:
+                return f"tp failed retcode={result.retcode} {result.comment}"
+            return f"tp #{ticket} -> {price}"
+        order = self._order(ticket)
+        if order is None:
             return "no such ticket"
-        result = self._modify(pos, pos.sl, price)
+        result = self._modify_pending(order, sl=order.sl, tp=price)
         if not result.ok:
             return f"tp failed retcode={result.retcode} {result.comment}"
         return f"tp #{ticket} -> {price}"
+
+    def _order(self, ticket: int) -> PendingOrder | None:
+        for order in self.broker.orders(magic=self.cfg.risk.magic):
+            if order.ticket == ticket:
+                return order
+        return None
+
+    def _modify_pending(self, order: PendingOrder, sl: float, tp: float) -> OrderResult:
+        spec = self.broker.symbol(order.symbol)
+        sl_n = spec.normalize_price(sl) if sl else 0.0
+        tp_n = spec.normalize_price(tp) if tp else 0.0
+        if sl_n <= 0:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="sl required")
+        entry = order.price
+        if order.side.value == "buy" and not (sl_n < entry and (tp_n <= 0 or entry < tp_n)):
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="buy needs sl < entry < tp")
+        if order.side.value == "sell" and not (sl_n > entry and (tp_n <= 0 or tp_n < entry)):
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="sell needs tp < entry < sl")
+        request = {
+            "action": TRADE_ACTION_MODIFY,
+            "order": order.ticket,
+            "symbol": order.symbol,
+            "volume": order.volume,
+            "type": order.type_code,
+            "price": order.price,
+            "sl": sl_n,
+            "tp": tp_n,
+            "type_time": ORDER_TIME_GTC,
+            "magic": order.magic,
+        }
+        result = self.broker.order_send(request)
+        self.journal.write(
+            "modify",
+            ticket=order.ticket,
+            symbol=order.symbol,
+            sl=sl_n,
+            tp=tp_n,
+            pending=True,
+            ok=result.ok,
+            retcode=result.retcode,
+        )
+        return result
 
     def breakeven(self, ticket: int) -> str:
         pos = self._pos(ticket)

@@ -218,3 +218,34 @@ def test_orders_empty_message(tmp_path) -> None:
     engine.start()
     assert "no pending" in engine.handle_command(TgCommand("1", 1, "/orders", 1))
     engine.stop()
+
+
+def test_sl_tp_modify_working_order(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    tick = engine.broker.tick("EURUSD")
+    spec = engine.broker.symbol("EURUSD")
+    limit = spec.normalize_price(tick.ask - 0.002)
+    sl = spec.normalize_price(limit - 0.005)
+    tp = spec.normalize_price(limit + 0.010)
+    engine.handle_command(
+        TgCommand("1", 1, f"/buy EURUSD limit={limit} sl={sl} tp={tp}", 1)
+    )
+    sent = engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    assert sent.startswith("sent")
+    order = engine.broker.orders()[0]
+    new_sl = spec.normalize_price(limit - 0.003)
+    new_tp = spec.normalize_price(limit + 0.012)
+    sl_reply = engine.handle_command(TgCommand("1", 1, f"/sl {order.ticket} {new_sl}", 3))
+    assert f"sl #{order.ticket}" in sl_reply
+    assert abs(engine.broker.orders()[0].sl - new_sl) < spec.point
+    tp_reply = engine.handle_command(TgCommand("1", 1, f"/tp {order.ticket} {new_tp}", 4))
+    assert f"tp #{order.ticket}" in tp_reply
+    assert abs(engine.broker.orders()[0].tp - new_tp) < spec.point
+    assert not engine.broker.positions()
+    bad = engine.handle_command(
+        TgCommand("1", 1, f"/sl {order.ticket} {spec.normalize_price(limit + 0.001)}", 5)
+    )
+    assert "sl #" not in bad
+    assert "sl < entry" in bad or "fail" in bad.lower()
+    engine.stop()

@@ -90,7 +90,8 @@ Close a position: `TRADE_ACTION_DEAL` with the opposite `type` and
 `position=<ticket>`. Netting vs hedging: on netting, an opposite deal reduces
 the single position; on hedging you must pass the ticket.
 
-Change SL/TP: `TRADE_ACTION_SLTP` with `position`, `sl`, `tp`.
+Change position SL/TP: `TRADE_ACTION_SLTP` with `position`, `sl`, `tp`.
+Change a pending order: `TRADE_ACTION_MODIFY` with `order`, `price`, `sl`, `tp`.
 
 ## Filling mode (10030)
 

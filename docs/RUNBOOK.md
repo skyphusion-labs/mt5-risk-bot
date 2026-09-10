@@ -96,6 +96,8 @@ Stage a working order, then confirm:
 /risk
 /trail TICKET
 /trail on
+/sl TICKET PRICE
+/tp TICKET PRICE
 ```
 
 `stop=` is the same shape (`/sell EURUSD stop=... sl=... tp=...`). Do not

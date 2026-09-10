@@ -2,8 +2,10 @@ from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.constants import (
     ORDER_TYPE_BUY_LIMIT,
     ORDER_TYPE_BUY_STOP,
+    TRADE_ACTION_MODIFY,
     TRADE_ACTION_PENDING,
     TRADE_ACTION_REMOVE,
+    TRADE_RETCODE_INVALID_ORDER,
     TRADE_RETCODE_INVALID_VOLUME,
     TRADE_RETCODE_PLACED,
 )
@@ -142,4 +144,32 @@ def test_sell_limit_fills_when_bid_rises() -> None:
     assert filled == [res.order]
     assert len(broker.positions()) == 1
     assert broker.orders() == []
+
+
+def test_modify_pending_sl_tp() -> None:
+    broker = _paper()
+    spec = broker.symbol("EURUSD")
+    tick = broker.tick("EURUSD")
+    limit = spec.normalize_price(tick.ask - 0.002)
+    res = _place(broker, ORDER_TYPE_BUY_LIMIT, limit)
+    order = broker.orders()[0]
+    new_sl = spec.normalize_price(limit - 0.003)
+    new_tp = spec.normalize_price(limit + 0.012)
+    changed = broker.order_send(
+        {
+            "action": TRADE_ACTION_MODIFY,
+            "order": res.order,
+            "price": order.price,
+            "sl": new_sl,
+            "tp": new_tp,
+        }
+    )
+    assert changed.ok
+    updated = broker.orders()[0]
+    assert abs(updated.sl - new_sl) < spec.point
+    assert abs(updated.tp - new_tp) < spec.point
+    assert abs(updated.price - order.price) < spec.point
+    missing = broker.order_send({"action": TRADE_ACTION_MODIFY, "order": 999, "price": limit})
+    assert missing.retcode == TRADE_RETCODE_INVALID_ORDER
+    assert not missing.ok
 

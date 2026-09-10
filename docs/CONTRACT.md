@@ -57,7 +57,7 @@ off until `/auto on`.
 | `/cancel TICKET` | cancel a working order |
 | `/orders` | list working orders |
 | `/close TICKET\|SYMBOL\|all [VOL]` | flatten or partial close |
-| `/sl` `/tp` TICKET PRICE | modify; success only if the broker applied it |
+| `/sl` `/tp` TICKET PRICE | modify a position or a working order; success only if the broker applied it |
 | `/be TICKET` | move SL to entry; never loosen |
 | `/trail on\|off\|TICKET` | on: `manage()` existing positions every tick, no EMA entries (default off). TICKET: one-shot. never loosen |
 | `/history` | last journal events |
@@ -66,7 +66,7 @@ off until `/auto on`.
 | `/auto on\|off` | optional EMA regime; fill alerts do not wait for this |
 | `/status` `/positions` `/halt` `/resume` | account; `/halt` flattens, drops the confirm, and cancels working orders |
 
-`/confirm` for a market order reprices and re-runs `preview`. A limit or stop keeps the staged price. Halt, daily-loss, and drawdown still refuse. The reply includes `ok` and `retcode`; only `OrderResult.ok` starts with `sent `. A second `/buy` while a confirm is live is refused until `/cancel`. Advice never overwrites a live confirm. Close and SL/TP success replies come from `OrderResult.ok`, not from "the ticket existed".
+`/confirm` for a market order reprices and re-runs `preview`. A limit or stop keeps the staged price. Halt, daily-loss, and drawdown still refuse. The reply includes `ok` and `retcode`; only `OrderResult.ok` starts with `sent `. A second `/buy` while a confirm is live is refused until `/cancel`. Advice never overwrites a live confirm. Close and SL/TP success replies come from `OrderResult.ok`, not from "the ticket existed". `/sl` `/tp` on a working order uses `TRADE_ACTION_MODIFY` (paper supported) and keeps side geometry (`buy: sl < price < tp`).
 
 Advice JSON fields: `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `summary`. `limit` and `stop` are XOR. A close action with `ticket` stages that close; `/confirm` is still the only send. Context always includes `/risk`, positions, working orders, and quotes.
 
