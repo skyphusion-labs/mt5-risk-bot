@@ -115,6 +115,33 @@ class BotConfig:
     journal_path: str = "journal.jsonl"
     live_accepted: bool = False
 
+    def validate(self) -> None:
+        if self.mode not in {"paper", "mt5"}:
+            raise ValueError("account.mode must be paper or mt5")
+        r = self.risk
+        if not (0 < r.risk_pct <= 0.05):
+            raise ValueError("risk_pct must be in (0, 0.05]")
+        if not (0 < r.daily_loss_pct <= 0.20):
+            raise ValueError("daily_loss_pct must be in (0, 0.20]")
+        if not (0 < r.max_drawdown_pct <= 0.50):
+            raise ValueError("max_drawdown_pct must be in (0, 0.50]")
+        if r.max_positions < 1:
+            raise ValueError("max_positions must be >= 1")
+        s = self.strategy
+        if s.fast_ema >= s.slow_ema:
+            raise ValueError("fast_ema must be < slow_ema")
+        if s.atr_stop_mult <= 0 or s.atr_tp_mult <= 0:
+            raise ValueError("ATR multiples must be > 0")
+        if s.atr_tp_mult / s.atr_stop_mult < r.min_rr - 1e-9:
+            raise ValueError("atr_tp_mult / atr_stop_mult must be >= min_rr")
+        self.strategy.timeframe_id  # raises if unknown
+        if self.advice.provider not in {"grok", "claude"}:
+            raise ValueError("advice.provider must be grok or claude")
+        if not self.symbols:
+            raise ValueError("at least one symbol required")
+        if self.telegram.confirm_seconds <= 0:
+            raise ValueError("confirm_seconds must be > 0")
+
 
 def _section(data: dict, name: str) -> dict:
     raw = data.get(name, {})
@@ -235,31 +262,9 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             claude_url=str(advice_s.get("claude_url", "https://api.anthropic.com/v1/messages")),
         ),
     )
-    _validate(cfg)
+    cfg.validate()
     return cfg
 
 
 def _validate(cfg: BotConfig) -> None:
-    if cfg.mode not in {"paper", "mt5"}:
-        raise ValueError("account.mode must be paper or mt5")
-    r = cfg.risk
-    if not (0 < r.risk_pct <= 0.05):
-        raise ValueError("risk_pct must be in (0, 0.05]")
-    if not (0 < r.daily_loss_pct <= 0.20):
-        raise ValueError("daily_loss_pct must be in (0, 0.20]")
-    if not (0 < r.max_drawdown_pct <= 0.50):
-        raise ValueError("max_drawdown_pct must be in (0, 0.50]")
-    if r.max_positions < 1:
-        raise ValueError("max_positions must be >= 1")
-    s = cfg.strategy
-    if s.fast_ema >= s.slow_ema:
-        raise ValueError("fast_ema must be < slow_ema")
-    if s.atr_stop_mult <= 0 or s.atr_tp_mult <= 0:
-        raise ValueError("ATR multiples must be > 0")
-    if s.atr_tp_mult / s.atr_stop_mult < r.min_rr - 1e-9:
-        raise ValueError("atr_tp_mult / atr_stop_mult must be >= min_rr")
-    cfg.strategy.timeframe_id  # raises if unknown
-    if cfg.advice.provider not in {"grok", "claude"}:
-        raise ValueError("advice.provider must be grok or claude")
-    if not cfg.symbols:
-        raise ValueError("at least one symbol required")
+    cfg.validate()

@@ -27,6 +27,7 @@ def _cfg(args: argparse.Namespace) -> BotConfig:
     cfg = load_config(args.config) if args.config else load_config()
     if getattr(args, "i_accept_risk", False):
         cfg.live_accepted = True
+    cfg.validate()
     return cfg
 
 
@@ -235,18 +236,30 @@ def cmd_run(args: argparse.Namespace) -> int:
     engine.start()
     keep_on_halt = True
     try:
-        while True:
-            engine.step_all()
-            if engine.halted and not keep_on_halt:
-                print("halted")
-                break
-            if not args.loop:
-                break
+        run_loop(engine, loop=bool(args.loop), keep_on_halt=keep_on_halt)
     except KeyboardInterrupt:
         print("interrupt")
     finally:
         engine.stop()
     return 0
+
+
+def run_loop(engine: Engine, *, loop: bool, keep_on_halt: bool = True) -> None:
+    """One tick, or until Ctrl-C. A bad tick is journaled; the process stays up."""
+    while True:
+        try:
+            engine.step_all()
+        except Exception as exc:
+            print(f"loop error: {exc}", file=sys.stderr)
+            try:
+                engine.journal.write("loop_error", error=str(exc)[:200])
+            except Exception:
+                pass
+        if engine.halted and not keep_on_halt:
+            print("halted")
+            break
+        if not loop:
+            break
 
 
 def cmd_telegram(args: argparse.Namespace) -> int:
@@ -305,7 +318,11 @@ def build_parser() -> argparse.ArgumentParser:
 def main(argv: list[str] | None = None) -> int:
     parser = build_parser()
     args = parser.parse_args(argv)
-    return args.func(args)
+    try:
+        return args.func(args)
+    except ValueError as exc:
+        print(str(exc), file=sys.stderr)
+        return 2
 
 
 if __name__ == "__main__":

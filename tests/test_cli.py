@@ -1,5 +1,6 @@
-from mt5_risk_bot.__main__ import main, paper_round_trip, telegram_ping
+from mt5_risk_bot.__main__ import main, paper_round_trip, run_loop, telegram_ping
 from mt5_risk_bot.config import BotConfig, TelegramConfig
+from mt5_risk_bot.journal import Journal
 
 
 class _FakeTg:
@@ -70,6 +71,55 @@ def test_run_requires_telegram() -> None:
     assert main(["run", "--mode", "paper"]) == 2
 
 
+def test_run_invalid_risk_pct(tmp_path, capsys) -> None:
+    path = tmp_path / "bad.toml"
+    path.write_text("[risk]\nrisk_pct = 0\n", encoding="utf-8")
+    rc = main(["--config", str(path), "run", "--mode", "paper"])
+    assert rc != 0
+    err = capsys.readouterr().err
+    assert "risk_pct" in err
+
+
+class _BoomEngine:
+    def __init__(self) -> None:
+        self.calls = 0
+        self.halted = False
+        self.journal = self
+
+    def write(self, event: str, **fields) -> None:
+        del event, fields
+
+    def step_all(self) -> None:
+        self.calls += 1
+        if self.calls == 1:
+            raise RuntimeError("boom")
+        if self.calls >= 3:
+            self.halted = True
+
+
+def test_run_loop_continues_after_step_all_error(capsys) -> None:
+    engine = _BoomEngine()
+    run_loop(engine, loop=True, keep_on_halt=False)
+    assert engine.calls >= 3
+    err = capsys.readouterr().err
+    assert "boom" in err
+
+
+def test_run_loop_keyboardinterrupt_stops() -> None:
+    class _Kbd:
+        halted = False
+        journal = type("J", (), {"write": staticmethod(lambda *a, **k: None)})()
+
+        def step_all(self) -> None:
+            raise KeyboardInterrupt
+
+    try:
+        run_loop(_Kbd(), loop=True)
+    except KeyboardInterrupt:
+        return
+    raise AssertionError("KeyboardInterrupt must stop the loop")
+
+
 def test_run_synthetic(tmp_path, monkeypatch) -> None:
     monkeypatch.chdir(tmp_path)
     assert main(["run", "--mode", "paper", "--synthetic"]) == 0
@@ -104,3 +154,25 @@ def test_backtest_csv_and_range(tmp_path) -> None:
         ]
     )
     assert rc == 0
+
+
+def test_run_loop_survives_step_error(tmp_path, capsys) -> None:
+    class Boom:
+        def __init__(self) -> None:
+            self.n = 0
+            self.halted = False
+            self.journal = Journal(tmp_path / "j.jsonl")
+
+        def step_all(self) -> None:
+            self.n += 1
+            if self.n == 1:
+                raise RuntimeError("broker hiccup")
+            self.halted = True
+
+    eng = Boom()
+    run_loop(eng, loop=True, keep_on_halt=False)
+    assert eng.n == 2
+    err = capsys.readouterr().err
+    assert "broker hiccup" in err
+    events = [rec.get("event") for rec in eng.journal.tail(10)]
+    assert "loop_error" in events
