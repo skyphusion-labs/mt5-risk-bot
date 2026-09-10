@@ -3,24 +3,47 @@
 Fills at the current bid/ask. Stop and take-profit are evaluated against
 each new bar using the conservative rule: if both SL and TP are touched
 in the same bar, SL wins.
+
+Pending limit/stop orders fill on tick (bid/ask vs price) or on bar
+(high/low vs price). Each pending fills at most once per resolve.
 """
 
 from __future__ import annotations
 
+from dataclasses import replace
+
 from mt5_risk_bot.constants import (
     ORDER_TYPE_BUY,
+    ORDER_TYPE_BUY_LIMIT,
+    ORDER_TYPE_BUY_STOP,
+    ORDER_TYPE_SELL_LIMIT,
+    ORDER_TYPE_SELL_STOP,
+    TRADE_ACTION_CLOSE_BY,
     TRADE_ACTION_DEAL,
+    TRADE_ACTION_MODIFY,
+    TRADE_ACTION_PENDING,
+    TRADE_ACTION_REMOVE,
     TRADE_ACTION_SLTP,
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID,
+    TRADE_RETCODE_INVALID_ORDER,
+    TRADE_RETCODE_INVALID_PRICE,
     TRADE_RETCODE_INVALID_STOPS,
     TRADE_RETCODE_INVALID_VOLUME,
     TRADE_RETCODE_NO_MONEY,
+    TRADE_RETCODE_PLACED,
     TRADE_RETCODE_POSITION_CLOSED,
     TRADE_RETCODE_TRADE_DISABLED,
 )
-from mt5_risk_bot.models import Account, Bar, OrderResult, Position, Side, SymbolSpec, Tick
+from mt5_risk_bot.models import Account, Bar, OrderResult, PendingOrder, Position, Side, SymbolSpec, Tick
 from mt5_risk_bot.sizing import ticks_between
+
+_PENDING_SIDE = {
+    ORDER_TYPE_BUY_LIMIT: Side.BUY,
+    ORDER_TYPE_SELL_LIMIT: Side.SELL,
+    ORDER_TYPE_BUY_STOP: Side.BUY,
+    ORDER_TYPE_SELL_STOP: Side.SELL,
+}
 
 # Filling IOC allowed (bit 2) so live-style filling selection works in paper.
 _IOC = 2
@@ -84,6 +107,7 @@ class PaperBroker:
         self._specs = specs or {}
         self._bars: dict[str, list[Bar]] = bars or {}
         self._positions: dict[int, Position] = {}
+        self._orders: dict[int, PendingOrder] = {}
         self._next_ticket = 1
         self._trade_allowed = trade_allowed
         self._connected = False
@@ -177,6 +201,12 @@ class PaperBroker:
             out = [p for p in out if p.magic == magic]
         return out
 
+    def orders(self, magic: int | None = None) -> list[PendingOrder]:
+        out = list(self._orders.values())
+        if magic is not None:
+            out = [o for o in out if o.magic == magic]
+        return out
+
     def order_check(self, request: dict) -> OrderResult:
         return self._apply(request, commit=False)
 
@@ -189,6 +219,14 @@ class PaperBroker:
         action = int(request.get("action", 0))
         if action == TRADE_ACTION_SLTP:
             return self._modify_sltp(request, commit=commit)
+        if action == TRADE_ACTION_MODIFY:
+            return self._modify_pending(request, commit=commit)
+        if action == TRADE_ACTION_PENDING:
+            return self._place_pending(request, commit=commit)
+        if action == TRADE_ACTION_REMOVE:
+            return self._remove_pending(request, commit=commit)
+        if action == TRADE_ACTION_CLOSE_BY:
+            return self._close_by(request, commit=commit)
         if action != TRADE_ACTION_DEAL:
             return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="unsupported action", request=request)
         if request.get("position"):
@@ -278,6 +316,50 @@ class PaperBroker:
             request=request,
         )
 
+    def _close_by(self, request: dict, *, commit: bool) -> OrderResult:
+        ticket = int(request.get("position") or 0)
+        other = int(request.get("position_by") or 0)
+        a = self._positions.get(ticket)
+        b = self._positions.get(other)
+        if a is None or b is None:
+            return OrderResult(retcode=TRADE_RETCODE_POSITION_CLOSED, comment="gone", request=request)
+        if ticket == other or a.symbol != b.symbol or a.side == b.side:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="closeby", request=request)
+        spec = self.symbol(a.symbol)
+        vol = min(a.volume, b.volume)
+        rem_a = round(a.volume - vol, 8)
+        rem_b = round(b.volume - vol, 8)
+        if (rem_a > 1e-12 and rem_a < spec.volume_min - 1e-12) or (
+            rem_b > 1e-12 and rem_b < spec.volume_min - 1e-12
+        ):
+            return OrderResult(
+                retcode=TRADE_RETCODE_INVALID_VOLUME, comment="remainder", request=request
+            )
+        tick = self.tick(a.symbol)
+        if commit:
+            px_a = tick.bid if a.side is Side.BUY else tick.ask
+            px_b = tick.bid if b.side is Side.BUY else tick.ask
+            self._balance += self._pnl(a, px_a, spec) * (vol / a.volume)
+            self._balance += self._pnl(b, px_b, spec) * (vol / b.volume)
+            if rem_a <= 1e-12:
+                del self._positions[ticket]
+            else:
+                a.volume = rem_a
+            if rem_b <= 1e-12:
+                del self._positions[other]
+            else:
+                b.volume = rem_b
+        return OrderResult(
+            retcode=TRADE_RETCODE_DONE,
+            comment="Done",
+            deal=ticket,
+            order=ticket,
+            volume=vol,
+            bid=tick.bid,
+            ask=tick.ask,
+            request=request,
+        )
+
     def _modify_sltp(self, request: dict, *, commit: bool) -> OrderResult:
         ticket = int(request.get("position") or 0)
         pos = self._positions.get(ticket)
@@ -291,11 +373,181 @@ class PaperBroker:
             pos.tp = spec.normalize_price(tp) if tp else 0.0
         return OrderResult(retcode=TRADE_RETCODE_DONE, comment="Done", order=ticket, request=request)
 
+    def _modify_pending(self, request: dict, *, commit: bool) -> OrderResult:
+        ticket = int(request.get("order") or 0)
+        order = self._orders.get(ticket)
+        if order is None:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_ORDER, comment="gone", request=request)
+        spec = self.symbol(order.symbol)
+        price = float(request.get("price", order.price) or order.price)
+        sl = float(request.get("sl", order.sl) or 0)
+        tp = float(request.get("tp", order.tp) or 0)
+        if price <= 0:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_PRICE, comment="price", request=request)
+        if commit:
+            self._orders[ticket] = replace(
+                order,
+                price=spec.normalize_price(price),
+                sl=spec.normalize_price(sl) if sl else 0.0,
+                tp=spec.normalize_price(tp) if tp else 0.0,
+            )
+        return OrderResult(
+            retcode=TRADE_RETCODE_DONE,
+            comment="Done",
+            order=ticket,
+            price=spec.normalize_price(price),
+            request=request,
+        )
+
+    def _place_pending(self, request: dict, *, commit: bool) -> OrderResult:
+        symbol = str(request.get("symbol", ""))
+        volume = float(request.get("volume", 0))
+        type_code = int(request.get("type", -1))
+        side = _PENDING_SIDE.get(type_code)
+        if side is None:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="pending type", request=request)
+        spec = self.symbol(symbol)
+        if volume < spec.volume_min or volume > spec.volume_max:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_VOLUME, comment="volume", request=request)
+        price = float(request.get("price", 0) or 0)
+        if price <= 0:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_PRICE, comment="price", request=request)
+        sl = float(request.get("sl", 0) or 0)
+        tp = float(request.get("tp", 0) or 0)
+        tick = self.tick(symbol)
+        ticket = self._next_ticket
+        if commit:
+            self._next_ticket += 1
+            self._orders[ticket] = PendingOrder(
+                ticket=ticket,
+                symbol=symbol.upper(),
+                side=side,
+                volume=volume,
+                price=spec.normalize_price(price),
+                sl=spec.normalize_price(sl) if sl else 0.0,
+                tp=spec.normalize_price(tp) if tp else 0.0,
+                magic=int(request.get("magic", 0) or 0),
+                comment=str(request.get("comment", "")),
+                type_code=type_code,
+                time=tick.time,
+            )
+        return OrderResult(
+            retcode=TRADE_RETCODE_PLACED,
+            comment="placed",
+            order=ticket if commit else 0,
+            volume=volume,
+            price=spec.normalize_price(price),
+            bid=tick.bid,
+            ask=tick.ask,
+            request=request,
+        )
+
+    def _remove_pending(self, request: dict, *, commit: bool) -> OrderResult:
+        ticket = int(request.get("order") or 0)
+        order = self._orders.get(ticket)
+        if order is None:
+            return OrderResult(retcode=TRADE_RETCODE_POSITION_CLOSED, comment="gone", request=request)
+        if commit:
+            del self._orders[ticket]
+        return OrderResult(
+            retcode=TRADE_RETCODE_DONE,
+            comment="Done",
+            order=ticket,
+            volume=order.volume,
+            price=order.price,
+            request=request,
+        )
+
+    def _pending_hit_tick(self, order: PendingOrder, tick: Tick) -> bool:
+        t = order.type_code
+        p = order.price
+        if t == ORDER_TYPE_BUY_LIMIT:
+            return tick.ask <= p
+        if t == ORDER_TYPE_SELL_LIMIT:
+            return tick.bid >= p
+        if t == ORDER_TYPE_BUY_STOP:
+            return tick.ask >= p
+        if t == ORDER_TYPE_SELL_STOP:
+            return tick.bid <= p
+        return False
+
+    def _pending_hit_bar(self, order: PendingOrder, bar: Bar) -> bool:
+        t = order.type_code
+        p = order.price
+        if t == ORDER_TYPE_BUY_LIMIT:
+            return bar.low <= p
+        if t == ORDER_TYPE_SELL_LIMIT:
+            return bar.high >= p
+        if t == ORDER_TYPE_BUY_STOP:
+            return bar.high >= p
+        if t == ORDER_TYPE_SELL_STOP:
+            return bar.low <= p
+        return False
+
+    def _fill_pending(self, order: PendingOrder, when: int) -> bool:
+        spec = self.symbol(order.symbol)
+        price = spec.normalize_price(order.price)
+        acct = self.account()
+        notional = spec.trade_contract_size * order.volume * price
+        need = notional / max(self._leverage, 1)
+        if need > acct.margin_free:
+            return False
+        del self._orders[order.ticket]
+        self._positions[order.ticket] = Position(
+            ticket=order.ticket,
+            symbol=order.symbol,
+            side=order.side,
+            volume=order.volume,
+            price_open=price,
+            sl=spec.normalize_price(order.sl) if order.sl else 0.0,
+            tp=spec.normalize_price(order.tp) if order.tp else 0.0,
+            price_current=price,
+            profit=0.0,
+            magic=order.magic,
+            comment=order.comment,
+            time=when,
+            identifier=order.ticket,
+        )
+        return True
+
+    def resolve_pending_tick(self, symbol: str | None = None) -> list[int]:
+        """Fill pending against the current bid/ask. Returns filled tickets."""
+        return self.resolve_pending(symbol)
+
+    def resolve_pending(self, symbol: str | None = None, bar: Bar | None = None) -> list[int]:
+        """Fill pending against a bar (high/low) or the current tick.
+
+        Each pending fills at most once even if the bar could trigger both
+        a limit and a stop.
+        """
+        filled: list[int] = []
+        key = symbol.upper() if symbol else None
+        for ticket, order in list(self._orders.items()):
+            if key is not None and order.symbol != key:
+                continue
+            if bar is not None:
+                hit = self._pending_hit_bar(order, bar)
+                when = bar.time
+            else:
+                tick = self.tick(order.symbol)
+                hit = self._pending_hit_tick(order, tick)
+                when = tick.time
+            if not hit:
+                continue
+            if self._fill_pending(order, when):
+                filled.append(ticket)
+        return filled
+
     def on_bar(self, symbol: str, bar: Bar) -> list[int]:
-        """Append a closed bar and resolve SL/TP. Returns closed tickets."""
+        """Append a closed bar, fill pending, then resolve SL/TP.
+
+        Returns closed position tickets. Pending that fill and then hit SL
+        on the same bar close in this call.
+        """
         key = symbol.upper()
         self._bars.setdefault(key, []).append(bar)
         self._clock = bar.time
+        self.resolve_pending(key, bar)
         closed: list[int] = []
         for ticket, pos in list(self._positions.items()):
             if pos.symbol != key:

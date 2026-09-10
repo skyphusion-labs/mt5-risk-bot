@@ -81,6 +81,7 @@ Dict mapped onto `MqlTradeRequest`:
 | `type_time` | GTC=0, DAY=1, SPECIFIED=2 |
 | `comment` | Keep short; terminals truncate around 31 chars |
 | `position` | Ticket when closing or changing SL/TP |
+| `position_by` | Opposite ticket for `TRADE_ACTION_CLOSE_BY` |
 
 `order_check` validates funds and request shape. Its success retcode is **0**,
 not 10009. `order_send` success is 10009 (`TRADE_RETCODE_DONE`) or 10010
@@ -90,7 +91,13 @@ Close a position: `TRADE_ACTION_DEAL` with the opposite `type` and
 `position=<ticket>`. Netting vs hedging: on netting, an opposite deal reduces
 the single position; on hedging you must pass the ticket.
 
-Change SL/TP: `TRADE_ACTION_SLTP` with `position`, `sl`, `tp`.
+Change position SL/TP: `TRADE_ACTION_SLTP` with `position`, `sl`, `tp`.
+Change a pending order: `TRADE_ACTION_MODIFY` with `order`, `price`, `sl`, `tp`.
+Close two opposite hedges: `TRADE_ACTION_CLOSE_BY` with `position` and
+`position_by`. Hedge accounts only. A netting terminal refuses CLOSE_BY
+(one net position per symbol; there is no opposite ticket). The paper
+broker always hedges (a new ticket per deal) so close-by works in paper.
+That is not a claim that paper P/L equals live.
 
 ## Filling mode (10030)
 

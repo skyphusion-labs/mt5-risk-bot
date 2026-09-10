@@ -111,6 +111,21 @@ class SymbolSpec:
         return self.trade_stops_level * self.point
 
 
+@dataclass(frozen=True)
+class PendingOrder:
+    ticket: int
+    symbol: str
+    side: Side
+    volume: float
+    price: float
+    sl: float
+    tp: float
+    magic: int = 0
+    comment: str = ""
+    type_code: int = 0
+    time: int = 0
+
+
 @dataclass
 class Position:
     ticket: int
@@ -166,6 +181,7 @@ class Signal:
     fast_ema: float = 0.0
     slow_ema: float = 0.0
     adx: float = 0.0
+    pending_kind: str = ""
 
     @property
     def side(self) -> Side | None:
@@ -210,6 +226,7 @@ class Signal:
             fast_ema=self.fast_ema,
             slow_ema=self.slow_ema,
             adx=self.adx,
+            pending_kind=self.pending_kind,
         )
 
 

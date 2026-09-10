@@ -9,15 +9,37 @@ from mt5_risk_bot.broker.base import Broker
 from mt5_risk_bot.config import BotConfig
 from mt5_risk_bot.constants import (
     ORDER_TIME_GTC,
+    ORDER_TYPE_BUY_LIMIT,
+    ORDER_TYPE_BUY_STOP,
+    ORDER_TYPE_SELL_LIMIT,
+    ORDER_TYPE_SELL_STOP,
+    TRADE_ACTION_CLOSE_BY,
     TRADE_ACTION_DEAL,
+    TRADE_ACTION_MODIFY,
+    TRADE_ACTION_PENDING,
+    TRADE_ACTION_REMOVE,
     TRADE_ACTION_SLTP,
+    TRADE_RETCODE_DONE,
+    TRADE_RETCODE_INVALID_STOPS,
     choose_filling,
 )
-from mt5_risk_bot.journal import Journal
-from mt5_risk_bot.models import Bar, Position, Signal, SignalKind
-from mt5_risk_bot.risk import RiskManager
+from mt5_risk_bot.desk import Desk
+from mt5_risk_bot.indicators import adx, ema, last_closed
+from mt5_risk_bot.indicators import atr as atr_bars
+from mt5_risk_bot.journal import Journal, redact_text
+from mt5_risk_bot.llm import Advisor
+from mt5_risk_bot.models import Bar, OrderResult, PendingOrder, Position, Signal, SignalKind
+from mt5_risk_bot.risk import RiskDecision, RiskManager, day_key
+from mt5_risk_bot.sizing import money_per_lot_at_stop, normalize_volume
 from mt5_risk_bot.strategy import TrendStrategy
-from mt5_risk_bot.telegram import HELP, TelegramClient, TgCommand
+from mt5_risk_bot.telegram import TelegramClient, TgCommand
+
+_ORDER_TYPE_NAME = {
+    ORDER_TYPE_BUY_LIMIT: "BUY_LIMIT",
+    ORDER_TYPE_SELL_LIMIT: "SELL_LIMIT",
+    ORDER_TYPE_BUY_STOP: "BUY_STOP",
+    ORDER_TYPE_SELL_STOP: "SELL_STOP",
+}
 
 
 class Engine:
@@ -30,6 +52,7 @@ class Engine:
         halt_dir: str = ".",
         now_fn: Any = None,
         telegram: TelegramClient | None = None,
+        advisor: Advisor | None = None,
     ) -> None:
         self.cfg = cfg
         self.broker = broker
@@ -40,6 +63,12 @@ class Engine:
         self.last_bar_time: dict[str, int] = {}
         self.halted = False
         self.telegram = telegram
+        self.advisor = advisor if advisor is not None else Advisor(cfg.advice)
+        self.desk = Desk(self, self.advisor)
+        self._seen_pos: set[int] | None = None
+        self._opened_this_step: set[int] = set()
+        self._closed_this_step: set[int] = set()
+        self._scale_outs: dict[int, tuple[float, float]] = {}
 
     def _emit(self, event: str, **fields: Any) -> None:
         self.journal.write(event, **fields)
@@ -63,15 +92,32 @@ class Engine:
             server=acct.server,
             symbols=self.cfg.symbols,
         )
+        self._seen_pos = {
+            p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
+        }
+        self.desk.restore_from_journal(self.journal)
 
     def stop(self) -> None:
         self._emit("stop")
         self.broker.disconnect()
 
     def flatten(self, reason: str) -> None:
-        for pos in self.broker.positions(magic=self.cfg.risk.magic):
+        desk = getattr(self, "desk", None)
+        if desk is not None:
+            clearer = getattr(desk, "_clear_pending", None)
+            if callable(clearer):
+                clearer("confirm_cancel")
+            else:
+                desk.pending = None
+        for order in list(self.broker.orders(magic=self.cfg.risk.magic)):
+            self.broker.order_send({"action": TRADE_ACTION_REMOVE, "order": order.ticket})
+        for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
             self._close(pos, reason)
+        self._scale_outs.clear()
         self.halted = True
+        self._seen_pos = {
+            p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
+        }
 
     def _apply_circuit(self, acct, now) -> bool:
         trip = self.risk.circuit(acct, now)
@@ -82,13 +128,14 @@ class Engine:
             self.flatten(trip.reason)
         return True
 
-    def _close(self, pos: Position, reason: str) -> None:
+    def _close(self, pos: Position, reason: str, volume: float | None = None) -> OrderResult:
         tick = self.broker.tick(pos.symbol)
         spec = self.broker.symbol(pos.symbol)
+        vol = pos.volume if volume is None else volume
         request = {
             "action": TRADE_ACTION_DEAL,
             "symbol": pos.symbol,
-            "volume": pos.volume,
+            "volume": vol,
             "type": pos.side.close_type,
             "position": pos.ticket,
             "price": tick.bid if pos.side.value == "buy" else tick.ask,
@@ -99,6 +146,9 @@ class Engine:
             "type_filling": choose_filling(spec.filling_mode),
         }
         result = self.broker.order_send(request)
+        self._closed_this_step.add(pos.ticket)
+        if result.ok:
+            self._scale_outs.pop(pos.ticket, None)
         self._emit(
             "close",
             reason=reason,
@@ -108,13 +158,14 @@ class Engine:
             retcode=result.retcode,
             comment=result.comment,
             price=result.price,
-            volume=pos.volume,
+            volume=vol,
             side=pos.side.value,
         )
+        return result
 
-    def _modify(self, pos: Position, sl: float, tp: float) -> None:
+    def _modify(self, pos: Position, sl: float, tp: float) -> OrderResult:
         if abs(sl - pos.sl) < 1e-12 and abs((tp or 0) - (pos.tp or 0)) < 1e-12:
-            return
+            return OrderResult(retcode=TRADE_RETCODE_DONE, comment="unchanged")
         result = self.broker.order_send(
             {
                 "action": TRADE_ACTION_SLTP,
@@ -133,8 +184,9 @@ class Engine:
             ok=result.ok,
             retcode=result.retcode,
         )
+        return result
 
-    def _open(self, signal: Signal, volume: float) -> None:
+    def _open(self, signal: Signal, volume: float) -> OrderResult:
         spec = self.broker.symbol(signal.symbol)
         tick = self.broker.tick(signal.symbol)
         side = signal.side
@@ -163,8 +215,12 @@ class Engine:
                 retcode=check.retcode,
                 comment=check.comment,
             )
-            return
+            return check
         result = self.broker.order_send(request)
+        if result.ok:
+            ticket = int(result.order or result.deal or 0)
+            if ticket:
+                self._opened_this_step.add(ticket)
         self._emit(
             "open",
             symbol=signal.symbol,
@@ -180,6 +236,7 @@ class Engine:
             adx=signal.adx,
             atr=signal.atr,
         )
+        return result
 
     def step_symbol(self, symbol: str) -> None:
         if self.halted:
@@ -247,6 +304,685 @@ class Engine:
             return
         self._open(sig, decision.volume)
 
+    def market_signal(
+        self,
+        kind: SignalKind,
+        symbol: str,
+        sl: float | None = None,
+        tp: float | None = None,
+        limit: float | None = None,
+        stop: float | None = None,
+    ) -> Signal:
+        symbol = symbol.upper()
+        spec = self.broker.symbol(symbol)
+        self.broker.select_symbol(symbol)
+        tick = self.broker.tick(symbol)
+        if tick.bid <= 0 or tick.ask <= 0:
+            raise RuntimeError(f"no tick for {symbol}")
+        if limit is not None and stop is not None:
+            raise RuntimeError("use limit= or stop=, not both")
+        bars = self.broker.rates(
+            symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+        )
+        a0 = 0.0
+        if bars:
+            vals = [v for v in atr_bars(bars, self.cfg.strategy.atr_period) if v == v]
+            if vals:
+                a0 = vals[-1]
+        pending_kind = ""
+        if limit is not None:
+            pending_kind = "limit"
+            entry = limit
+            if kind is SignalKind.BUY and not (limit < tick.ask):
+                raise RuntimeError("buy limit must be below ask")
+            if kind is SignalKind.SELL and not (limit > tick.bid):
+                raise RuntimeError("sell limit must be above bid")
+        elif stop is not None:
+            pending_kind = "stop"
+            entry = stop
+            if kind is SignalKind.BUY and not (stop > tick.ask):
+                raise RuntimeError("buy stop must be above ask")
+            if kind is SignalKind.SELL and not (stop < tick.bid):
+                raise RuntimeError("sell stop must be below bid")
+        else:
+            entry = tick.ask if kind is SignalKind.BUY else tick.bid
+        if sl is None:
+            if a0 <= 0:
+                raise RuntimeError("no ATR and no sl; pass sl=")
+            dist = self.cfg.strategy.atr_stop_mult * a0
+            sl = entry - dist if kind is SignalKind.BUY else entry + dist
+        if tp is None:
+            if a0 <= 0:
+                raise RuntimeError("no ATR and no tp; pass tp=")
+            dist = self.cfg.strategy.atr_tp_mult * a0
+            tp = entry + dist if kind is SignalKind.BUY else entry - dist
+        entry = spec.normalize_price(entry)
+        sl = spec.normalize_price(sl)
+        tp = spec.normalize_price(tp)
+        if kind is SignalKind.BUY and not (sl < entry < tp):
+            raise RuntimeError("buy needs sl < entry < tp")
+        if kind is SignalKind.SELL and not (tp < entry < sl):
+            raise RuntimeError("sell needs tp < entry < sl")
+        return Signal(
+            kind=kind,
+            symbol=symbol,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            atr=a0,
+            reason="manual",
+            pending_kind=pending_kind,
+        )
+
+    def preview(
+        self,
+        signal: Signal,
+        *,
+        manual: bool = True,
+        exclude_ticket: int | None = None,
+    ) -> RiskDecision:
+        positions = self.broker.positions(magic=self.cfg.risk.magic)
+        if exclude_ticket is not None:
+            positions = [p for p in positions if p.ticket != exclude_ticket]
+        return self.risk.evaluate(
+            account=self.broker.account(),
+            signal=signal,
+            spec=self.broker.symbol(signal.symbol),
+            tick=self.broker.tick(signal.symbol),
+            positions=positions,
+            now=self.now_fn(),
+            manual=manual,
+        )
+
+    def reverse_signal(
+        self,
+        ticket: int,
+        sl: float | None = None,
+        tp: float | None = None,
+    ) -> Signal:
+        if self._order(ticket) is not None:
+            raise RuntimeError("reverse is for open positions")
+        pos = self._pos(ticket)
+        if pos is None:
+            raise RuntimeError("no such ticket")
+        kind = SignalKind.SELL if pos.side.value == "buy" else SignalKind.BUY
+        spec = self.broker.symbol(pos.symbol)
+        tick = self.broker.tick(pos.symbol)
+        if tick.bid <= 0 or tick.ask <= 0:
+            raise RuntimeError(f"no tick for {pos.symbol}")
+        entry = tick.ask if kind is SignalKind.BUY else tick.bid
+        bars = self.broker.rates(
+            pos.symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+        )
+        a0 = 0.0
+        if bars:
+            vals = [v for v in atr_bars(bars, self.cfg.strategy.atr_period) if v == v]
+            if vals:
+                a0 = vals[-1]
+        risk_dist = abs(pos.price_open - pos.sl) if pos.sl > 0 else 0.0
+        reward_dist = abs(pos.tp - pos.price_open) if pos.tp > 0 else 0.0
+        if sl is None:
+            if risk_dist <= 0:
+                raise RuntimeError("position has no sl; pass sl=")
+            sl = entry - risk_dist if kind is SignalKind.BUY else entry + risk_dist
+        if tp is None:
+            if reward_dist <= 0:
+                raise RuntimeError("position has no tp; pass tp=")
+            tp = entry + reward_dist if kind is SignalKind.BUY else entry - reward_dist
+        entry = spec.normalize_price(entry)
+        sl = spec.normalize_price(sl)
+        tp = spec.normalize_price(tp)
+        if kind is SignalKind.BUY and not (sl < entry < tp):
+            raise RuntimeError("buy needs sl < entry < tp")
+        if kind is SignalKind.SELL and not (tp < entry < sl):
+            raise RuntimeError("sell needs tp < entry < sl")
+        return Signal(
+            kind=kind,
+            symbol=pos.symbol,
+            entry=entry,
+            sl=sl,
+            tp=tp,
+            atr=a0,
+            reason="reverse",
+        )
+
+    def submit(self, signal: Signal, volume: float) -> OrderResult:
+        if signal.pending_kind:
+            return self._place_pending(signal, volume)
+        return self._open(signal, volume)
+
+    def _place_pending(self, signal: Signal, volume: float) -> OrderResult:
+        side = signal.side
+        assert side is not None
+        if signal.pending_kind == "limit":
+            type_code = ORDER_TYPE_BUY_LIMIT if side.value == "buy" else ORDER_TYPE_SELL_LIMIT
+        else:
+            type_code = ORDER_TYPE_BUY_STOP if side.value == "buy" else ORDER_TYPE_SELL_STOP
+        spec = self.broker.symbol(signal.symbol)
+        request = {
+            "action": TRADE_ACTION_PENDING,
+            "symbol": signal.symbol,
+            "volume": volume,
+            "type": type_code,
+            "price": signal.entry,
+            "sl": signal.sl,
+            "tp": signal.tp,
+            "deviation": self.cfg.risk.deviation_points,
+            "magic": self.cfg.risk.magic,
+            "comment": self.cfg.comment[:31],
+            "type_time": ORDER_TIME_GTC,
+            "type_filling": choose_filling(spec.filling_mode),
+        }
+        check = self.broker.order_check(request)
+        if check.retcode not in (0,) and not check.ok:
+            self._emit(
+                "order_check_fail",
+                symbol=signal.symbol,
+                retcode=check.retcode,
+                comment=check.comment,
+            )
+            return check
+        result = self.broker.order_send(request)
+        self._emit(
+            "pending",
+            symbol=signal.symbol,
+            side=side.value,
+            kind=signal.pending_kind,
+            volume=volume,
+            price=signal.entry,
+            sl=signal.sl,
+            tp=signal.tp,
+            ok=result.ok,
+            retcode=result.retcode,
+            order=result.order,
+        )
+        return result
+
+    def orders_text(self) -> str:
+        rows = self.broker.orders(magic=self.cfg.risk.magic)
+        if not rows:
+            return "no pending orders"
+        return "\n".join(
+            f"#{o.ticket} {o.symbol} {_ORDER_TYPE_NAME.get(o.type_code, o.side.value)} "
+            f"{o.volume} @ {o.price} sl={o.sl} tp={o.tp}"
+            for o in rows
+        )
+
+    def cancel_order(self, ticket: int) -> str:
+        for order in self.broker.orders(magic=self.cfg.risk.magic):
+            if order.ticket == ticket:
+                result = self.broker.order_send(
+                    {"action": TRADE_ACTION_REMOVE, "order": ticket}
+                )
+                if not result.ok:
+                    return f"cancel failed retcode={result.retcode} {result.comment}".strip()
+                return f"cancelled #{ticket}"
+        return "not found"
+
+    def _resolve_pending(self) -> None:
+        fn = getattr(self.broker, "resolve_pending", None)
+        if not callable(fn):
+            fn = getattr(self.broker, "resolve_pending_tick", None)
+        if not callable(fn):
+            return
+        fn()
+
+    def _manage_open(self) -> None:
+        for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
+            bars = self.broker.rates(
+                pos.symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+            )
+            spec = self.broker.symbol(pos.symbol)
+            new_sl, new_tp = self.strategy.manage(pos, bars, spec)
+            self._modify(pos, new_sl, new_tp)
+
+    def _check_stops(self) -> None:
+        for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
+            tick = self.broker.tick(pos.symbol)
+            sl_hit = False
+            tp_hit = False
+            if pos.side.value == "buy":
+                sl_hit = pos.sl > 0 and tick.bid <= pos.sl
+                tp_hit = pos.tp > 0 and tick.bid >= pos.tp
+            else:
+                sl_hit = pos.sl > 0 and tick.ask >= pos.sl
+                tp_hit = pos.tp > 0 and tick.ask <= pos.tp
+            if sl_hit:
+                self._close(pos, "sl")
+                continue
+            scale = self._scale_outs.get(pos.ticket)
+            if scale is not None:
+                px, vol = scale
+                scale_hit = (
+                    (pos.side.value == "buy" and tick.bid >= px)
+                    or (pos.side.value == "sell" and tick.ask <= px)
+                )
+                if scale_hit:
+                    self._close(pos, "tp", vol)
+                    continue
+            if tp_hit:
+                self._close(pos, "tp")
+
+    def _detect_fills(self) -> None:
+        now = {p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)}
+        if self._seen_pos is None:
+            self._seen_pos = now
+            return
+        appeared = now - self._seen_pos
+        vanished = self._seen_pos - now
+        for ticket in sorted(appeared):
+            if ticket in self._opened_this_step:
+                continue
+            pos = self._pos(ticket)
+            self._emit(
+                "open",
+                fill=True,
+                ticket=ticket,
+                symbol=pos.symbol if pos else "",
+                side=pos.side.value if pos else "",
+                volume=pos.volume if pos else 0,
+                price=pos.price_open if pos else 0,
+                sl=pos.sl if pos else 0,
+                tp=pos.tp if pos else 0,
+                ok=True,
+                reason="fill",
+            )
+        for ticket in sorted(vanished):
+            if ticket in self._closed_this_step:
+                continue
+            self._emit("close", fill=True, ticket=ticket, reason="fill", ok=True)
+        self._seen_pos = now
+
+    def symbols_text(self) -> str:
+        return " ".join(self.cfg.symbols) if self.cfg.symbols else "no symbols"
+
+    def add_symbol(self, name: str) -> str:
+        name = name.upper()
+        if name in self.cfg.symbols:
+            return f"already in book: {name}"
+        if not self.broker.select_symbol(name):
+            return f"broker rejected {name}"
+        self.cfg.symbols.append(name)
+        return f"added {name}\n{self.symbols_text()}"
+
+    def remove_symbol(self, name: str) -> str:
+        name = name.upper()
+        if name not in self.cfg.symbols:
+            return f"not in book: {name}"
+        if len(self.cfg.symbols) <= 1:
+            return "cannot remove the last symbol"
+        magic = self.cfg.risk.magic
+        if any(p.symbol == name for p in self.broker.positions(magic=magic)):
+            return f"{name} has open positions; /close first"
+        if any(o.symbol == name for o in self.broker.orders(magic=magic)):
+            return f"{name} has working orders; /cancel first"
+        self.cfg.symbols = [s for s in self.cfg.symbols if s != name]
+        return f"removed {name}\n{self.symbols_text()}"
+
+    def quote_text(self, symbol: str) -> str:
+        symbol = symbol.upper()
+        tick = self.broker.tick(symbol)
+        parts = [f"{symbol} bid={tick.bid} ask={tick.ask} spread={tick.spread:.6f}"]
+        bars = self.broker.rates(symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars())
+        if bars:
+            closes = [b.close for b in bars]
+            f0 = last_closed(ema(closes, self.cfg.strategy.fast_ema))
+            s0 = last_closed(ema(closes, self.cfg.strategy.slow_ema))
+            a0 = last_closed(atr_bars(bars, self.cfg.strategy.atr_period))
+            x0 = last_closed(adx(bars, self.cfg.strategy.adx_period)[0])
+            bits = []
+            if a0 == a0:
+                bits.append(f"atr={a0:.6f}")
+            if x0 == x0:
+                bits.append(f"adx={x0:.1f}")
+            if f0 == f0:
+                bits.append(f"fast={f0:.5f}")
+            if s0 == s0:
+                bits.append(f"slow={s0:.5f}")
+            if bits:
+                parts.append(" ".join(bits))
+        return " ".join(parts)
+
+    def close_by(self, ticket: int, other: int) -> str:
+        if ticket == other:
+            return "tickets must differ"
+        a = self._pos(ticket)
+        b = self._pos(other)
+        if a is None or b is None:
+            return "no such ticket"
+        if a.symbol != b.symbol:
+            return "symbols must match"
+        if a.side == b.side:
+            return "sides must be opposite"
+        spec = self.broker.symbol(a.symbol)
+        vol = min(a.volume, b.volume)
+        rem_a = round(a.volume - vol, 8)
+        rem_b = round(b.volume - vol, 8)
+        if rem_a > 1e-12 and rem_a < spec.volume_min - 1e-12:
+            return "remainder below volume_min"
+        if rem_b > 1e-12 and rem_b < spec.volume_min - 1e-12:
+            return "remainder below volume_min"
+        request = {
+            "action": TRADE_ACTION_CLOSE_BY,
+            "position": ticket,
+            "position_by": other,
+            "symbol": a.symbol,
+            "volume": vol,
+            "magic": self.cfg.risk.magic,
+            "comment": "closeby",
+        }
+        result = self.broker.order_send(request)
+        if result.ok:
+            self._closed_this_step.add(ticket)
+            self._closed_this_step.add(other)
+            if rem_a <= 1e-12:
+                self._scale_outs.pop(ticket, None)
+            if rem_b <= 1e-12:
+                self._scale_outs.pop(other, None)
+        self._emit(
+            "close",
+            reason="closeby",
+            ticket=ticket,
+            position_by=other,
+            symbol=a.symbol,
+            ok=result.ok,
+            retcode=result.retcode,
+            comment=result.comment,
+            volume=vol,
+        )
+        if not result.ok:
+            return f"closeby failed retcode={result.retcode} {result.comment}"
+        return f"closed #{ticket} by #{other}"
+
+    def close_ticket(self, ticket: int, reason: str, volume: float | None = None) -> str:
+        pos = self._pos(ticket)
+        if pos is None:
+            return "no such ticket"
+        if volume is not None and volume <= 0:
+            raise ValueError("volume must be > 0")
+        result = self._close(pos, reason, volume)
+        if not result.ok:
+            return f"close failed retcode={result.retcode} {result.comment}"
+        return "closed"
+
+    def close_symbol(self, symbol: str, reason: str) -> int:
+        n = 0
+        for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
+            if pos.symbol == symbol:
+                result = self._close(pos, reason)
+                if result.ok:
+                    n += 1
+        return n
+
+    def close_all(self, reason: str) -> int:
+        n = 0
+        for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
+            result = self._close(pos, reason)
+            if result.ok:
+                n += 1
+        return n
+
+    def set_sl(self, ticket: int, price: float) -> str:
+        pos = self._pos(ticket)
+        if pos is not None:
+            result = self._modify(pos, price, pos.tp)
+            if not result.ok:
+                return f"sl failed retcode={result.retcode} {result.comment}"
+            return f"sl #{ticket} -> {price}"
+        order = self._order(ticket)
+        if order is None:
+            return "no such ticket"
+        result = self._modify_pending(order, sl=price, tp=order.tp)
+        if not result.ok:
+            return f"sl failed retcode={result.retcode} {result.comment}"
+        return f"sl #{ticket} -> {price}"
+
+    def set_tp(self, ticket: int, price: float, volume: float | None = None) -> str:
+        if volume is not None:
+            return self._set_scale_out(ticket, price, volume)
+        pos = self._pos(ticket)
+        if pos is not None:
+            result = self._modify(pos, pos.sl, price)
+            if not result.ok:
+                return f"tp failed retcode={result.retcode} {result.comment}"
+            return f"tp #{ticket} -> {price}"
+        order = self._order(ticket)
+        if order is None:
+            return "no such ticket"
+        result = self._modify_pending(order, sl=order.sl, tp=price)
+        if not result.ok:
+            return f"tp failed retcode={result.retcode} {result.comment}"
+        return f"tp #{ticket} -> {price}"
+
+    def _set_scale_out(self, ticket: int, price: float, volume: float) -> str:
+        pos = self._pos(ticket)
+        if pos is None:
+            return "scale-out needs an open position"
+        trip = self.risk.circuit(self.broker.account(), self.now_fn())
+        if not trip.allowed:
+            return f"refused: {trip.reason}"
+        spec = self.broker.symbol(pos.symbol)
+        vol = normalize_volume(volume, spec)
+        if vol <= 0:
+            return "volume below min lot"
+        if vol > pos.volume + 1e-12:
+            return "volume exceeds position"
+        remaining = round(pos.volume - vol, 8)
+        if remaining > 1e-12 and remaining < spec.volume_min - 1e-12:
+            return "remainder below volume_min"
+        px = spec.normalize_price(price)
+        if pos.side.value == "buy" and not (px > pos.price_open):
+            return "buy tp must be above entry"
+        if pos.side.value == "sell" and not (px < pos.price_open):
+            return "sell tp must be below entry"
+        if remaining <= 1e-12:
+            result = self._modify(pos, pos.sl, px)
+            if not result.ok:
+                return f"tp failed retcode={result.retcode} {result.comment}"
+            return f"tp #{ticket} -> {px}"
+        self._scale_outs[ticket] = (px, vol)
+        self.journal.write(
+            "modify",
+            ticket=ticket,
+            symbol=pos.symbol,
+            tp=px,
+            volume=vol,
+            scale_out=True,
+        )
+        return f"tp #{ticket} {px} vol={vol}"
+
+    def _order(self, ticket: int) -> PendingOrder | None:
+        for order in self.broker.orders(magic=self.cfg.risk.magic):
+            if order.ticket == ticket:
+                return order
+        return None
+
+    def replace_pending(self, ticket: int, price: float) -> str:
+        if self._pos(ticket) is not None:
+            return "replace is for working orders"
+        order = self._order(ticket)
+        if order is None:
+            return "no such ticket"
+        reason = self.risk.circuit_reason(self.broker.account(), self.now_fn())
+        if reason:
+            return f"refused: {reason}"
+        spec = self.broker.symbol(order.symbol)
+        tick = self.broker.tick(order.symbol)
+        px = spec.normalize_price(price)
+        kind = order.type_code
+        if kind == ORDER_TYPE_BUY_LIMIT and not (px < tick.ask):
+            return "buy limit must be below ask"
+        if kind == ORDER_TYPE_SELL_LIMIT and not (px > tick.bid):
+            return "sell limit must be above bid"
+        if kind == ORDER_TYPE_BUY_STOP and not (px > tick.ask):
+            return "buy stop must be above ask"
+        if kind == ORDER_TYPE_SELL_STOP and not (px < tick.bid):
+            return "sell stop must be below bid"
+        sl, tp = order.sl, order.tp
+        if order.side.value == "buy" and not (sl < px and (tp <= 0 or px < tp)):
+            return "buy needs sl < entry < tp"
+        if order.side.value == "sell" and not (sl > px and (tp <= 0 or tp < px)):
+            return "sell needs tp < entry < sl"
+        worst = money_per_lot_at_stop(px, sl, spec) * order.volume
+        cap = self.broker.account().equity * self.cfg.risk.risk_pct * self.cfg.risk.max_risk_multiple
+        if worst > cap + 1e-6:
+            return "refused: size_exceeds_risk"
+        result = self._modify_pending(order, sl=sl, tp=tp, price=px)
+        if not result.ok:
+            return f"replace failed retcode={result.retcode} {result.comment}"
+        return f"replace #{ticket} -> {px}"
+
+    def _modify_pending(
+        self,
+        order: PendingOrder,
+        sl: float,
+        tp: float,
+        price: float | None = None,
+    ) -> OrderResult:
+        spec = self.broker.symbol(order.symbol)
+        sl_n = spec.normalize_price(sl) if sl else 0.0
+        tp_n = spec.normalize_price(tp) if tp else 0.0
+        if sl_n <= 0:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="sl required")
+        entry = spec.normalize_price(price) if price is not None else order.price
+        if order.side.value == "buy" and not (sl_n < entry and (tp_n <= 0 or entry < tp_n)):
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="buy needs sl < entry < tp")
+        if order.side.value == "sell" and not (sl_n > entry and (tp_n <= 0 or tp_n < entry)):
+            return OrderResult(retcode=TRADE_RETCODE_INVALID_STOPS, comment="sell needs tp < entry < sl")
+        request = {
+            "action": TRADE_ACTION_MODIFY,
+            "order": order.ticket,
+            "symbol": order.symbol,
+            "volume": order.volume,
+            "type": order.type_code,
+            "price": entry,
+            "sl": sl_n,
+            "tp": tp_n,
+            "type_time": ORDER_TIME_GTC,
+            "magic": order.magic,
+        }
+        result = self.broker.order_send(request)
+        self.journal.write(
+            "modify",
+            ticket=order.ticket,
+            symbol=order.symbol,
+            price=entry,
+            sl=sl_n,
+            tp=tp_n,
+            pending=True,
+            ok=result.ok,
+            retcode=result.retcode,
+        )
+        return result
+
+    def breakeven(self, ticket: int) -> str:
+        pos = self._pos(ticket)
+        if pos is None:
+            return "no such ticket"
+        entry = pos.price_open
+        tick = self.broker.tick(pos.symbol)
+        if pos.side.value == "buy":
+            if pos.sl > 0 and pos.sl >= entry - 1e-12:
+                return "be would loosen sl"
+            if tick.bid < entry:
+                return "not in profit"
+        else:
+            if pos.sl > 0 and pos.sl <= entry + 1e-12:
+                return "be would loosen sl"
+            if tick.ask > entry:
+                return "not in profit"
+        result = self._modify(pos, entry, pos.tp)
+        if not result.ok:
+            return f"be failed retcode={result.retcode} {result.comment}"
+        return f"be #{ticket} sl -> {entry}"
+
+    def trail(self, ticket: int) -> str:
+        pos = self._pos(ticket)
+        if pos is None:
+            return "no such ticket"
+        bars = self.broker.rates(
+            pos.symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+        )
+        spec = self.broker.symbol(pos.symbol)
+        new_sl, new_tp = self.strategy.manage(pos, bars, spec)
+        if abs(new_sl - pos.sl) < 1e-12 and abs((new_tp or 0) - (pos.tp or 0)) < 1e-12:
+            return f"trail #{ticket} unchanged"
+        result = self._modify(pos, new_sl, new_tp)
+        if not result.ok:
+            return f"trail failed retcode={result.retcode} {result.comment}"
+        return f"trail #{ticket} sl -> {new_sl}"
+
+    def risk_text(self) -> str:
+        acct = self.broker.account()
+        self.risk.observe(acct, self.now_fn())
+        snap = self.risk.snapshot
+        r = self.cfg.risk
+        daily_loss = snap.day_start_equity - acct.equity
+        daily_cap = snap.day_start_equity * r.daily_loss_pct
+        dd = snap.peak_equity - acct.equity
+        dd_cap = snap.peak_equity * r.max_drawdown_pct if snap.peak_equity else 0.0
+        n = len(self.broker.positions(magic=r.magic))
+        return (
+            f"risk_pct={r.risk_pct:.2%}  positions={n}/{r.max_positions}\n"
+            f"daily_loss={daily_loss:.2f}/{daily_cap:.2f}  "
+            f"drawdown={dd:.2f}/{dd_cap:.2f}\n"
+            f"equity={acct.equity:.2f} peak={snap.peak_equity:.2f} "
+            f"day_start={snap.day_start_equity:.2f}"
+        )
+
+    def history_text(self, n: int = 15) -> str:
+        rows = self.journal.tail(n)
+        if not rows:
+            return "no history"
+        lines = []
+        for rec in rows:
+            ev = rec.get("event", "")
+            ts = str(rec.get("ts", ""))[:19]
+            extra = " ".join(
+                f"{k}={v}"
+                for k, v in rec.items()
+                if k not in {"ts", "event"} and v not in (None, "")
+            )
+            lines.append(f"{ts} {ev} {extra}".strip())
+        return "\n".join(lines)
+
+    def _pos(self, ticket: int) -> Position | None:
+        for pos in self.broker.positions(magic=self.cfg.risk.magic):
+            if pos.ticket == ticket:
+                return pos
+        return None
+
+    def advice_circuit_reason(self) -> str:
+        return self.risk.circuit_reason(self.broker.account(), self.now_fn())
+
+    def advice_context(self) -> str:
+        lines = [
+            self.status_text(),
+            self.risk_text(),
+            self.positions_text(),
+            self.orders_text(),
+            f"symbols={','.join(self.cfg.symbols)} risk_pct={self.cfg.risk.risk_pct}",
+            f"auto={self.cfg.strategy.auto} trail={self.cfg.strategy.trail} "
+            f"provider={self.cfg.advice.provider}",
+            "Advice may stage a trade. It never sends. /confirm is the only send.",
+        ]
+        reason = self.advice_circuit_reason()
+        if reason:
+            lines.append(
+                f"CIRCUIT would halt ({reason}). Action must be hold or close. "
+                "Do not buy or sell."
+            )
+        else:
+            lines.append(
+                "If daily_loss or drawdown room is gone, action must be hold or close."
+            )
+        for name in self.cfg.symbols:
+            try:
+                lines.append(self.quote_text(name))
+            except RuntimeError:
+                continue
+        return "\n".join(lines)
+
     def status_text(self) -> str:
         acct = self.broker.account()
         reason = self.risk.halt_reason or ("halt_file" if self.risk.halt_path().exists() else "")
@@ -264,48 +1000,121 @@ class Engine:
         rows = self.broker.positions(magic=self.cfg.risk.magic)
         if not rows:
             return "no open positions"
-        return "\n".join(
-            f"#{p.ticket} {p.symbol} {p.side.value} {p.volume} "
-            f"@ {p.price_open} sl={p.sl} tp={p.tp} pnl={p.profit:.2f}"
-            for p in rows
-        )
+        lines = []
+        for p in rows:
+            extra = ""
+            scale = self._scale_outs.get(p.ticket)
+            if scale is not None:
+                extra = f" scale={scale[1]} @{scale[0]}"
+            lines.append(
+                f"#{p.ticket} {p.symbol} {p.side.value} {p.volume} "
+                f"@ {p.price_open} sl={p.sl} tp={p.tp} pnl={p.profit:.2f}{extra}"
+            )
+        return "\n".join(lines)
 
     def handle_command(self, cmd: TgCommand) -> str:
-        if cmd.name in {"start", "help"}:
-            return HELP
-        if cmd.name == "status":
-            return self.status_text()
-        if cmd.name == "positions":
-            return self.positions_text()
-        if cmd.name == "halt":
-            self.risk.write_halt_file("telegram")
-            self.flatten("telegram")
-            self._emit("halt", reason="telegram", equity=self.broker.account().equity)
-            return "flattened and halted. /resume clears the operator HALT file."
-        if cmd.name == "resume":
-            leftover = self.risk.clear_operator_halt()
-            if leftover:
-                return f"HALT file cleared; still halted: {leftover}"
-            self.halted = False
-            return "operator halt cleared. trading may resume."
-        return "unknown command. /help"
+        return self.desk.handle(cmd)
 
     def poll_telegram(self) -> None:
         if self.telegram is None:
             return
-        for cmd in self.telegram.poll_commands():
-            self.telegram.send(self.handle_command(cmd))
+        timeout = max(0, int(self.cfg.poll_seconds))
+        try:
+            cmds = self.telegram.poll_commands(timeout=timeout)
+        except (ValueError, RuntimeError, OSError):
+            return
+        for cmd in cmds:
+            try:
+                self.telegram.send(self.desk.handle(cmd))
+            except (ValueError, RuntimeError, OSError) as exc:
+                try:
+                    self.telegram.send(f"error: {redact_text(str(exc))}")
+                except (ValueError, RuntimeError, OSError):
+                    pass
+            finally:
+                self.telegram.ack(cmd.update_id)
+
+    def recap_text(self) -> str:
+        acct = self.broker.account()
+        snap = self.risk.snapshot
+        day = snap.day_key or day_key(self.now_fn())
+        pnl = acct.equity - snap.day_start_equity
+        sign = "+" if pnl >= 0 else ""
+        head = (
+            f"RECAP {day} equity={acct.equity:.2f} "
+            f"day_start={snap.day_start_equity:.2f} pnl={sign}{pnl:.2f}"
+        )
+        tail = self.history_text(8)
+        if tail and tail != "no history":
+            return f"{head}\n{tail}"
+        return head
+
+    def _maybe_daily_recap(self, acct, now) -> None:
+        key = day_key(now)
+        snap = self.risk.snapshot
+        if not snap.day_key or snap.day_key == key:
+            return
+        pnl = acct.equity - snap.day_start_equity
+        tail = self.history_text(8)
+        self._emit(
+            "recap",
+            day=snap.day_key,
+            equity=round(acct.equity, 2),
+            day_start=round(snap.day_start_equity, 2),
+            pnl=round(pnl, 2),
+            tail="" if tail == "no history" else tail,
+        )
+
+    def _reconnect_broker(self) -> bool:
+        try:
+            self.broker.disconnect()
+        except (RuntimeError, OSError, ValueError):
+            pass
+        try:
+            self.broker.connect()
+            for name in self.cfg.symbols:
+                try:
+                    self.broker.select_symbol(name)
+                except (RuntimeError, OSError, ValueError):
+                    continue
+            self.journal.write("reconnect", ok=True)
+            return True
+        except (RuntimeError, OSError, ValueError) as exc:
+            self.journal.write("reconnect", ok=False, error=str(exc)[:200])
+            return False
 
     def step_all(self) -> None:
         self.poll_telegram()
+        try:
+            ensure = getattr(self.broker, "ensure_connected", None)
+            if callable(ensure):
+                ensure()
+            acct = self.broker.account()
+        except (RuntimeError, OSError, ValueError):
+            if not self._reconnect_broker():
+                return
+            try:
+                acct = self.broker.account()
+            except (RuntimeError, OSError, ValueError):
+                return
+        now = self.now_fn()
+        self._maybe_daily_recap(acct, now)
         if self.halted:
             return
-        if self._apply_circuit(self.broker.account(), self.now_fn()):
+        if self._apply_circuit(acct, now):
             return
-        for symbol in self.cfg.symbols:
-            if self.halted:
-                break
-            self.step_symbol(symbol)
+        self._opened_this_step.clear()
+        self._closed_this_step.clear()
+        self._resolve_pending()
+        self._check_stops()
+        if self.cfg.strategy.trail:
+            self._manage_open()
+        if self.cfg.strategy.auto:
+            for symbol in self.cfg.symbols:
+                if self.halted:
+                    break
+                self.step_symbol(symbol)
+        self._detect_fills()
 
 
 def _format_event(event: str, fields: dict[str, Any]) -> str:
@@ -317,20 +1126,37 @@ def _format_event(event: str, fields: dict[str, Any]) -> str:
     if event == "stop":
         return "stop"
     if event == "open":
+        tag = "FILL/OPEN" if fields.get("fill") or fields.get("reason") == "fill" else "OPEN"
         return (
-            f"OPEN {fields.get('side')} {fields.get('symbol')} "
+            f"{tag} {fields.get('side')} {fields.get('symbol')} "
             f"vol={fields.get('volume')} @ {fields.get('price')} "
             f"sl={fields.get('sl')} tp={fields.get('tp')} ok={fields.get('ok')}"
         )
     if event == "close":
+        tag = "FILL/CLOSE" if fields.get("fill") or fields.get("reason") == "fill" else "CLOSE"
         return (
-            f"CLOSE {fields.get('symbol')} #{fields.get('ticket')} "
+            f"{tag} {fields.get('symbol')} #{fields.get('ticket')} "
             f"reason={fields.get('reason')} ok={fields.get('ok')}"
         )
     if event == "halt":
         return f"HALT {fields.get('reason')} equity={fields.get('equity')}"
     if event == "order_check_fail":
         return f"order_check_fail {fields.get('symbol')} retcode={fields.get('retcode')}"
+    if event == "pending":
+        return (
+            f"PENDING {fields.get('kind')} {fields.get('side')} {fields.get('symbol')} "
+            f"vol={fields.get('volume')} @ {fields.get('price')} "
+            f"ok={fields.get('ok')} order={fields.get('order')}"
+        )
+    if event == "recap":
+        pnl = float(fields.get("pnl") or 0)
+        sign = "+" if pnl >= 0 else ""
+        head = (
+            f"RECAP {fields.get('day')} equity={fields.get('equity')} "
+            f"day_start={fields.get('day_start')} pnl={sign}{pnl}"
+        )
+        tail = str(fields.get("tail") or "")
+        return f"{head}\n{tail}".strip()
     return ""
 
 

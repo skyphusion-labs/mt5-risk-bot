@@ -28,6 +28,8 @@ class RiskConfig:
 
 @dataclass
 class StrategyConfig:
+    auto: bool = False
+    trail: bool = False
     timeframe: str = "H1"
     fast_ema: int = 21
     slow_ema: int = 55
@@ -65,7 +67,7 @@ class Mt5Config:
     server: str = ""
 
 
-DEFAULT_TG_EVENTS = ("start", "stop", "open", "close", "halt", "order_check_fail")
+DEFAULT_TG_EVENTS = ("start", "stop", "open", "close", "halt", "order_check_fail", "pending", "recap")
 
 
 @dataclass
@@ -73,10 +75,28 @@ class TelegramConfig:
     token: str = ""
     chat_id: str = ""
     notify_events: tuple[str, ...] = DEFAULT_TG_EVENTS
+    confirm_seconds: int = 120
 
     @property
     def enabled(self) -> bool:
         return bool(self.token and self.chat_id)
+
+
+@dataclass
+class AdviceConfig:
+    provider: str = "grok"  # grok | claude
+    grok_model: str = "grok-4"
+    claude_model: str = "claude-sonnet-4-5"
+    grok_key: str = ""
+    claude_key: str = ""
+    grok_url: str = "https://api.x.ai/v1/chat/completions"
+    claude_url: str = "https://api.anthropic.com/v1/messages"
+
+    @property
+    def enabled(self) -> bool:
+        if self.provider == "claude":
+            return bool(self.claude_key)
+        return bool(self.grok_key)
 
 
 @dataclass
@@ -89,10 +109,38 @@ class BotConfig:
     session: SessionConfig = field(default_factory=SessionConfig)
     mt5: Mt5Config = field(default_factory=Mt5Config)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    advice: AdviceConfig = field(default_factory=AdviceConfig)
     poll_seconds: int = 15
     comment: str = "mt5-risk-bot"
     journal_path: str = "journal.jsonl"
     live_accepted: bool = False
+
+    def validate(self) -> None:
+        if self.mode not in {"paper", "mt5"}:
+            raise ValueError("account.mode must be paper or mt5")
+        r = self.risk
+        if not (0 < r.risk_pct <= 0.05):
+            raise ValueError("risk_pct must be in (0, 0.05]")
+        if not (0 < r.daily_loss_pct <= 0.20):
+            raise ValueError("daily_loss_pct must be in (0, 0.20]")
+        if not (0 < r.max_drawdown_pct <= 0.50):
+            raise ValueError("max_drawdown_pct must be in (0, 0.50]")
+        if r.max_positions < 1:
+            raise ValueError("max_positions must be >= 1")
+        s = self.strategy
+        if s.fast_ema >= s.slow_ema:
+            raise ValueError("fast_ema must be < slow_ema")
+        if s.atr_stop_mult <= 0 or s.atr_tp_mult <= 0:
+            raise ValueError("ATR multiples must be > 0")
+        if s.atr_tp_mult / s.atr_stop_mult < r.min_rr - 1e-9:
+            raise ValueError("atr_tp_mult / atr_stop_mult must be >= min_rr")
+        self.strategy.timeframe_id  # raises if unknown
+        if self.advice.provider not in {"grok", "claude"}:
+            raise ValueError("advice.provider must be grok or claude")
+        if not self.symbols:
+            raise ValueError("at least one symbol required")
+        if self.telegram.confirm_seconds <= 0:
+            raise ValueError("confirm_seconds must be > 0")
 
 
 def _section(data: dict, name: str) -> dict:
@@ -125,6 +173,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     sess_s = _section(data, "session")
     mt5_s = _section(data, "mt5")
     tg_s = _section(data, "telegram")
+    advice_s = _section(data, "advice")
     engine_s = _section(data, "engine")
     symbols_s = data.get("symbols", {})
 
@@ -139,6 +188,9 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     server = os.environ.get("MT5_SERVER", str(mt5_s.get("server", "") or ""))
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", str(tg_s.get("token", "") or ""))
     tg_chat = os.environ.get("TELEGRAM_CHAT_ID", str(tg_s.get("chat_id", "") or ""))
+    grok_key = os.environ.get("XAI_API_KEY", str(advice_s.get("grok_key", "") or ""))
+    claude_key = os.environ.get("ANTHROPIC_API_KEY", str(advice_s.get("claude_key", "") or ""))
+    provider = os.environ.get("AI_PROVIDER", str(advice_s.get("provider", "grok") or "grok")).lower()
     events_raw = tg_s.get("notify_events", list(DEFAULT_TG_EVENTS))
     if isinstance(events_raw, str):
         events = tuple(x.strip() for x in events_raw.split(",") if x.strip())
@@ -167,6 +219,8 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             deviation_points=int(risk_s.get("deviation_points", 20)),
         ),
         strategy=StrategyConfig(
+            auto=bool(strat_s.get("auto", False)),
+            trail=bool(strat_s.get("trail", False)),
             timeframe=str(strat_s.get("timeframe", "H1")),
             fast_ema=int(strat_s.get("fast_ema", 21)),
             slow_ema=int(strat_s.get("slow_ema", 55)),
@@ -196,31 +250,21 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             token=tg_token,
             chat_id=tg_chat,
             notify_events=events or DEFAULT_TG_EVENTS,
+            confirm_seconds=int(tg_s.get("confirm_seconds", 120)),
+        ),
+        advice=AdviceConfig(
+            provider=provider if provider in {"grok", "claude"} else "grok",
+            grok_model=str(advice_s.get("grok_model", "grok-4")),
+            claude_model=str(advice_s.get("claude_model", "claude-sonnet-4-5")),
+            grok_key=grok_key,
+            claude_key=claude_key,
+            grok_url=str(advice_s.get("grok_url", "https://api.x.ai/v1/chat/completions")),
+            claude_url=str(advice_s.get("claude_url", "https://api.anthropic.com/v1/messages")),
         ),
     )
-    _validate(cfg)
+    cfg.validate()
     return cfg
 
 
 def _validate(cfg: BotConfig) -> None:
-    if cfg.mode not in {"paper", "mt5"}:
-        raise ValueError("account.mode must be paper or mt5")
-    r = cfg.risk
-    if not (0 < r.risk_pct <= 0.05):
-        raise ValueError("risk_pct must be in (0, 0.05]")
-    if not (0 < r.daily_loss_pct <= 0.20):
-        raise ValueError("daily_loss_pct must be in (0, 0.20]")
-    if not (0 < r.max_drawdown_pct <= 0.50):
-        raise ValueError("max_drawdown_pct must be in (0, 0.50]")
-    if r.max_positions < 1:
-        raise ValueError("max_positions must be >= 1")
-    s = cfg.strategy
-    if s.fast_ema >= s.slow_ema:
-        raise ValueError("fast_ema must be < slow_ema")
-    if s.atr_stop_mult <= 0 or s.atr_tp_mult <= 0:
-        raise ValueError("ATR multiples must be > 0")
-    if s.atr_tp_mult / s.atr_stop_mult < r.min_rr - 1e-9:
-        raise ValueError("atr_tp_mult / atr_stop_mult must be >= min_rr")
-    cfg.strategy.timeframe_id  # raises if unknown
-    if not cfg.symbols:
-        raise ValueError("at least one symbol required")
+    cfg.validate()

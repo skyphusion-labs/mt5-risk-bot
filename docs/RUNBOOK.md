@@ -1,11 +1,19 @@
 # Runbook
 
+Paper is the default. Nothing here guarantees profit.
+
 ## Paper first
 
 ```bash
+python -m mt5_risk_bot doctor
 python -m mt5_risk_bot backtest --market trend --no-session-filter
 python -m mt5_risk_bot backtest --market range --no-session-filter
 ```
+
+`doctor` is the gate. It pings Telegram if the token is set, then paper
+`/buy` `/confirm` `/close`. No live terminal. Non-zero if the ping fails
+or the paper round-trip fails. Do not start a long-run, and do not go
+live, until it exits 0.
 
 Trend should finish above start on the seeded generator. Range should not
 ruin the account. If either assertion fails on your machine, do not go live.
@@ -26,12 +34,50 @@ python -m mt5_risk_bot run --mode paper --feed-mt5 --config config.toml
 
 Orders stay in the in-process broker.
 
+## Production long-run (macOS)
+
+Telegram is required. `run` exits 2 without both `TELEGRAM_BOT_TOKEN`
+and `TELEGRAM_CHAT_ID`. Only `TELEGRAM_CHAT_ID` is accepted; updates from
+any other chat are ignored.
+
+Paper loop (default; no terminal):
+
+```bash
+python -m mt5_risk_bot doctor
+python -m mt5_risk_bot run --mode paper --loop --config config.toml
+```
+
+Keep that in a terminal, tmux, or the user LaunchAgent in
+`docs/launchd.plist.example`. Ctrl-C or `launchctl bootout` stops it.
+
+MT5 loop: MetaTrader 5.app must already be running and logged in. `doctor
+--connect` is the gate (binding, login, `trade_mode`). Non-zero if the
+binding is missing or login fails; do not start live on a traceback.
+Demo is `trade_mode=0` and does not need `--i-accept-risk`. Real money
+(`trade_mode=2`) is refused without `--i-accept-risk`.
+
+```bash
+python -m mt5_risk_bot doctor --connect --config config.toml
+python -m mt5_risk_bot run --mode mt5 --loop --config config.toml
+# real account only:
+python -m mt5_risk_bot run --mode mt5 --loop --config config.toml --i-accept-risk
+```
+
+`--loop` polls until Ctrl-C. It retries Telegram 429/5xx with backoff and
+resumes `getUpdates` from `journal.tg_offset` (next to `journal_path`).
+A restart does not replay or drop commands. A dropped terminal calls
+`initialize` again. One bad tick is journaled (`reconnect` or
+`loop_error`); the process stays up. `/halt` and a `HALT` file flatten
+and stay halted; the process does not exit, so `/resume` works without a
+restart.
+
 ## Demo
 
 1. Broker demo account. Enable AutoTrading.
 2. `export MT5_LOGIN MT5_PASSWORD MT5_SERVER` (never commit these).
 3. `account.mode = "mt5"` in `config.toml`.
-4. `python -m mt5_risk_bot doctor --connect --config config.toml`
+4. `python -m mt5_risk_bot doctor --connect --config config.toml` (exit 0;
+   non-zero if the binding is missing or login fails).
 5. `python -m mt5_risk_bot run --mode mt5 --loop --config config.toml`
 6. Confirm `trade_mode=0` in the doctor output.
 
@@ -40,7 +86,8 @@ Leave it running through at least one full session window. Read `journal.jsonl`.
 ## Real money
 
 Same as demo, plus `--i-accept-risk`. The bot refuses `trade_mode=2` without
-that flag. Start with `risk_pct = 0.002` (0.2%) for the first weeks.
+that flag. Start with `risk_pct = 0.002` (0.2%) for the first weeks. `doctor
+--connect` must still exit 0 first.
 
 ## Halt
 
@@ -48,9 +95,37 @@ that flag. Start with `risk_pct = 0.002` (0.2%) for the first weeks.
 touch HALT
 ```
 
-Next loop iteration flattens this magic number and stops. Remove the file
-and restart when you intend to resume. Daily-loss halt self-clears at the
-next UTC midnight. Drawdown halt does not; inspect and restart.
+or send `/halt` from the locked chat. Next loop iteration flattens this
+magic number (positions and working orders), drops the staged confirm,
+and stops sending. The process stays up. `/resume` only clears the
+operator file. Daily-loss halt self-clears at the next UTC midnight.
+Drawdown halt does not; inspect and restart. Daily-loss and max-drawdown
+cannot be cleared from Telegram.
+
+The `HALT` path is relative to the process working directory (LaunchAgent
+`WorkingDirectory`). Remove the file and `/resume` (or restart, if you
+are clearing drawdown) when you intend to resume.
+
+`main()` sets umask 077 so files the process creates are owner-only.
+
+## Confirm
+
+`/confirm` TTL is `telegram.confirm_seconds` (default 120). Staging
+writes `confirm_stage` to the journal. `start` restores that intent if
+the last of `confirm_stage` / `confirm_cancel` / `confirm_sent` is still
+`confirm_stage` and the TTL has not expired. After expiry, `/confirm`
+replies `nothing to confirm`. Restage with `/buy` `/sell` `/reverse` or
+advice.
+
+MT5 positions and working orders stay in the terminal. Paper positions
+and paper working orders die with the process.
+
+## Chat lock
+
+Only `TELEGRAM_CHAT_ID` is accepted. Set it in the environment. Do not
+put `chat_id` or the token in `config.toml`. Updates from any other
+chat are ignored (the update is still consumed). Replies and notifies
+go only to that chat.
 
 ## macOS
 
@@ -63,21 +138,123 @@ python -m mt5_risk_bot doctor --connect --config config.toml
 ```
 
 If `initialize` fails, launch MetaTrader 5.app yourself and wait until it
-is fully up.
+is fully up. The LaunchAgent starts the Python loop only; it does not
+launch the terminal.
 
-## Telegram
+### LaunchAgent
 
-1. Talk to BotFather, create a bot, copy the token.
-2. `export TELEGRAM_BOT_TOKEN=...` (never commit it).
-3. Message the bot, then get your chat id (`TELEGRAM_CHAT_ID`).
+1. `python -m mt5_risk_bot doctor` must exit 0.
+2. Copy `docs/launchd.plist.example` to
+   `~/Library/LaunchAgents/org.skyphusion.mt5-risk-bot.plist`.
+3. Edit `WorkingDirectory`, the venv `python` path, and
+   `EnvironmentVariables` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
+   Add `XAI_API_KEY` or `ANTHROPIC_API_KEY` if you want advice.
+   For an MT5 loop, change `--mode paper` to `--mode mt5` and, for a
+   real account only, append `--i-accept-risk`. chmod 600 the installed
+   plist. Never commit it.
+4. `mkdir -p logs` under `WorkingDirectory` (or point the log keys
+   somewhere writable). `*.log` is gitignored.
+5. Load:
+
+```bash
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.skyphusion.mt5-risk-bot.plist
+launchctl print gui/$(id -u)/org.skyphusion.mt5-risk-bot
+```
+
+Stop:
+
+```bash
+launchctl bootout gui/$(id -u)/org.skyphusion.mt5-risk-bot
+```
+
+`KeepAlive` restarts a crash. The confirm is restored from the journal
+if the TTL has not expired. Halt does not crash the process; do not
+bootout to halt.
+
+## Telegram desk
+
+`run` will not start without `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+
+1. BotFather, copy the token.
+2. Message the bot, set `TELEGRAM_CHAT_ID` to that chat.
+3. `export XAI_API_KEY=...` (Grok) and/or `ANTHROPIC_API_KEY=...` (Claude).
 4. `python -m mt5_risk_bot telegram --message ping`
-5. Leave `run --loop` going; it long-polls commands on each engine tick.
+5. `python -m mt5_risk_bot doctor` (exit 0), then the paper or mt5 loop above.
 
-`/halt` writes `HALT` and flattens. `/resume` only clears that file.
-Daily-loss and max-drawdown cannot be cleared from Telegram.
+Free text is `/ask`. Context includes `/risk`, positions, working orders,
+and quotes. A recommended market, limit, stop, or close-ticket is staged;
+`/confirm` sends it through the risk engine. `/auto on` is the only way
+the EMA regime trades on its own. `/trail on` trails open positions
+each tick without turning auto on. SL/TP hits and pending fills still
+alert in Telegram when auto is off.
+
+Paper is the default (`account.mode = "paper"`). Real accounts still need
+`--i-accept-risk`.
+
+Stage a working order, then confirm:
+
+```
+/buy EURUSD limit=1.08000 sl=1.07800 tp=1.08300
+/confirm
+/orders
+/cancel TICKET
+/quote
+/risk
+/trail TICKET
+/trail on
+/sl TICKET PRICE
+/tp TICKET PRICE
+/tp TICKET PRICE VOL
+/replace TICKET PRICE
+/reverse TICKET
+/closeby TICKET OTHER
+/symbols
+/symbols add NZDUSD
+/symbols remove NZDUSD
+/recap
+```
+
+`stop=` is the same shape (`/sell EURUSD stop=... sl=... tp=...`). Do not
+set both `limit=` and `stop=`. Bare `/cancel` drops a staged confirm;
+`/cancel TICKET` cancels a working order.
+
+`/halt` writes `HALT`, drops the confirm, cancels working orders, and
+flattens positions. `/resume` only clears that file. Daily-loss and
+max-drawdown cannot be cleared from Telegram.
+
+`/closeby` is hedge-account only. `/reverse` is two market sends (close
+then opposite); the circuit can leave you flat after `/confirm` already
+closed the ticket. See Live desk limits.
+
+## Live desk limits
+
+Nothing here guarantees profit. Paper P/L is not live P/L.
+
+`/closeby TICKET OTHER` is hedge-account only. It sends
+`TRADE_ACTION_CLOSE_BY`. A netting terminal refuses CLOSE_BY: you cannot
+hold two tickets on one symbol, so there is no opposite ticket to close
+against. Paper always hedges (a new ticket per deal), so close-by works
+in paper even when a live netting account would not.
+
+`/reverse TICKET` is two market sends. `/reverse` stages; `/confirm` first
+closes the ticket, then sends the opposite side. Staging and the first
+confirm preview exclude that ticket; if halt, daily-loss, drawdown, or
+risk_pct refuse then, the ticket stays open. After the close send
+succeeds, preview runs again. Realized P/L can trip the circuit or leave
+no room to size the new side; you are left flat (`closed #TICKET; reverse
+refused: ...`). A failed opposite send is the same shape (`closed #TICKET;
+send failed ...`).
+
+Production live: `doctor --connect` must exit 0 before `run --mode mt5`.
+`trade_mode=2` also needs `--i-accept-risk`. Demo (`trade_mode=0`) does not.
 
 ## Journal
 
 JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`,
-`halt`, `order_check_fail`, `stop`. Grep `reject` if it never trades;
-`outside_session` and `no_regime` are the usual reasons.
+`halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`,
+`confirm_stage`, `confirm_cancel`, `confirm_sent`, `stop`. Grep `reject`
+if it never trades; `outside_session` and `no_regime` are the usual
+reasons. `reconnect` is an MT5 IPC drop then `initialize`. `loop_error`
+is a tick that raised; the process kept running. `journal.tg_offset` is
+the Telegram `getUpdates` cursor (not JSONL). `journal.jsonl` and
+`journal.tg_offset` are owner-only (chmod 0600).
