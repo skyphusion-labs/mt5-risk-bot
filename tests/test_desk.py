@@ -3,6 +3,9 @@ from datetime import datetime, timezone
 from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.config import AdviceConfig, BotConfig
 from mt5_risk_bot.constants import (
+    ORDER_TYPE_BUY,
+    ORDER_TYPE_SELL,
+    TRADE_ACTION_CLOSE_BY,
     TRADE_ACTION_DEAL,
     TRADE_ACTION_SLTP,
     TRADE_RETCODE_INVALID,
@@ -871,6 +874,123 @@ def test_reverse_pending_order_refused(tmp_path) -> None:
     reply = engine.handle_command(TgCommand("1", 1, f"/reverse {order.ticket}", 3))
     assert "open positions" in reply
     assert engine.broker.orders()
+    engine.stop()
+
+
+def _hedge(engine, *, buy_vol=0.02, sell_vol=0.02, symbol="EURUSD"):
+    spec = engine.broker.symbol(symbol)
+    tick = engine.broker.tick(symbol)
+    magic = engine.cfg.risk.magic
+    buy = engine.broker.order_send(
+        {
+            "action": TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": buy_vol,
+            "type": ORDER_TYPE_BUY,
+            "sl": spec.normalize_price(tick.ask - 0.005),
+            "tp": spec.normalize_price(tick.ask + 0.010),
+            "magic": magic,
+        }
+    )
+    sell = engine.broker.order_send(
+        {
+            "action": TRADE_ACTION_DEAL,
+            "symbol": symbol,
+            "volume": sell_vol,
+            "type": ORDER_TYPE_SELL,
+            "sl": spec.normalize_price(tick.bid + 0.005),
+            "tp": spec.normalize_price(tick.bid - 0.010),
+            "magic": magic,
+        }
+    )
+    assert buy.ok and sell.ok
+    return buy.order, sell.order
+
+
+def test_closeby_offsets_opposite(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    buy, sell = _hedge(engine)
+    reply = engine.handle_command(TgCommand("1", 1, f"/closeby {buy} {sell}", 1))
+    assert reply == f"closed #{buy} by #{sell}"
+    assert not engine.broker.positions()
+    engine.stop()
+
+
+def test_closeby_keeps_remainder(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    buy, sell = _hedge(engine, buy_vol=0.03, sell_vol=0.01)
+    reply = engine.handle_command(TgCommand("1", 1, f"/closeby {buy} {sell}", 1))
+    assert reply.startswith("closed #")
+    rows = engine.broker.positions()
+    assert len(rows) == 1
+    assert rows[0].ticket == buy
+    assert abs(rows[0].volume - 0.02) < 1e-12
+    engine.stop()
+
+
+def test_closeby_refuses_bad_pairs(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    buy, sell = _hedge(engine)
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/closeby", 1))
+    assert "tickets must differ" in engine.handle_command(
+        TgCommand("1", 1, f"/closeby {buy} {buy}", 2)
+    )
+    assert "no such ticket" in engine.handle_command(TgCommand("1", 1, "/closeby 1 999", 3))
+    extra = engine.broker.order_send(
+        {
+            "action": TRADE_ACTION_DEAL,
+            "symbol": "EURUSD",
+            "volume": 0.01,
+            "type": ORDER_TYPE_BUY,
+            "sl": engine.broker.symbol("EURUSD").normalize_price(
+                engine.broker.tick("EURUSD").ask - 0.005
+            ),
+            "tp": engine.broker.symbol("EURUSD").normalize_price(
+                engine.broker.tick("EURUSD").ask + 0.010
+            ),
+            "magic": engine.cfg.risk.magic,
+        }
+    )
+    assert extra.ok
+    assert "sides must be opposite" in engine.handle_command(
+        TgCommand("1", 1, f"/closeby {buy} {extra.order}", 4)
+    )
+    gbp = engine.broker.order_send(
+        {
+            "action": TRADE_ACTION_DEAL,
+            "symbol": "GBPUSD",
+            "volume": 0.01,
+            "type": ORDER_TYPE_SELL,
+            "sl": engine.broker.symbol("GBPUSD").normalize_price(
+                engine.broker.tick("GBPUSD").bid + 0.005
+            ),
+            "tp": engine.broker.symbol("GBPUSD").normalize_price(
+                engine.broker.tick("GBPUSD").bid - 0.010
+            ),
+            "magic": engine.cfg.risk.magic,
+        }
+    )
+    assert gbp.ok
+    assert "symbols must match" in engine.handle_command(
+        TgCommand("1", 1, f"/closeby {buy} {gbp.order}", 5)
+    )
+    tiny_buy, tiny_sell = _hedge(engine, buy_vol=0.02, sell_vol=0.011)
+    assert "remainder below volume_min" in engine.handle_command(
+        TgCommand("1", 1, f"/closeby {tiny_buy} {tiny_sell}", 6)
+    )
+    orig = engine.broker.order_send
+
+    def wrapped(request: dict) -> OrderResult:
+        if int(request.get("action", 0)) == TRADE_ACTION_CLOSE_BY:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="nope", request=request)
+        return orig(request)
+
+    engine.broker.order_send = wrapped  # type: ignore[method-assign]
+    failed = engine.handle_command(TgCommand("1", 1, f"/closeby {buy} {sell}", 7))
+    assert "closeby failed" in failed
     engine.stop()
 
 

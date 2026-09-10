@@ -68,6 +68,7 @@ class Desk:
                 "sell": lambda: self._trade(SignalKind.SELL, cmd.args, "telegram"),
                 "reverse": lambda: self._reverse(cmd.args),
                 "close": lambda: self._close(cmd.args),
+                "closeby": lambda: self._closeby(cmd.args),
                 "sl": lambda: self._stop(cmd.args, "sl"),
                 "tp": lambda: self._stop(cmd.args, "tp"),
                 "be": lambda: self._be(cmd.args),
@@ -265,6 +266,12 @@ class Desk:
             f"sent reverse #{ticket} {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"ok={result.ok} retcode={result.retcode}"
         )
+
+    def _closeby(self, args: str) -> str:
+        parts = args.split()
+        if len(parts) != 2 or not parts[0].isdigit() or not parts[1].isdigit():
+            return "usage: /closeby TICKET OTHER"
+        return self.engine.close_by(int(parts[0]), int(parts[1]))
 
     def _close(self, args: str) -> str:
         parts = args.split()

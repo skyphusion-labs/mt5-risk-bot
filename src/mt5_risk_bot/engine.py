@@ -13,6 +13,7 @@ from mt5_risk_bot.constants import (
     ORDER_TYPE_BUY_STOP,
     ORDER_TYPE_SELL_LIMIT,
     ORDER_TYPE_SELL_STOP,
+    TRADE_ACTION_CLOSE_BY,
     TRADE_ACTION_DEAL,
     TRADE_ACTION_MODIFY,
     TRADE_ACTION_PENDING,
@@ -635,6 +636,57 @@ class Engine:
             if bits:
                 parts.append(" ".join(bits))
         return " ".join(parts)
+
+    def close_by(self, ticket: int, other: int) -> str:
+        if ticket == other:
+            return "tickets must differ"
+        a = self._pos(ticket)
+        b = self._pos(other)
+        if a is None or b is None:
+            return "no such ticket"
+        if a.symbol != b.symbol:
+            return "symbols must match"
+        if a.side == b.side:
+            return "sides must be opposite"
+        spec = self.broker.symbol(a.symbol)
+        vol = min(a.volume, b.volume)
+        rem_a = round(a.volume - vol, 8)
+        rem_b = round(b.volume - vol, 8)
+        if rem_a > 1e-12 and rem_a < spec.volume_min - 1e-12:
+            return "remainder below volume_min"
+        if rem_b > 1e-12 and rem_b < spec.volume_min - 1e-12:
+            return "remainder below volume_min"
+        request = {
+            "action": TRADE_ACTION_CLOSE_BY,
+            "position": ticket,
+            "position_by": other,
+            "symbol": a.symbol,
+            "volume": vol,
+            "magic": self.cfg.risk.magic,
+            "comment": "closeby",
+        }
+        result = self.broker.order_send(request)
+        if result.ok:
+            self._closed_this_step.add(ticket)
+            self._closed_this_step.add(other)
+            if rem_a <= 1e-12:
+                self._scale_outs.pop(ticket, None)
+            if rem_b <= 1e-12:
+                self._scale_outs.pop(other, None)
+        self._emit(
+            "close",
+            reason="closeby",
+            ticket=ticket,
+            position_by=other,
+            symbol=a.symbol,
+            ok=result.ok,
+            retcode=result.retcode,
+            comment=result.comment,
+            volume=vol,
+        )
+        if not result.ok:
+            return f"closeby failed retcode={result.retcode} {result.comment}"
+        return f"closed #{ticket} by #{other}"
 
     def close_ticket(self, ticket: int, reason: str, volume: float | None = None) -> str:
         pos = self._pos(ticket)

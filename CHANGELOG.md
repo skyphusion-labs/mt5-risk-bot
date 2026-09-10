@@ -18,6 +18,7 @@
 - If the circuit would halt, advice is hold/close only; buy/sell is not staged.
 - `/replace TICKET PRICE` moves a working order; circuit and risk_pct still refuse.
 - `/reverse TICKET` stages close plus opposite market; `/confirm` sends. Circuit and risk_pct still refuse.
+- `/closeby TICKET OTHER` offsets opposite positions (`TRADE_ACTION_CLOSE_BY`). Paper supported.
 - Grok (xAI) and Claude (Anthropic) via env keys. Last 6 turns kept. Advice never auto-sends.
 - Advice JSON may stage `limit=` / `stop=` or close TICKET. `/ask` context includes `/risk`, orders, positions, quotes.
 - Auto EMA regime is off until `/auto on`.

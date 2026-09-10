@@ -119,6 +119,7 @@ HELP = (
     "/buy SYMBOL [sl=] [tp=] [limit=PRICE] [stop=PRICE]\n"
     "/sell SYMBOL [sl=] [tp=] [limit=PRICE] [stop=PRICE]\n"
     "/close TICKET|SYMBOL|all [VOL]\n"
+    "/closeby TICKET OTHER\n"
     "/reverse TICKET [sl=] [tp=]\n"
     "/sl TICKET PRICE   /tp TICKET PRICE [VOL]   /be TICKET\n"
     "/trail on|off|TICKET\n"

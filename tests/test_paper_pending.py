@@ -1,13 +1,19 @@
 from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.constants import (
+    ORDER_TYPE_BUY,
     ORDER_TYPE_BUY_LIMIT,
     ORDER_TYPE_BUY_STOP,
+    ORDER_TYPE_SELL,
+    TRADE_ACTION_CLOSE_BY,
+    TRADE_ACTION_DEAL,
     TRADE_ACTION_MODIFY,
     TRADE_ACTION_PENDING,
     TRADE_ACTION_REMOVE,
+    TRADE_RETCODE_INVALID,
     TRADE_RETCODE_INVALID_ORDER,
     TRADE_RETCODE_INVALID_VOLUME,
     TRADE_RETCODE_PLACED,
+    TRADE_RETCODE_POSITION_CLOSED,
 )
 from mt5_risk_bot.models import Bar
 from mt5_risk_bot.synthetic import generate_bars
@@ -184,4 +190,75 @@ def test_modify_pending_sl_tp() -> None:
     )
     assert moved.ok
     assert abs(broker.orders()[0].price - new_px) < spec.point
+
+
+def _deal(broker: PaperBroker, type_code: int, volume: float = 0.02):
+    spec = broker.symbol("EURUSD")
+    tick = broker.tick("EURUSD")
+    if type_code == ORDER_TYPE_BUY:
+        sl = spec.normalize_price(tick.ask - 0.005)
+        tp = spec.normalize_price(tick.ask + 0.010)
+    else:
+        sl = spec.normalize_price(tick.bid + 0.005)
+        tp = spec.normalize_price(tick.bid - 0.010)
+    return broker.order_send(
+        {
+            "action": TRADE_ACTION_DEAL,
+            "symbol": "EURUSD",
+            "volume": volume,
+            "type": type_code,
+            "sl": sl,
+            "tp": tp,
+            "magic": 1,
+        }
+    )
+
+
+def test_paper_close_by() -> None:
+    broker = _paper()
+    buy = _deal(broker, ORDER_TYPE_BUY, 0.02)
+    sell = _deal(broker, ORDER_TYPE_SELL, 0.02)
+    assert buy.ok and sell.ok
+    missing = broker.order_send(
+        {"action": TRADE_ACTION_CLOSE_BY, "position": buy.order, "position_by": 999}
+    )
+    assert missing.retcode == TRADE_RETCODE_POSITION_CLOSED
+    same = broker.order_send(
+        {"action": TRADE_ACTION_CLOSE_BY, "position": buy.order, "position_by": buy.order}
+    )
+    assert same.retcode == TRADE_RETCODE_INVALID
+    check = broker.order_check(
+        {"action": TRADE_ACTION_CLOSE_BY, "position": buy.order, "position_by": sell.order}
+    )
+    assert check.ok
+    assert len(broker.positions()) == 2
+    done = broker.order_send(
+        {"action": TRADE_ACTION_CLOSE_BY, "position": buy.order, "position_by": sell.order}
+    )
+    assert done.ok
+    assert done.volume == 0.02
+    assert broker.positions() == []
+    leftover_buy = _deal(broker, ORDER_TYPE_BUY, 0.03)
+    leftover_sell = _deal(broker, ORDER_TYPE_SELL, 0.01)
+    part = broker.order_send(
+        {
+            "action": TRADE_ACTION_CLOSE_BY,
+            "position": leftover_buy.order,
+            "position_by": leftover_sell.order,
+        }
+    )
+    assert part.ok
+    rows = broker.positions()
+    assert len(rows) == 1
+    assert abs(rows[0].volume - 0.02) < 1e-12
+    tiny_buy = _deal(broker, ORDER_TYPE_BUY, 0.02)
+    tiny_sell = _deal(broker, ORDER_TYPE_SELL, 0.011)
+    bad = broker.order_send(
+        {
+            "action": TRADE_ACTION_CLOSE_BY,
+            "position": tiny_buy.order,
+            "position_by": tiny_sell.order,
+        }
+    )
+    assert bad.retcode == TRADE_RETCODE_INVALID_VOLUME
 

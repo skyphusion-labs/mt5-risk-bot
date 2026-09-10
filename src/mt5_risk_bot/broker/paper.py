@@ -18,6 +18,7 @@ from mt5_risk_bot.constants import (
     ORDER_TYPE_BUY_STOP,
     ORDER_TYPE_SELL_LIMIT,
     ORDER_TYPE_SELL_STOP,
+    TRADE_ACTION_CLOSE_BY,
     TRADE_ACTION_DEAL,
     TRADE_ACTION_MODIFY,
     TRADE_ACTION_PENDING,
@@ -224,6 +225,8 @@ class PaperBroker:
             return self._place_pending(request, commit=commit)
         if action == TRADE_ACTION_REMOVE:
             return self._remove_pending(request, commit=commit)
+        if action == TRADE_ACTION_CLOSE_BY:
+            return self._close_by(request, commit=commit)
         if action != TRADE_ACTION_DEAL:
             return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="unsupported action", request=request)
         if request.get("position"):
@@ -308,6 +311,50 @@ class PaperBroker:
             order=ticket,
             volume=volume,
             price=spec.normalize_price(px),
+            bid=tick.bid,
+            ask=tick.ask,
+            request=request,
+        )
+
+    def _close_by(self, request: dict, *, commit: bool) -> OrderResult:
+        ticket = int(request.get("position") or 0)
+        other = int(request.get("position_by") or 0)
+        a = self._positions.get(ticket)
+        b = self._positions.get(other)
+        if a is None or b is None:
+            return OrderResult(retcode=TRADE_RETCODE_POSITION_CLOSED, comment="gone", request=request)
+        if ticket == other or a.symbol != b.symbol or a.side == b.side:
+            return OrderResult(retcode=TRADE_RETCODE_INVALID, comment="closeby", request=request)
+        spec = self.symbol(a.symbol)
+        vol = min(a.volume, b.volume)
+        rem_a = round(a.volume - vol, 8)
+        rem_b = round(b.volume - vol, 8)
+        if (rem_a > 1e-12 and rem_a < spec.volume_min - 1e-12) or (
+            rem_b > 1e-12 and rem_b < spec.volume_min - 1e-12
+        ):
+            return OrderResult(
+                retcode=TRADE_RETCODE_INVALID_VOLUME, comment="remainder", request=request
+            )
+        tick = self.tick(a.symbol)
+        if commit:
+            px_a = tick.bid if a.side is Side.BUY else tick.ask
+            px_b = tick.bid if b.side is Side.BUY else tick.ask
+            self._balance += self._pnl(a, px_a, spec) * (vol / a.volume)
+            self._balance += self._pnl(b, px_b, spec) * (vol / b.volume)
+            if rem_a <= 1e-12:
+                del self._positions[ticket]
+            else:
+                a.volume = rem_a
+            if rem_b <= 1e-12:
+                del self._positions[other]
+            else:
+                b.volume = rem_b
+        return OrderResult(
+            retcode=TRADE_RETCODE_DONE,
+            comment="Done",
+            deal=ticket,
+            order=ticket,
+            volume=vol,
             bid=tick.bid,
             ask=tick.ask,
             request=request,
