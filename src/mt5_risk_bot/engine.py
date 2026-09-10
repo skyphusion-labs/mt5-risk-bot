@@ -28,7 +28,7 @@ from mt5_risk_bot.indicators import atr as atr_bars
 from mt5_risk_bot.journal import Journal
 from mt5_risk_bot.llm import Advisor
 from mt5_risk_bot.models import Bar, OrderResult, PendingOrder, Position, Signal, SignalKind
-from mt5_risk_bot.risk import RiskDecision, RiskManager
+from mt5_risk_bot.risk import RiskDecision, RiskManager, day_key
 from mt5_risk_bot.sizing import normalize_volume
 from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.telegram import TelegramClient, TgCommand
@@ -859,11 +859,45 @@ class Engine:
                 except (ValueError, RuntimeError, OSError):
                     continue
 
+    def recap_text(self) -> str:
+        acct = self.broker.account()
+        snap = self.risk.snapshot
+        day = snap.day_key or day_key(self.now_fn())
+        pnl = acct.equity - snap.day_start_equity
+        sign = "+" if pnl >= 0 else ""
+        head = (
+            f"RECAP {day} equity={acct.equity:.2f} "
+            f"day_start={snap.day_start_equity:.2f} pnl={sign}{pnl:.2f}"
+        )
+        tail = self.history_text(8)
+        if tail and tail != "no history":
+            return f"{head}\n{tail}"
+        return head
+
+    def _maybe_daily_recap(self, acct, now) -> None:
+        key = day_key(now)
+        snap = self.risk.snapshot
+        if not snap.day_key or snap.day_key == key:
+            return
+        pnl = acct.equity - snap.day_start_equity
+        tail = self.history_text(8)
+        self._emit(
+            "recap",
+            day=snap.day_key,
+            equity=round(acct.equity, 2),
+            day_start=round(snap.day_start_equity, 2),
+            pnl=round(pnl, 2),
+            tail="" if tail == "no history" else tail,
+        )
+
     def step_all(self) -> None:
         self.poll_telegram()
+        acct = self.broker.account()
+        now = self.now_fn()
+        self._maybe_daily_recap(acct, now)
         if self.halted:
             return
-        if self._apply_circuit(self.broker.account(), self.now_fn()):
+        if self._apply_circuit(acct, now):
             return
         self._opened_this_step.clear()
         self._closed_this_step.clear()
@@ -910,6 +944,15 @@ def _format_event(event: str, fields: dict[str, Any]) -> str:
             f"vol={fields.get('volume')} @ {fields.get('price')} "
             f"ok={fields.get('ok')} order={fields.get('order')}"
         )
+    if event == "recap":
+        pnl = float(fields.get("pnl") or 0)
+        sign = "+" if pnl >= 0 else ""
+        head = (
+            f"RECAP {fields.get('day')} equity={fields.get('equity')} "
+            f"day_start={fields.get('day_start')} pnl={sign}{pnl}"
+        )
+        tail = str(fields.get("tail") or "")
+        return f"{head}\n{tail}".strip()
     return ""
 
 

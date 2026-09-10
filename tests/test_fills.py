@@ -249,3 +249,49 @@ def test_sl_tp_modify_working_order(tmp_path) -> None:
     assert "sl #" not in bad
     assert "sl < entry" in bad or "fail" in bad.lower()
     engine.stop()
+
+
+def test_utc_day_roll_sends_recap_not_a_trade(tmp_path) -> None:
+    tr = FakeTransport()
+    tg = TelegramClient(
+        token="t",
+        chat_id="1",
+        transport=tr,
+        notify_events=frozenset(
+            {"start", "stop", "open", "close", "halt", "pending", "recap"}
+        ),
+    )
+    clock = [datetime(2024, 1, 3, 12, tzinfo=timezone.utc)]
+    cfg = BotConfig()
+    cfg.journal_path = str(tmp_path / "j.jsonl")
+    cfg.session.enabled = False
+    cfg.risk.max_spread_atr_frac = 10.0
+    cfg.risk.halt_file = str(tmp_path / "HALT")
+    cfg.strategy.auto = False
+    broker = PaperBroker(balance=10_000)
+    broker.seed_bars("EURUSD", generate_bars(120, drift=0.0004, vol=0.0002, seed=3))
+    engine = Engine(
+        cfg,
+        broker,
+        halt_dir=str(tmp_path),
+        telegram=tg,
+        now_fn=lambda: clock[0],
+    )
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    npos = len(engine.broker.positions())
+    clock[0] = datetime(2024, 1, 4, 0, 5, tzinfo=timezone.utc)
+    engine.step_all()
+    assert len(engine.broker.positions()) == npos
+    texts = [payload.get("text", "") for _, payload in tr.sent]
+    blob = "\n".join(texts)
+    assert "RECAP 2024-01-03" in blob
+    assert "day_start=" in blob
+    recaps = [t for t in texts if t.startswith("RECAP")]
+    assert len(recaps) == 1
+    engine.step_all()
+    texts2 = [payload.get("text", "") for _, payload in tr.sent]
+    recaps2 = [t for t in texts2 if t.startswith("RECAP")]
+    assert len(recaps2) == 1
+    engine.stop()

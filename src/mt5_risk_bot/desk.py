@@ -69,6 +69,7 @@ class Desk:
                 "cancel": lambda: self._cancel(cmd.args),
                 "orders": lambda: self.engine.orders_text(),
                 "history": self._history,
+                "recap": self.engine.recap_text,
                 "symbols": lambda: self._symbols(cmd.args),
                 "ask": lambda: self._ask(cmd.args),
                 "model": lambda: self._model(cmd.args),

@@ -121,7 +121,7 @@ HELP = (
     "/close TICKET|SYMBOL|all [VOL]\n"
     "/sl TICKET PRICE   /tp TICKET PRICE [VOL]   /be TICKET\n"
     "/trail on|off|TICKET\n"
-    "/confirm  /cancel [TICKET]  /orders  /history  /risk\n"
+    "/confirm  /cancel [TICKET]  /orders  /history  /recap  /risk\n"
     "/symbols list|add|remove [SYMBOL]\n"
     "/positions  /status  /ask ...\n"
     "/model grok|claude   /auto on|off\n"
@@ -136,7 +136,7 @@ class TelegramClient:
     chat_id: str
     notify_events: frozenset[str] = field(
         default_factory=lambda: frozenset(
-            {"start", "stop", "open", "close", "halt", "order_check_fail", "pending"}
+            {"start", "stop", "open", "close", "halt", "order_check_fail", "pending", "recap"}
         )
     )
     transport: Transport = field(default_factory=UrlLibTransport)

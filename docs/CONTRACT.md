@@ -24,8 +24,10 @@ off until `/auto on`.
 - Real-money accounts (`trade_mode = 2`) refuse orders unless
   `--i-accept-risk` was passed. Paper is the default mode.
 - SL/TP hits and pending-order fills emit Telegram alerts even when
-  `/auto` is off. Default notify events include `open`, `close`, and
-  `pending`.
+  `/auto` is off. Default notify events include `open`, `close`,
+  `pending`, and `recap`.
+- A UTC day roll sends a recap notify (`journal.tail`, equity vs
+  `day_start`). That is not a trade. `/recap` dumps the same snapshot.
 - Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`,
   `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`,
   `ANTHROPIC_API_KEY`, `AI_PROVIDER`.
@@ -62,6 +64,7 @@ off until `/auto on`.
 | `/be TICKET` | move SL to entry; never loosen |
 | `/trail on\|off\|TICKET` | on: `manage()` existing positions every tick, no EMA entries (default off). TICKET: one-shot. never loosen |
 | `/history` | last journal events |
+| `/recap` | equity vs UTC `day_start` plus `journal.tail`; also sent on UTC day roll as notify `recap` |
 | `/symbols list\|add\|remove [SYMBOL]` | configured book (runtime). Bare `/symbols` lists. Cannot drop the last name, or a name with positions/orders |
 | `/ask ...` or free text | Grok or Claude (last 6 turns plus status, /risk, positions, working orders, quotes); JSON may stage market, `limit=`, `stop=`, or close TICKET; never sends |
 | `/model grok\|claude` | switch provider |

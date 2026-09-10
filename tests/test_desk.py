@@ -296,6 +296,20 @@ def test_symbols_cannot_drop_last(tmp_path) -> None:
     engine.stop()
 
 
+def test_recap_command(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    text = engine.handle_command(TgCommand("1", 1, "/recap", 1))
+    assert text.startswith("RECAP")
+    assert "equity=" in text
+    assert "day_start=" in text
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 2))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 3))
+    text2 = engine.handle_command(TgCommand("1", 1, "/recap", 4))
+    assert "open" in text2 or "start" in text2
+    engine.stop()
+
+
 def test_quote_usage(tmp_path) -> None:
     engine = _engine(tmp_path)
     engine.start()

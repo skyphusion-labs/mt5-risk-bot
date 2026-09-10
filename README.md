@@ -50,6 +50,8 @@ drawdown room. `/sl` `/tp` TICKET work on positions and working orders.
 EMA entries. Default off.
 
 SL/TP and pending fills still alert in Telegram when `/auto` is off.
+A UTC day roll sends a recap (equity vs day start, last journal lines).
+`/recap` dumps that now. Not a trade.
 Paper is the default. Live real accounts need `--i-accept-risk`.
 
 Free text is advice. The model may stage a market, `limit=`, `stop=`, or

@@ -102,6 +102,7 @@ Stage a working order, then confirm:
 /symbols
 /symbols add NZDUSD
 /symbols remove NZDUSD
+/recap
 ```
 
 `stop=` is the same shape (`/sell EURUSD stop=... sl=... tp=...`). Do not
@@ -115,5 +116,5 @@ max-drawdown cannot be cleared from Telegram.
 ## Journal
 
 JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`,
-`halt`, `order_check_fail`, `pending`, `stop`. Grep `reject` if it never
+`halt`, `order_check_fail`, `pending`, `recap`, `stop`. Grep `reject` if it never
 trades; `outside_session` and `no_regime` are the usual reasons.
