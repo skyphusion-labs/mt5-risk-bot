@@ -1057,9 +1057,35 @@ class Engine:
             tail="" if tail == "no history" else tail,
         )
 
+    def _reconnect_broker(self) -> bool:
+        try:
+            self.broker.disconnect()
+        except (RuntimeError, OSError, ValueError):
+            pass
+        try:
+            self.broker.connect()
+            for name in self.cfg.symbols:
+                try:
+                    self.broker.select_symbol(name)
+                except (RuntimeError, OSError, ValueError):
+                    continue
+            self.journal.write("reconnect", ok=True)
+            return True
+        except (RuntimeError, OSError, ValueError) as exc:
+            self.journal.write("reconnect", ok=False, error=str(exc)[:200])
+            return False
+
     def step_all(self) -> None:
         self.poll_telegram()
-        acct = self.broker.account()
+        try:
+            acct = self.broker.account()
+        except (RuntimeError, OSError, ValueError):
+            if not self._reconnect_broker():
+                return
+            try:
+                acct = self.broker.account()
+            except (RuntimeError, OSError, ValueError):
+                return
         now = self.now_fn()
         self._maybe_daily_recap(acct, now)
         if self.halted:

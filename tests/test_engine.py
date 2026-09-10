@@ -8,6 +8,32 @@ from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.synthetic import generate_bars, generate_ranging
 
 
+class FlakyBroker:
+    def __init__(self, inner: PaperBroker) -> None:
+        self._inner = inner
+        self.fail_account = 0
+        self.fail_connect = False
+        self.connects = 0
+
+    def connect(self) -> None:
+        self.connects += 1
+        if self.fail_connect:
+            raise RuntimeError("mt5.initialize failed: (1, 'no ipc')")
+        self._inner.connect()
+
+    def disconnect(self) -> None:
+        self._inner.disconnect()
+
+    def account(self):
+        if self.fail_account > 0:
+            self.fail_account -= 1
+            raise RuntimeError("account_info failed: IPC timeout")
+        return self._inner.account()
+
+    def __getattr__(self, name):
+        return getattr(self._inner, name)
+
+
 def _cfg(**kw) -> BotConfig:
     cfg = BotConfig()
     cfg.session = SessionConfig(enabled=False)
@@ -151,3 +177,41 @@ def test_filling_choice() -> None:
     assert choose_filling(2) == ORDER_FILLING_IOC
     assert choose_filling(3) == ORDER_FILLING_FOK
     assert choose_filling(0) == ORDER_FILLING_RETURN
+
+
+def test_step_all_reconnects_after_account_drop(tmp_path: Path) -> None:
+    cfg = _cfg(journal=str(tmp_path / "j.jsonl"))
+    cfg.risk.halt_file = str(tmp_path / "HALT")
+    inner = PaperBroker(balance=10_000)
+    inner.seed_bars("EURUSD", generate_bars(80, drift=0.0004, seed=3))
+    broker = FlakyBroker(inner)
+    engine = Engine(cfg, broker, halt_dir=str(tmp_path))
+    engine.start()
+    started = broker.connects
+    broker.fail_account = 1
+    engine.step_all()
+    assert broker.connects == started + 1
+    assert not engine.halted
+    events = [rec.get("event") for rec in engine.journal.tail(20)]
+    assert "reconnect" in events
+    rec = [r for r in engine.journal.tail(20) if r.get("event") == "reconnect"][-1]
+    assert rec.get("ok") is True
+    engine.stop()
+
+
+def test_step_all_skips_tick_if_reconnect_fails(tmp_path: Path) -> None:
+    cfg = _cfg(journal=str(tmp_path / "j.jsonl"))
+    cfg.risk.halt_file = str(tmp_path / "HALT")
+    inner = PaperBroker(balance=10_000)
+    inner.seed_bars("EURUSD", generate_bars(80, drift=0.0004, seed=3))
+    broker = FlakyBroker(inner)
+    engine = Engine(cfg, broker, halt_dir=str(tmp_path))
+    engine.start()
+    broker.fail_account = 1
+    broker.fail_connect = True
+    engine.step_all()
+    assert not engine.halted
+    rec = [r for r in engine.journal.tail(20) if r.get("event") == "reconnect"][-1]
+    assert rec.get("ok") is False
+    assert "initialize" in str(rec.get("error") or "")
+    engine.stop()

@@ -88,6 +88,11 @@ Each loop tick resolves pending fills and SL/TP even when `/auto` is off. Pendin
 
 Manual `/buy` `/sell` skip the session window. Auto does not.
 
+`run --loop` retries Telegram HTTP 429 and 5xx with backoff and resumes
+`getUpdates` at the same offset. A dropped MT5 IPC calls `initialize`
+again. One failed poll, send, or broker tick is journaled (`reconnect`
+or `loop_error`); the process stays up.
+
 `doctor` pings Telegram when the token is set, and always runs an
 in-process paper `/buy` `/confirm` `/close`. No live terminal required.
 `--connect` is the optional MT5 login check.

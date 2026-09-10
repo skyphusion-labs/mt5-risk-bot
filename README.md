@@ -18,9 +18,15 @@ export XAI_API_KEY=...          # Grok (default)
 # export ANTHROPIC_API_KEY=...  # Claude
 # export AI_PROVIDER=claude
 pytest
-python -m mt5_risk_bot doctor   # telegram ping + paper /buy /confirm /close
+python -m mt5_risk_bot doctor   # gate: telegram ping + paper /buy /confirm /close
 python -m mt5_risk_bot run --mode paper --loop --config config.toml
 ```
+
+`doctor` must exit 0 before a long-run or any live start. macOS LaunchAgent:
+copy `docs/launchd.plist.example` (paper `--loop`; see `docs/RUNBOOK.md`).
+
+`--loop` retries Telegram 429/5xx and re-`initialize`s a dropped MT5
+IPC. One bad tick is journaled; the process stays up. See `docs/RUNBOOK.md`.
 
 Live/demo needs a running terminal. Official `MetaTrader5` is Windows-only.
 On macOS: MetaTrader 5.app from metatrader5.com plus `pip install mt5-mac`.
@@ -29,10 +35,14 @@ On macOS: MetaTrader 5.app from metatrader5.com plus `pip install mt5-mac`.
 export MT5_LOGIN=...
 export MT5_PASSWORD=...
 export MT5_SERVER=YourBroker-Demo
+python -m mt5_risk_bot doctor --connect --config config.toml
 python -m mt5_risk_bot run --mode mt5 --loop --config config.toml
 ```
 
 Real accounts (`trade_mode=2`) also need `--i-accept-risk`.
+`TELEGRAM_CHAT_ID` is the only accepted chat. `/confirm` is 120s in
+memory; a restart drops it (`nothing to confirm`). Halt is `touch HALT`
+or `/halt` (process stays up).
 
 ## Chat
 
@@ -66,6 +76,8 @@ halt, advice is hold/close only. `/help` for the rest.
 ## Docs
 
 `docs/CONTRACT.md` is the behaviour tests enforce.
+`docs/RUNBOOK.md` is paper, live, HALT, confirm-on-restart, and launchd.
+`docs/launchd.plist.example` is a user LaunchAgent (paper `--loop`).
 
 ## License
 

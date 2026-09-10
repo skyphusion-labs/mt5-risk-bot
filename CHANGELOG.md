@@ -19,6 +19,7 @@
 - `/replace TICKET PRICE` moves a working order; circuit and risk_pct still refuse.
 - `/reverse TICKET` stages close plus opposite market; `/confirm` sends. Circuit and risk_pct still refuse.
 - `/closeby TICKET OTHER` offsets opposite positions (`TRADE_ACTION_CLOSE_BY`). Paper supported.
+- `run --loop` retries Telegram 429/5xx with backoff, resumes `getUpdates` at the same offset, and re-`initialize`s a dropped MT5 IPC. One bad tick is journaled (`reconnect` / `loop_error`).
 - Grok (xAI) and Claude (Anthropic) via env keys. Last 6 turns kept. Advice never auto-sends.
 - Advice JSON may stage `limit=` / `stop=` or close TICKET. `/ask` context includes `/risk`, orders, positions, quotes.
 - Auto EMA regime is off until `/auto on`.
