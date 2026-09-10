@@ -9,7 +9,13 @@ from mt5_risk_bot.broker.base import Broker
 from mt5_risk_bot.config import BotConfig
 from mt5_risk_bot.constants import (
     ORDER_TIME_GTC,
+    ORDER_TYPE_BUY_LIMIT,
+    ORDER_TYPE_BUY_STOP,
+    ORDER_TYPE_SELL_LIMIT,
+    ORDER_TYPE_SELL_STOP,
     TRADE_ACTION_DEAL,
+    TRADE_ACTION_PENDING,
+    TRADE_ACTION_REMOVE,
     TRADE_ACTION_SLTP,
     TRADE_RETCODE_DONE,
     choose_filling,
@@ -23,6 +29,13 @@ from mt5_risk_bot.models import Bar, OrderResult, Position, Signal, SignalKind
 from mt5_risk_bot.risk import RiskDecision, RiskManager
 from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.telegram import TelegramClient, TgCommand
+
+_ORDER_TYPE_NAME = {
+    ORDER_TYPE_BUY_LIMIT: "BUY_LIMIT",
+    ORDER_TYPE_SELL_LIMIT: "SELL_LIMIT",
+    ORDER_TYPE_BUY_STOP: "BUY_STOP",
+    ORDER_TYPE_SELL_STOP: "SELL_STOP",
+}
 
 
 class Engine:
@@ -48,6 +61,9 @@ class Engine:
         self.telegram = telegram
         self.advisor = advisor if advisor is not None else Advisor(cfg.advice)
         self.desk = Desk(self, self.advisor)
+        self._seen_pos: set[int] | None = None
+        self._opened_this_step: set[int] = set()
+        self._closed_this_step: set[int] = set()
 
     def _emit(self, event: str, **fields: Any) -> None:
         self.journal.write(event, **fields)
@@ -71,6 +87,9 @@ class Engine:
             server=acct.server,
             symbols=self.cfg.symbols,
         )
+        self._seen_pos = {
+            p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
+        }
 
     def stop(self) -> None:
         self._emit("stop")
@@ -79,9 +98,14 @@ class Engine:
     def flatten(self, reason: str) -> None:
         if getattr(self, "desk", None) is not None:
             self.desk.pending = None
-        for pos in self.broker.positions(magic=self.cfg.risk.magic):
+        for order in list(self.broker.orders(magic=self.cfg.risk.magic)):
+            self.broker.order_send({"action": TRADE_ACTION_REMOVE, "order": order.ticket})
+        for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
             self._close(pos, reason)
         self.halted = True
+        self._seen_pos = {
+            p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
+        }
 
     def _apply_circuit(self, acct, now) -> bool:
         trip = self.risk.circuit(acct, now)
@@ -110,6 +134,7 @@ class Engine:
             "type_filling": choose_filling(spec.filling_mode),
         }
         result = self.broker.order_send(request)
+        self._closed_this_step.add(pos.ticket)
         self._emit(
             "close",
             reason=reason,
@@ -178,6 +203,10 @@ class Engine:
             )
             return check
         result = self.broker.order_send(request)
+        if result.ok:
+            ticket = int(result.order or result.deal or 0)
+            if ticket:
+                self._opened_this_step.add(ticket)
         self._emit(
             "open",
             symbol=signal.symbol,
@@ -267,6 +296,8 @@ class Engine:
         symbol: str,
         sl: float | None = None,
         tp: float | None = None,
+        limit: float | None = None,
+        stop: float | None = None,
     ) -> Signal:
         symbol = symbol.upper()
         spec = self.broker.symbol(symbol)
@@ -274,6 +305,8 @@ class Engine:
         tick = self.broker.tick(symbol)
         if tick.bid <= 0 or tick.ask <= 0:
             raise RuntimeError(f"no tick for {symbol}")
+        if limit is not None and stop is not None:
+            raise RuntimeError("use limit= or stop=, not both")
         bars = self.broker.rates(
             symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
         )
@@ -282,7 +315,23 @@ class Engine:
             vals = [v for v in atr_bars(bars, self.cfg.strategy.atr_period) if v == v]
             if vals:
                 a0 = vals[-1]
-        entry = tick.ask if kind is SignalKind.BUY else tick.bid
+        pending_kind = ""
+        if limit is not None:
+            pending_kind = "limit"
+            entry = limit
+            if kind is SignalKind.BUY and not (limit < tick.ask):
+                raise RuntimeError("buy limit must be below ask")
+            if kind is SignalKind.SELL and not (limit > tick.bid):
+                raise RuntimeError("sell limit must be above bid")
+        elif stop is not None:
+            pending_kind = "stop"
+            entry = stop
+            if kind is SignalKind.BUY and not (stop > tick.ask):
+                raise RuntimeError("buy stop must be above ask")
+            if kind is SignalKind.SELL and not (stop < tick.bid):
+                raise RuntimeError("sell stop must be below bid")
+        else:
+            entry = tick.ask if kind is SignalKind.BUY else tick.bid
         if sl is None:
             if a0 <= 0:
                 raise RuntimeError("no ATR and no sl; pass sl=")
@@ -308,6 +357,7 @@ class Engine:
             tp=tp,
             atr=a0,
             reason="manual",
+            pending_kind=pending_kind,
         )
 
     def preview(self, signal: Signal, *, manual: bool = True) -> RiskDecision:
@@ -322,7 +372,131 @@ class Engine:
         )
 
     def submit(self, signal: Signal, volume: float) -> OrderResult:
+        if signal.pending_kind:
+            return self._place_pending(signal, volume)
         return self._open(signal, volume)
+
+    def _place_pending(self, signal: Signal, volume: float) -> OrderResult:
+        side = signal.side
+        assert side is not None
+        if signal.pending_kind == "limit":
+            type_code = ORDER_TYPE_BUY_LIMIT if side.value == "buy" else ORDER_TYPE_SELL_LIMIT
+        else:
+            type_code = ORDER_TYPE_BUY_STOP if side.value == "buy" else ORDER_TYPE_SELL_STOP
+        spec = self.broker.symbol(signal.symbol)
+        request = {
+            "action": TRADE_ACTION_PENDING,
+            "symbol": signal.symbol,
+            "volume": volume,
+            "type": type_code,
+            "price": signal.entry,
+            "sl": signal.sl,
+            "tp": signal.tp,
+            "deviation": self.cfg.risk.deviation_points,
+            "magic": self.cfg.risk.magic,
+            "comment": self.cfg.comment[:31],
+            "type_time": ORDER_TIME_GTC,
+            "type_filling": choose_filling(spec.filling_mode),
+        }
+        check = self.broker.order_check(request)
+        if check.retcode not in (0,) and not check.ok:
+            self._emit(
+                "order_check_fail",
+                symbol=signal.symbol,
+                retcode=check.retcode,
+                comment=check.comment,
+            )
+            return check
+        result = self.broker.order_send(request)
+        self._emit(
+            "pending",
+            symbol=signal.symbol,
+            side=side.value,
+            kind=signal.pending_kind,
+            volume=volume,
+            price=signal.entry,
+            sl=signal.sl,
+            tp=signal.tp,
+            ok=result.ok,
+            retcode=result.retcode,
+            order=result.order,
+        )
+        return result
+
+    def orders_text(self) -> str:
+        rows = self.broker.orders(magic=self.cfg.risk.magic)
+        if not rows:
+            return "no pending orders"
+        return "\n".join(
+            f"#{o.ticket} {o.symbol} {_ORDER_TYPE_NAME.get(o.type_code, o.side.value)} "
+            f"{o.volume} @ {o.price} sl={o.sl} tp={o.tp}"
+            for o in rows
+        )
+
+    def cancel_order(self, ticket: int) -> str:
+        for order in self.broker.orders(magic=self.cfg.risk.magic):
+            if order.ticket == ticket:
+                result = self.broker.order_send(
+                    {"action": TRADE_ACTION_REMOVE, "order": ticket}
+                )
+                if not result.ok:
+                    return f"cancel failed retcode={result.retcode} {result.comment}".strip()
+                return f"cancelled #{ticket}"
+        return "not found"
+
+    def _resolve_pending(self) -> None:
+        fn = getattr(self.broker, "resolve_pending", None)
+        if not callable(fn):
+            fn = getattr(self.broker, "resolve_pending_tick", None)
+        if not callable(fn):
+            return
+        fn()
+
+    def _check_stops(self) -> None:
+        for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
+            tick = self.broker.tick(pos.symbol)
+            sl_hit = False
+            tp_hit = False
+            if pos.side.value == "buy":
+                sl_hit = pos.sl > 0 and tick.bid <= pos.sl
+                tp_hit = pos.tp > 0 and tick.bid >= pos.tp
+            else:
+                sl_hit = pos.sl > 0 and tick.ask >= pos.sl
+                tp_hit = pos.tp > 0 and tick.ask <= pos.tp
+            if sl_hit:
+                self._close(pos, "sl")
+            elif tp_hit:
+                self._close(pos, "tp")
+
+    def _detect_fills(self) -> None:
+        now = {p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)}
+        if self._seen_pos is None:
+            self._seen_pos = now
+            return
+        appeared = now - self._seen_pos
+        vanished = self._seen_pos - now
+        for ticket in sorted(appeared):
+            if ticket in self._opened_this_step:
+                continue
+            pos = self._pos(ticket)
+            self._emit(
+                "open",
+                fill=True,
+                ticket=ticket,
+                symbol=pos.symbol if pos else "",
+                side=pos.side.value if pos else "",
+                volume=pos.volume if pos else 0,
+                price=pos.price_open if pos else 0,
+                sl=pos.sl if pos else 0,
+                tp=pos.tp if pos else 0,
+                ok=True,
+                reason="fill",
+            )
+        for ticket in sorted(vanished):
+            if ticket in self._closed_this_step:
+                continue
+            self._emit("close", fill=True, ticket=ticket, reason="fill", ok=True)
+        self._seen_pos = now
 
     def quote_text(self, symbol: str) -> str:
         symbol = symbol.upper()
@@ -500,12 +674,16 @@ class Engine:
             return
         if self._apply_circuit(self.broker.account(), self.now_fn()):
             return
-        if not self.cfg.strategy.auto:
-            return
-        for symbol in self.cfg.symbols:
-            if self.halted:
-                break
-            self.step_symbol(symbol)
+        self._opened_this_step.clear()
+        self._closed_this_step.clear()
+        self._resolve_pending()
+        self._check_stops()
+        if self.cfg.strategy.auto:
+            for symbol in self.cfg.symbols:
+                if self.halted:
+                    break
+                self.step_symbol(symbol)
+        self._detect_fills()
 
 
 def _format_event(event: str, fields: dict[str, Any]) -> str:
@@ -517,20 +695,28 @@ def _format_event(event: str, fields: dict[str, Any]) -> str:
     if event == "stop":
         return "stop"
     if event == "open":
+        tag = "FILL/OPEN" if fields.get("fill") or fields.get("reason") == "fill" else "OPEN"
         return (
-            f"OPEN {fields.get('side')} {fields.get('symbol')} "
+            f"{tag} {fields.get('side')} {fields.get('symbol')} "
             f"vol={fields.get('volume')} @ {fields.get('price')} "
             f"sl={fields.get('sl')} tp={fields.get('tp')} ok={fields.get('ok')}"
         )
     if event == "close":
+        tag = "FILL/CLOSE" if fields.get("fill") or fields.get("reason") == "fill" else "CLOSE"
         return (
-            f"CLOSE {fields.get('symbol')} #{fields.get('ticket')} "
+            f"{tag} {fields.get('symbol')} #{fields.get('ticket')} "
             f"reason={fields.get('reason')} ok={fields.get('ok')}"
         )
     if event == "halt":
         return f"HALT {fields.get('reason')} equity={fields.get('equity')}"
     if event == "order_check_fail":
         return f"order_check_fail {fields.get('symbol')} retcode={fields.get('retcode')}"
+    if event == "pending":
+        return (
+            f"PENDING {fields.get('kind')} {fields.get('side')} {fields.get('symbol')} "
+            f"vol={fields.get('volume')} @ {fields.get('price')} "
+            f"ok={fields.get('ok')} order={fields.get('order')}"
+        )
     return ""
 
 

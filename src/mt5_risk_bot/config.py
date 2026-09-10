@@ -66,7 +66,7 @@ class Mt5Config:
     server: str = ""
 
 
-DEFAULT_TG_EVENTS = ("start", "stop", "open", "close", "halt", "order_check_fail")
+DEFAULT_TG_EVENTS = ("start", "stop", "open", "close", "halt", "order_check_fail", "pending")
 
 
 @dataclass

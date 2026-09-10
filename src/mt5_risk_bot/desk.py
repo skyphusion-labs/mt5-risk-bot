@@ -55,7 +55,8 @@ class Desk:
                 "tp": lambda: self._stop(cmd.args, "tp"),
                 "be": lambda: self._be(cmd.args),
                 "confirm": self._confirm,
-                "cancel": self._cancel,
+                "cancel": lambda: self._cancel(cmd.args),
+                "orders": lambda: self.engine.orders_text(),
                 "history": self._history,
                 "ask": lambda: self._ask(cmd.args),
                 "model": lambda: self._model(cmd.args),
@@ -77,11 +78,14 @@ class Desk:
 
     def _trade(self, kind: SignalKind, args: str, source: str) -> str:
         symbol, kv, pos = parse_kv(args)
+        name = "buy" if kind is SignalKind.BUY else "sell"
         if not symbol:
-            return "usage: /buy EURUSD [sl=] [tp=]"
+            return f"usage: /{name} SYMBOL [sl=] [tp=] [limit=PRICE] [stop=PRICE]"
         sl = _opt_float(kv.get("sl") or (pos[0] if pos else None))
         tp = _opt_float(kv.get("tp") or (pos[1] if len(pos) > 1 else None))
-        sig = self.engine.market_signal(kind, symbol, sl=sl, tp=tp)
+        limit = _opt_float(kv.get("limit"))
+        stop = _opt_float(kv.get("stop"))
+        sig = self.engine.market_signal(kind, symbol, sl=sl, tp=tp, limit=limit, stop=stop)
         return self._stage(sig, source)
 
     def _stage(self, sig: Signal, source: str) -> str:
@@ -96,10 +100,11 @@ class Desk:
             return f"refused: {decision.reason}"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
         self.pending = Pending(sig, decision.volume, source, now + ttl)
+        extra = f" {sig.pending_kind}" if sig.pending_kind else ""
         return (
             f"confirm {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"@ {sig.entry} sl={sig.sl} tp={sig.tp} rr={sig.rr:.2f} "
-            f"source={source}\n/confirm within {ttl}s or /cancel"
+            f"source={source}{extra}\n/confirm within {ttl}s or /cancel"
         )
 
     def _confirm(self) -> str:
@@ -113,10 +118,11 @@ class Desk:
             self.pending = None
             return "refused: halted"
         sig = pending.signal
-        spec = self.engine.broker.symbol(sig.symbol)
-        tick = self.engine.broker.tick(sig.symbol)
-        entry = tick.ask if sig.kind is SignalKind.BUY else tick.bid
-        sig = sig.reprice(entry, spec)
+        if not sig.pending_kind:
+            spec = self.engine.broker.symbol(sig.symbol)
+            tick = self.engine.broker.tick(sig.symbol)
+            entry = tick.ask if sig.kind is SignalKind.BUY else tick.bid
+            sig = sig.reprice(entry, spec)
         decision = self.engine.preview(sig, manual=True)
         if not decision.allowed:
             if decision.halt:
@@ -133,11 +139,16 @@ class Desk:
             f"ok={result.ok} retcode={result.retcode}"
         )
 
-    def _cancel(self) -> str:
-        if self.pending is None:
-            return "nothing to cancel"
-        self.pending = None
-        return "cancelled"
+    def _cancel(self, args: str = "") -> str:
+        token = args.split()[0] if args.strip() else ""
+        if not token:
+            if self.pending is None:
+                return "nothing to cancel"
+            self.pending = None
+            return "cancelled"
+        if not token.isdigit():
+            return "usage: /cancel [TICKET]"
+        return self.engine.cancel_order(int(token))
 
     def _close(self, args: str) -> str:
         parts = args.split()

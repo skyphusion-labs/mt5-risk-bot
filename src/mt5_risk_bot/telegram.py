@@ -116,11 +116,11 @@ def _chunks(text: str, size: int) -> list[str]:
 HELP = (
     "mt5-risk-bot  (not financial advice)\n"
     "/quote SYMBOL\n"
-    "/buy SYMBOL [sl=] [tp=]\n"
-    "/sell SYMBOL [sl=] [tp=]\n"
+    "/buy SYMBOL [sl=] [tp=] [limit=PRICE] [stop=PRICE]\n"
+    "/sell SYMBOL [sl=] [tp=] [limit=PRICE] [stop=PRICE]\n"
     "/close TICKET|SYMBOL|all [VOL]\n"
     "/sl TICKET PRICE   /tp TICKET PRICE   /be TICKET\n"
-    "/confirm  /cancel  /history\n"
+    "/confirm  /cancel [TICKET]  /orders  /history\n"
     "/positions  /status  /ask ...\n"
     "/model grok|claude   /auto on|off\n"
     "/halt  /resume  /help\n"
@@ -133,7 +133,9 @@ class TelegramClient:
     token: str
     chat_id: str
     notify_events: frozenset[str] = field(
-        default_factory=lambda: frozenset({"start", "stop", "open", "close", "halt", "order_check_fail"})
+        default_factory=lambda: frozenset(
+            {"start", "stop", "open", "close", "halt", "order_check_fail", "pending"}
+        )
     )
     transport: Transport = field(default_factory=UrlLibTransport)
     offset: int = 0
