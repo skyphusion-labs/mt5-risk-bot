@@ -84,12 +84,16 @@ class Desk:
         self.engine = engine
         self.advisor = advisor
         self.pending: Pending | None = None
+        self.approve_always = False
 
     def restore_from_journal(self, journal: object, now: float | None = None) -> None:
         last_fn = getattr(journal, "last_event", None)
         if not callable(last_fn):
             return
         rec = last_fn("confirm_stage", "confirm_cancel", "confirm_sent")
+        mode = last_fn("approve_always", "approve_off")
+        if isinstance(mode, dict) and mode.get("event") == "approve_always":
+            self.approve_always = True
         if not isinstance(rec, dict) or rec.get("event") != "confirm_stage":
             return
         stamp = time.time() if now is None else now
@@ -154,6 +158,7 @@ class Desk:
                 "tp": lambda: self._stop(cmd.args, "tp"),
                 "be": lambda: self._be(cmd.args),
                 "confirm": self._confirm,
+                "approve": lambda: self._approve(cmd.args),
                 "cancel": lambda: self._cancel(cmd.args),
                 "orders": lambda: self.engine.orders_text(),
                 "replace": lambda: self._replace(cmd.args),
@@ -206,6 +211,8 @@ class Desk:
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
         self._set_pending(Pending(sig, decision.volume, source, now + ttl))
         extra = f" {sig.pending_kind}" if sig.pending_kind else ""
+        if self.approve_always:
+            return self._confirm()
         return (
             f"confirm {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"@ {sig.entry} sl={sig.sl} tp={sig.tp} rr={sig.rr:.2f} "
@@ -226,6 +233,8 @@ class Desk:
             return "no such ticket"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
         self._set_pending(Pending(None, pos.volume, "advice", now + ttl, close_ticket=ticket))
+        if self.approve_always:
+            return self._confirm()
         return (
             f"confirm close #{ticket} {pos.symbol} vol={pos.volume} "
             f"source=advice\n/confirm within {ttl}s or /cancel"
@@ -305,6 +314,8 @@ class Desk:
             return f"refused: {decision.reason}"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
         self._set_pending(Pending(sig, decision.volume, "telegram", now + ttl, close_ticket=ticket))
+        if self.approve_always:
+            return self._confirm()
         return (
             f"confirm reverse #{ticket} {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"@ {sig.entry} sl={sig.sl} tp={sig.tp} rr={sig.rr:.2f} "
@@ -475,6 +486,41 @@ class Desk:
         if not self.advisor.cfg.enabled:
             return f"switched to {name} but no key is set"
         return f"provider={name}"
+
+    def _live_needs_flag(self) -> bool:
+        cfg = getattr(self.engine, "cfg", None)
+        if cfg is None or getattr(cfg, "mode", "paper") != "mt5":
+            return False
+        if getattr(cfg, "live_accepted", False):
+            return False
+        broker = getattr(self.engine, "broker", None)
+        if broker is None:
+            return False
+        try:
+            acct = broker.account()
+        except Exception:
+            return False
+        return int(getattr(acct, "trade_mode", 0) or 0) == 2
+
+    def _approve(self, args: str) -> str:
+        token = args.strip().lower()
+        if token in {"always", "on"}:
+            if self._live_needs_flag():
+                return (
+                    "real-money: start the bot with --i-accept-risk then "
+                    "/approve always"
+                )
+            self.approve_always = True
+            self._write_confirm("approve_always")
+            return (
+                "approve always. risk still sizes and can refuse. "
+                "/approve off to stage again"
+            )
+        if token in {"off"}:
+            self.approve_always = False
+            self._write_confirm("approve_off")
+            return "approve off. /confirm required"
+        return f"approve={'always' if self.approve_always else 'off'}"
 
     def _auto(self, args: str) -> str:
         token = args.strip().lower()

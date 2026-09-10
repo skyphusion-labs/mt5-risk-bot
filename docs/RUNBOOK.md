@@ -314,8 +314,11 @@ Free text is `/ask`.
 Context includes `/risk`, positions, working orders, and quotes.
 A recommended market, limit, stop, or close-ticket is staged.
 `/confirm` sends it.
+`/approve always` sends after risk preview. No `/confirm` each time.
+`/approve off` restores staging.
 The bot still sizes the order.
 The bot can refuse it.
+Real-money still needs `--i-accept-risk` at start. Then `/approve always` in chat.
 `/auto on` is the only way the EMA regime trades on its own.
 `/trail on` trails open positions each tick.
 It does not turn auto on.

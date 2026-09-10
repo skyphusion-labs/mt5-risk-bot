@@ -186,6 +186,48 @@ def test_parse_advice_json() -> None:
     assert "Stay out" in adv.text
 
 
+def test_approve_always_sends_without_confirm(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    assert "approve=off" in engine.handle_command(TgCommand("1", 1, "/approve", 1))
+    on = engine.handle_command(TgCommand("1", 1, "/approve always", 2))
+    assert "approve always" in on
+    reply = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 3))
+    assert reply.startswith("sent buy")
+    assert engine.broker.positions()
+    assert engine.desk.pending is None
+    engine.handle_command(TgCommand("1", 1, "/close all", 4))
+    engine.handle_command(TgCommand("1", 1, "/approve off", 5))
+    staged = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 6))
+    assert "/confirm" in staged
+    assert not engine.broker.positions()
+    engine.stop()
+
+
+def test_approve_always_survives_restart(tmp_path) -> None:
+    first = _engine(tmp_path)
+    first.start()
+    first.handle_command(TgCommand("1", 1, "/approve always", 1))
+    first.stop()
+    second = _engine(tmp_path)
+    second.start()
+    assert second.desk.approve_always
+    reply = second.handle_command(TgCommand("1", 1, "/buy EURUSD", 2))
+    assert reply.startswith("sent buy")
+    second.stop()
+
+
+def test_approve_always_still_refuses_halt(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/approve always", 1))
+    engine.handle_command(TgCommand("1", 1, "/halt", 2))
+    reply = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 3))
+    assert "refused" in reply
+    assert not engine.broker.positions()
+    engine.stop()
+
+
 def test_auto_toggle(tmp_path) -> None:
     engine = _engine(tmp_path)
     assert engine.cfg.strategy.auto is False

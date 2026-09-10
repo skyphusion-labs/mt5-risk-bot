@@ -65,6 +65,7 @@ Auto EMA trading is off until `/auto on`.
 | `/risk` | Show daily-loss and drawdown room vs caps. |
 | `/buy` `/sell` SYMBOL `[sl=] [tp=] [limit=PRICE] [stop=PRICE]` | Stage a market order, or a working limit/stop. Do not set both limit and stop. |
 | `/confirm` | Market: reprice to the live tick, preview, send. Limit/stop: preview at the staged price, send. |
+| `/approve always\|off` | always: after risk preview, send. No `/confirm`. Default off. Real-money still needs `--i-accept-risk` at start. |
 | `/cancel` | Drop the staged confirm. |
 | `/cancel TICKET` | Cancel a working order. |
 | `/replace TICKET PRICE` | Move a working order entry. Uses `TRADE_ACTION_MODIFY`. The circuit and `risk_pct` still refuse. |
@@ -109,7 +110,7 @@ Remainder must be 0 or at least `volume_min`.
 Advice JSON fields: `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `summary`.
 `limit` and `stop` are XOR.
 A close action with `ticket` stages that close.
-`/confirm` is still the only send.
+Default send is `/confirm`. `/approve always` sends after risk preview.
 Context always includes `/risk`, positions, working orders, and quotes.
 If the next order would trip the circuit, context says hold/close only.
 Buy/sell is not staged.
