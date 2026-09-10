@@ -19,9 +19,9 @@ export XAI_API_KEY=...          # Grok (default)
 # export AI_PROVIDER=claude
 # Computer worker (workspace memory, AI Gateway Unified Billing):
 # export AI_PROVIDER=computer
-# export ADVICE_URL=https://mt5-risk-agent.<account>.workers.dev/ask
-# export ADVICE_TOKEN=...
-# See agent/README.md.
+# export ADVICE_URL=https://mt5-risk-agent.skyphusion.workers.dev/ask
+# export ADVICE_TOKEN=...   # source agent/.dev.vars; never commit
+# See agent/README.md and docs/RUNBOOK.md (Computer advice).
 pytest
 python -m mt5_risk_bot doctor   # gate: telegram ping + paper /buy /confirm /close
 python -m mt5_risk_bot run --mode paper --loop --config config.toml

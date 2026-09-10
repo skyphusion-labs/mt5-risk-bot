@@ -42,7 +42,10 @@ class UrlLibTransport:
         headers: dict[str, str] | None = None,
     ) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
-        hdrs = {"Content-Type": "application/json"}
+        hdrs = {
+            "Content-Type": "application/json",
+            "User-Agent": "mt5-risk-bot/1.0",
+        }
         if headers:
             hdrs.update(headers)
         req = urllib.request.Request(

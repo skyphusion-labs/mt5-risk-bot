@@ -1,35 +1,58 @@
 # mt5-risk-agent
 
 Cloudflare Computer Durable Object that is the desk's advice brain.
-Working memory is the workspace filesystem (`notes.md`, `log.md`, `snapshot.md`).
-Inference goes through AI Gateway Unified Billing (`CF_AIG_TOKEN`), not provider BYOK.
+Working memory is the workspace filesystem (`/workspace/notes.md`,
+`log.md`, `snapshot.md`) plus Computer tools (`read`/`write`/`edit`/`ls`/`grep`).
+Inference is AI Gateway Unified Billing, not provider BYOK.
+
+Live:
+
+- Worker: `https://mt5-risk-agent.skyphusion.workers.dev`
+- Health: `GET /health` -> `ok`
+- Ask: `POST /ask` with `Authorization: Bearer ADVICE_TOKEN`
+- Gateway: `mt5-risk-bot` (account `fabcb25d9c7eb087110ec474a03e50d2`)
+- Model: `xai/grok-4.6`
 
 This package is an early Computer preview. The Python bot still runs next to MT5.
 
+## Inference path (docs)
+
+New calls use the AI Gateway REST API, not `/compat`:
+
+```
+POST https://api.cloudflare.com/client/v4/accounts/{account_id}/ai/v1/chat/completions
+Authorization: Bearer CF_AIG_TOKEN
+cf-aig-gateway-id: mt5-risk-bot
+cf-aig-collect-log-payload: false
+{"model":"xai/grok-4.6","messages":[...]}
+```
+
+See [REST API](https://developers.cloudflare.com/ai-gateway/usage/rest-api/) and
+[Unified Billing](https://developers.cloudflare.com/ai-gateway/features/unified-billing/).
+If `Authorization` is sent on `gateway.ai.cloudflare.com`, the gateway forwards
+that header to xAI as a provider key and Unified Billing is skipped.
+
 ## Secrets (never in git)
+
+Worker secrets: `CF_AIG_TOKEN`, `ADVICE_TOKEN`.
 
 ```
 cd agent
 npx wrangler secret put CF_AIG_TOKEN
 npx wrangler secret put ADVICE_TOKEN
+npx wrangler deploy
 ```
 
-Inference uses the AI Gateway REST API (docs, not `/compat`):
-
-`POST https://api.cloudflare.com/client/v4/accounts/{id}/ai/v1/chat/completions`
-with `Authorization: Bearer CF_AIG_TOKEN` and `cf-aig-gateway-id: mt5-risk-bot`.
-Model: `xai/grok-4.6`. Unified Billing, no provider BYOK. Prompts are not stored
-(`cf-aig-collect-log-payload: false`).
-
-Create gateway `mt5-risk-bot` on account `fabcb25d9c7eb087110ec474a03e50d2` if missing.
+Laptop copy: `agent/.dev.vars` (0600, gitignored). Source it; do not paste tokens
+into chat.
 
 ## Desk
 
 ```
+set -a && source agent/.dev.vars && set +a
 export AI_PROVIDER=computer
-export ADVICE_URL=https://mt5-risk-agent.<account>.workers.dev/ask
-export ADVICE_TOKEN=...
+export ADVICE_URL=https://mt5-risk-agent.skyphusion.workers.dev/ask
 ```
 
-`/ask` and free text POST `{session, question, context}`. Session is the Telegram chat id.
-The agent reads and writes its workspace; it does not send trades.
+`/ask` and free text POST `{session, question, context, model}`. Session is the
+Telegram chat id. The agent does not send trades.

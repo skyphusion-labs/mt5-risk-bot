@@ -79,6 +79,37 @@ fails does not update it. Before a write that would exceed 10 MiB,
 the live journal is renamed to `journal.jsonl.1` (replacing any
 previous `.1`).
 
+## Computer advice (AI Gateway)
+
+The desk can send `/ask` to a Cloudflare Computer Durable Object instead of
+calling xAI or Anthropic directly. Working memory is the DO workspace
+(`notes.md`, `log.md`, `snapshot.md`). Inference is AI Gateway Unified
+Billing. The Python process still does not send trades.
+
+Live worker: `https://mt5-risk-agent.skyphusion.workers.dev/ask`
+Gateway: `mt5-risk-bot` on account `fabcb25d9c7eb087110ec474a03e50d2`
+Model: `xai/grok-4.6` via REST
+`POST https://api.cloudflare.com/client/v4/accounts/{id}/ai/v1/chat/completions`
+with `Authorization: Bearer CF_AIG_TOKEN` and `cf-aig-gateway-id: mt5-risk-bot`.
+Do not put that token on `gateway.ai.cloudflare.com` as `Authorization`;
+the gateway would forward it to xAI as a provider key.
+
+Worker secrets (never git): `CF_AIG_TOKEN`, `ADVICE_TOKEN`.
+Laptop: `agent/.dev.vars` (0600, gitignored).
+
+```bash
+set -a
+source agent/.dev.vars   # ADVICE_TOKEN only on this box
+set +a
+export AI_PROVIDER=computer
+export ADVICE_URL=https://mt5-risk-agent.skyphusion.workers.dev/ask
+python -m mt5_risk_bot doctor
+```
+
+`/model computer` at runtime. Session is the Telegram chat id (one workspace
+per chat). Redeploy: `cd agent && npx wrangler deploy` (needs
+`CLOUDFLARE_API_TOKEN`). Computer is still a Cloudflare preview.
+
 ## Demo
 
 1. Broker demo account. Enable AutoTrading.
