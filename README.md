@@ -1,10 +1,11 @@
 # mt5-risk-bot
 
-Telegram desk for MetaTrader 5. You trade from chat. Grok or Claude
-advises in the same chat. The risk engine sizes and can refuse. No
-profit guarantee.
+Risk-first MetaTrader 5 bot. Paper by default. No profit guarantee.
 
-Auto EMA trading is **off** until you send `/auto on`.
+You trade from Telegram. The risk engine sizes every order. It can refuse.
+Advice never sends. `/confirm` sends.
+
+Auto EMA trading is off until `/auto on`.
 
 ## Run
 
@@ -14,90 +15,52 @@ pip install -e ".[dev]"
 cp config.example.toml config.toml
 export TELEGRAM_BOT_TOKEN=...
 export TELEGRAM_CHAT_ID=...
-export XAI_API_KEY=...          # Grok (default)
-# export ANTHROPIC_API_KEY=...  # Claude
-# export AI_PROVIDER=claude
-# Computer worker (workspace memory, AI Gateway Unified Billing):
-# export AI_PROVIDER=computer
-# export ADVICE_URL=https://mt5-risk-agent.skyphusion.workers.dev/ask
-# export ADVICE_TOKEN=...   # source agent/.dev.vars; never commit
-# See agent/README.md and docs/RUNBOOK.md (Computer advice).
+export XAI_API_KEY=...
 pytest
-python -m mt5_risk_bot doctor   # gate: telegram ping + paper /buy /confirm /close
+python -m mt5_risk_bot doctor
 python -m mt5_risk_bot run --mode paper --loop --config config.toml
 ```
 
-`doctor` must exit 0 before a long-run or any live start. macOS LaunchAgent:
-copy `docs/launchd.plist.example` (paper `--loop`; see `docs/RUNBOOK.md`).
+WARNING: Do not start a long-run until `doctor` exits 0.
 
-`--loop` retries Telegram 429/5xx and re-`initialize`s a dropped MT5
-IPC. `getUpdates` offset is `journal.tg_offset` next to the journal.
-One bad tick is journaled; the process stays up. Two `run --loop` cannot
-share a journal; the second exits 2 (`journal.lock`). Each successful
-tick writes `journal.heartbeat`. The live journal rotates to
-`journal.jsonl.1` at 10 MiB. See `docs/RUNBOOK.md`.
-
-Live/demo needs a running terminal. Official `MetaTrader5` is Windows-only.
-On macOS: MetaTrader 5.app from metatrader5.com plus `pip install mt5-mac`.
+Live and demo need a running terminal. Official `MetaTrader5` is Windows-only.
+On macOS install MetaTrader 5.app from metatrader5.com. Then `pip install mt5-mac`.
+Homebrew does not ship the terminal.
 
 ```bash
 export MT5_LOGIN=...
 export MT5_PASSWORD=...
 export MT5_SERVER=YourBroker-Demo
 python -m mt5_risk_bot doctor --connect --config config.toml
-# non-zero if the binding is missing or login fails
 python -m mt5_risk_bot run --mode mt5 --loop --config config.toml
 ```
 
 Real accounts (`trade_mode=2`) also need `--i-accept-risk`.
-`TELEGRAM_CHAT_ID` is the only accepted chat. Journal, stderr, and
-chat echoes redact BotFather tokens (`[REDACTED]`). `/confirm` is restored
-from the journal if the 120s TTL has not expired. Halt is `touch HALT`
-or `/halt` (process stays up).
-Journal, offset, lock, heartbeat, and HALT files are owner-only (0600);
-the process sets umask 077. Secrets stay in the environment (see
-`SECURITY.md`).
 
-## Chat
+## Advice
 
-`/buy EURUSD` stages a sized market order (ATR stop if you omit `sl=`).
-`/buy EURUSD limit=1.08000 sl=... tp=...` (or `stop=`) stages a working
-order. `/confirm` sends it. `/orders` lists working orders; `/cancel TICKET`
-drops one. Bare `/cancel` drops a staged confirm.
+Default: Grok via `XAI_API_KEY`. Claude via `ANTHROPIC_API_KEY` and
+`AI_PROVIDER=claude`.
 
-`/quote` with no symbol lists the book. `/symbols list|add|remove`
-edits that book at runtime. `/risk` shows daily-loss and
-drawdown room. `/sl` `/tp` TICKET work on positions and working orders.
-`/replace TICKET PRICE` moves a working order's entry.
-`/reverse TICKET` stages a flip. `/confirm` is two market sends: close
-the ticket, then the opposite side, sized by the risk engine. If the
-circuit refuses after the close, you are left flat.
-`/closeby TICKET OTHER` offsets two opposite hedges on the same
-symbol (`TRADE_ACTION_CLOSE_BY`). Hedge accounts only; a netting
-terminal refuses it. Paper always hedges. Remainder stays if volumes
-differ. Paper P/L is not live P/L.
-`/tp TICKET PRICE VOL` scales out VOL at PRICE; the rest stays.
-`/trail TICKET` moves SL using the ATR trail and never loosens.
-`/trail on` does that every tick for open positions and does not enable
-EMA entries. Default off.
+Computer (workspace memory, AI Gateway Unified Billing):
 
-SL/TP and pending fills still alert in Telegram when `/auto` is off.
-A UTC day roll sends a recap (equity vs day start, last journal lines).
-`/recap` dumps that now. Not a trade.
-Paper is the default. Live real accounts need `--i-accept-risk`.
+```bash
+set -a && source agent/.dev.vars && set +a
+export AI_PROVIDER=computer
+export ADVICE_URL=https://mt5-risk-agent.skyphusion.workers.dev/ask
+```
 
-Free text is advice. The model may stage a market, `limit=`, `stop=`, or
-close-ticket order. `/confirm` is the only send. If the circuit would
-halt, advice is hold/close only. `/help` for the rest.
+Do not commit `ADVICE_TOKEN`. See `agent/README.md`.
 
 ## Docs
 
-`docs/CONTRACT.md` is the behaviour tests enforce.
-`docs/RUNBOOK.md` is paper, live, HALT, confirm-on-restart, lock,
-heartbeat, journal rotate, and launchd.
-`docs/launchd.plist.example` is a user LaunchAgent (paper `--loop`,
-`KeepAlive`, `Umask` 63; watchdog `journal.heartbeat` under
-`WorkingDirectory`). Tokens stay `REPLACE_ME` in the example.
+| File | What |
+| --- | --- |
+| `docs/CONTRACT.md` | Behaviour the tests enforce |
+| `docs/MT5-API.md` | Python API this bot uses |
+| `docs/RUNBOOK.md` | Operate, halt, demo, live |
+| `agent/README.md` | Computer worker and AI Gateway |
+| `SECURITY.md` | Secrets and redaction |
 
 ## License
 
