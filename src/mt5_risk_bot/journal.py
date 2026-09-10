@@ -3,10 +3,16 @@
 from __future__ import annotations
 
 import json
+import re
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
+
+_SECRET_KEYS = frozenset({"token", "password", "api_key", "grok_key", "claude_key"})
+_REDACTED = "[REDACTED]"
+# BotFather tokens: <id>:<secret> with 8-12 digit id and 30+ url-safe chars.
+_TG_TOKEN_RE = re.compile(r"\d{8,12}:[A-Za-z0-9_-]{30,}")
 
 
 class Journal:
@@ -20,6 +26,7 @@ class Journal:
             "event": event,
             **{k: _jsonable(v) for k, v in fields.items()},
         }
+        rec = _redact(rec)
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(json.dumps(rec, default=str) + "\n")
 
@@ -40,6 +47,22 @@ class Journal:
             if isinstance(rec, dict):
                 out.append(rec)
         return out
+
+
+def _redact(v: Any) -> Any:
+    if isinstance(v, dict):
+        out: dict[str, Any] = {}
+        for k, val in v.items():
+            if str(k).lower() in _SECRET_KEYS:
+                out[k] = _REDACTED
+            else:
+                out[k] = _redact(val)
+        return out
+    if isinstance(v, (list, tuple)):
+        return [_redact(x) for x in v]
+    if isinstance(v, str):
+        return _TG_TOKEN_RE.sub(_REDACTED, v)
+    return v
 
 
 def _jsonable(v: Any) -> Any:
