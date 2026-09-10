@@ -60,8 +60,8 @@ off until `/auto on`.
 | `/replace TICKET PRICE` | move a working order's entry; `TRADE_ACTION_MODIFY`. Circuit and risk_pct still refuse |
 | `/orders` | list working orders |
 | `/close TICKET\|SYMBOL\|all [VOL]` | flatten or partial close |
-| `/closeby TICKET OTHER` | close two opposite positions against each other (`TRADE_ACTION_CLOSE_BY`). Same symbol, opposite sides. Remainder 0 or at least `volume_min`. Not a new send |
-| `/reverse TICKET [sl=] [tp=]` | flatten then opposite market; `/confirm` sends. Mirrors SL/TP distances if omitted. Preview excludes that ticket. Circuit and risk_pct still refuse |
+| `/closeby TICKET OTHER` | hedge-account only. `TRADE_ACTION_CLOSE_BY` offsets two opposite tickets. Same symbol, opposite sides. Remainder 0 or at least `volume_min`. Not a new send. Netting terminals refuse CLOSE_BY. Paper always hedges |
+| `/reverse TICKET [sl=] [tp=]` | two market sends: close the ticket, then the opposite side. `/confirm` is the send. Stage/preview exclude that ticket. Mirrors SL/TP distances if omitted. Circuit and risk_pct still refuse; after flatten they can leave you flat |
 | `/sl` TICKET PRICE | modify a position or a working order; success only if the broker applied it |
 | `/tp` TICKET PRICE `[VOL]` | full TP, or scale-out VOL at PRICE (partial close when hit). Circuit still refuses |
 | `/be TICKET` | move SL to entry; never loosen |
@@ -80,9 +80,9 @@ Advice JSON fields: `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `
 
 Buy limit must be below ask; sell limit above bid; buy stop above ask; sell stop below bid. `limit=` and `stop=` together are refused. `/replace TICKET PRICE` keeps that geometry and existing SL/TP; it does not send a new order.
 
-`/reverse TICKET` stages a close plus the opposite market. `/confirm` is the send. Default SL/TP mirror the open trade's distances around the live bid/ask. Risk sizes the new side independently. Halt, daily-loss, and drawdown still refuse; if they refuse, the ticket stays open. Reverse is for open positions, not working orders.
+`/reverse TICKET` stages a close plus the opposite market. `/confirm` is two market sends, not one: first a close of that ticket, then an opposite market deal. Default SL/TP mirror the open trade's distances around the live bid/ask. Risk sizes the new side independently. Staging and the first confirm preview exclude that ticket so `already_in_symbol` does not block; halt, daily-loss, drawdown, and risk_pct still refuse, and the ticket stays open. After the close send succeeds, preview runs again on the live book. Realized P/L can trip the circuit or leave no room for `risk_pct`; the reply is `closed #TICKET; reverse refused: ...` and there is no opposite position. A failed opposite send is `closed #TICKET; send failed ...`. Reverse is for open positions, not working orders.
 
-`/closeby TICKET OTHER` is a flatten, not a new order. Both tickets must be this magic, same symbol, opposite sides. Overlap volume closes; the larger side keeps the remainder. Same ticket, same side, or a leftover below `volume_min` is refused. Paper supported.
+`/closeby TICKET OTHER` is a flatten, not a new order. Both tickets must be this magic, same symbol, opposite sides. Overlap volume closes; the larger side keeps the remainder. Same ticket, same side, or a leftover below `volume_min` is refused. Live CLOSE_BY is hedge-account only; a netting terminal refuses it (one net position per symbol, no opposite ticket). Paper always hedges: each deal is its own ticket, so close-by works in paper even when a live netting account would not. Paper P/L is not live P/L.
 
 Each loop tick resolves pending fills and SL/TP even when `/auto` is off. Pending fills notify as `FILL/OPEN`; SL/TP hits notify as `CLOSE` with `reason=sl` or `reason=tp`. `/trail on` runs `manage()` on open positions every `step_all` tick and does not enable EMA entries. `/auto on` still owns entries. Trail default is off.
 
@@ -101,7 +101,9 @@ still `confirm_stage` and the TTL has not expired.
 
 `doctor` pings Telegram when the token is set, and always runs an
 in-process paper `/buy` `/confirm` `/close`. No live terminal required.
-`--connect` is the optional MT5 login check.
+`--connect` is the optional MT5 login check (binding, login, `trade_mode`).
+Production live is `doctor --connect` then `run --mode mt5`. `trade_mode=2`
+still needs `--i-accept-risk`.
 
 ## Gate
 

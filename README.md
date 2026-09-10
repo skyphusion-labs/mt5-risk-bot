@@ -56,10 +56,13 @@ drops one. Bare `/cancel` drops a staged confirm.
 edits that book at runtime. `/risk` shows daily-loss and
 drawdown room. `/sl` `/tp` TICKET work on positions and working orders.
 `/replace TICKET PRICE` moves a working order's entry.
-`/reverse TICKET` stages a flip: close then opposite market, sized
-by the risk engine. `/confirm` sends it.
-`/closeby TICKET OTHER` offsets two opposite positions on the same
-symbol. Remainder stays if volumes differ.
+`/reverse TICKET` stages a flip. `/confirm` is two market sends: close
+the ticket, then the opposite side, sized by the risk engine. If the
+circuit refuses after the close, you are left flat.
+`/closeby TICKET OTHER` offsets two opposite hedges on the same
+symbol (`TRADE_ACTION_CLOSE_BY`). Hedge accounts only; a netting
+terminal refuses it. Paper always hedges. Remainder stays if volumes
+differ. Paper P/L is not live P/L.
 `/tp TICKET PRICE VOL` scales out VOL at PRICE; the rest stays.
 `/trail TICKET` moves SL using the ATR trail and never loosens.
 `/trail on` does that every tick for open positions and does not enable

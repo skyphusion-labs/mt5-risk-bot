@@ -218,6 +218,32 @@ set both `limit=` and `stop=`. Bare `/cancel` drops a staged confirm;
 flattens positions. `/resume` only clears that file. Daily-loss and
 max-drawdown cannot be cleared from Telegram.
 
+`/closeby` is hedge-account only. `/reverse` is two market sends (close
+then opposite); the circuit can leave you flat after `/confirm` already
+closed the ticket. See Live desk limits.
+
+## Live desk limits
+
+Nothing here guarantees profit. Paper P/L is not live P/L.
+
+`/closeby TICKET OTHER` is hedge-account only. It sends
+`TRADE_ACTION_CLOSE_BY`. A netting terminal refuses CLOSE_BY: you cannot
+hold two tickets on one symbol, so there is no opposite ticket to close
+against. Paper always hedges (a new ticket per deal), so close-by works
+in paper even when a live netting account would not.
+
+`/reverse TICKET` is two market sends. `/reverse` stages; `/confirm` first
+closes the ticket, then sends the opposite side. Staging and the first
+confirm preview exclude that ticket; if halt, daily-loss, drawdown, or
+risk_pct refuse then, the ticket stays open. After the close send
+succeeds, preview runs again. Realized P/L can trip the circuit or leave
+no room to size the new side; you are left flat (`closed #TICKET; reverse
+refused: ...`). A failed opposite send is the same shape (`closed #TICKET;
+send failed ...`).
+
+Production live: `doctor --connect` must exit 0 before `run --mode mt5`.
+`trade_mode=2` also needs `--i-accept-risk`. Demo (`trade_mode=0`) does not.
+
 ## Journal
 
 JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`,
