@@ -77,13 +77,31 @@ is fully up.
 
 Free text is `/ask`. A recommended trade is staged; `/confirm` sends it
 through the risk engine. `/auto on` is the only way the EMA regime trades
-on its own.
+on its own. SL/TP hits and pending fills still alert in Telegram when
+auto is off.
 
-`/halt` writes `HALT` and flattens. `/resume` only clears that file.
-Daily-loss and max-drawdown cannot be cleared from Telegram.
+Paper is the default (`account.mode = "paper"`). Real accounts still need
+`--i-accept-risk`.
+
+Stage a working order, then confirm:
+
+```
+/buy EURUSD limit=1.08000 sl=1.07800 tp=1.08300
+/confirm
+/orders
+/cancel TICKET
+```
+
+`stop=` is the same shape (`/sell EURUSD stop=... sl=... tp=...`). Do not
+set both `limit=` and `stop=`. Bare `/cancel` drops a staged confirm;
+`/cancel TICKET` cancels a working order.
+
+`/halt` writes `HALT`, drops the confirm, cancels working orders, and
+flattens positions. `/resume` only clears that file. Daily-loss and
+max-drawdown cannot be cleared from Telegram.
 
 ## Journal
 
 JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`,
-`halt`, `order_check_fail`, `stop`. Grep `reject` if it never trades;
-`outside_session` and `no_regime` are the usual reasons.
+`halt`, `order_check_fail`, `pending`, `stop`. Grep `reject` if it never
+trades; `outside_session` and `no_regime` are the usual reasons.

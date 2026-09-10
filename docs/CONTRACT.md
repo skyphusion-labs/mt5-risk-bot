@@ -20,9 +20,12 @@ off until `/auto on`.
   flattens this magic and halts until the next UTC day.
 - Drawdown of `max_drawdown_pct` (default 10%) from peak equity flattens
   and stays halted until an operator inspects and restarts.
-- `HALT` or `/halt` flattens immediately.
+- `HALT` or `/halt` flattens immediately (positions and working orders).
 - Real-money accounts (`trade_mode = 2`) refuse orders unless
-  `--i-accept-risk` was passed.
+  `--i-accept-risk` was passed. Paper is the default mode.
+- SL/TP hits and pending-order fills emit Telegram alerts even when
+  `/auto` is off. Default notify events include `open`, `close`, and
+  `pending`.
 - Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`,
   `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`,
   `ANTHROPIC_API_KEY`, `AI_PROVIDER`.
@@ -32,7 +35,8 @@ off until `/auto on`.
 - Consistent positive returns.
 - That Grok or Claude is a signal you should follow blindly.
 - Paper P/L equals live P/L. Paper fills at bid/ask. Same-bar SL and TP:
-  SL wins.
+  SL wins. Paper pending limit/stop fills on tick (bid/ask vs price) or
+  bar (high/low vs price).
 
 ## Modes
 
@@ -46,18 +50,25 @@ off until `/auto on`.
 | Command | Effect |
 | --- | --- |
 | `/quote SYMBOL` | bid/ask plus ATR/ADX/EMA when bars exist |
-| `/buy` `/sell` SYMBOL `[sl=] [tp=]` | stage a market order |
-| `/confirm` `/cancel` | reprice to the live tick, risk-check, send; or drop |
+| `/buy` `/sell` SYMBOL `[sl=] [tp=] [limit=PRICE] [stop=PRICE]` | stage market, or a working limit/stop (not both) |
+| `/confirm` | market: reprice to the live tick, preview, send. limit/stop: preview at the staged price, send |
+| `/cancel` | drop the staged confirm |
+| `/cancel TICKET` | cancel a working order |
+| `/orders` | list working orders |
 | `/close TICKET\|SYMBOL\|all [VOL]` | flatten or partial close |
 | `/sl` `/tp` TICKET PRICE | modify; success only if the broker applied it |
 | `/be TICKET` | move SL to entry; never loosen |
 | `/history` | last journal events |
 | `/ask ...` or free text | Grok or Claude (last 6 turns), may stage a trade |
 | `/model grok\|claude` | switch provider |
-| `/auto on\|off` | optional EMA regime |
-| `/status` `/positions` `/halt` `/resume` | account; `/halt` flattens and drops pending |
+| `/auto on\|off` | optional EMA regime; fill alerts do not wait for this |
+| `/status` `/positions` `/halt` `/resume` | account; `/halt` flattens, drops the confirm, and cancels working orders |
 
-`/confirm` reprices and re-runs `preview`. Halt, daily-loss, and drawdown still refuse. The reply includes `ok` and `retcode`; only `OrderResult.ok` starts with `sent `. A second `/buy` while a pending is live is refused until `/cancel`. Advice never overwrites a live pending. Close and SL/TP success replies come from `OrderResult.ok`, not from "the ticket existed".
+`/confirm` for a market order reprices and re-runs `preview`. A limit or stop keeps the staged price. Halt, daily-loss, and drawdown still refuse. The reply includes `ok` and `retcode`; only `OrderResult.ok` starts with `sent `. A second `/buy` while a confirm is live is refused until `/cancel`. Advice never overwrites a live confirm. Close and SL/TP success replies come from `OrderResult.ok`, not from "the ticket existed".
+
+Buy limit must be below ask; sell limit above bid; buy stop above ask; sell stop below bid. `limit=` and `stop=` together are refused.
+
+Each loop tick resolves pending fills and SL/TP even when `/auto` is off. Pending fills notify as `FILL/OPEN`; SL/TP hits notify as `CLOSE` with `reason=sl` or `reason=tp`.
 
 Manual `/buy` `/sell` skip the session window. Auto does not.
 

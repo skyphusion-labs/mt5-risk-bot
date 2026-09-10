@@ -36,9 +36,16 @@ Real accounts (`trade_mode=2`) also need `--i-accept-risk`.
 
 ## Chat
 
-`/buy EURUSD` stages a sized order (ATR stop if you omit `sl=`). `/confirm`
-sends it. Free text is advice; if the model recommends a trade, that is
-staged too. `/help` for the rest.
+`/buy EURUSD` stages a sized market order (ATR stop if you omit `sl=`).
+`/buy EURUSD limit=1.08000 sl=... tp=...` (or `stop=`) stages a working
+order. `/confirm` sends it. `/orders` lists working orders; `/cancel TICKET`
+drops one. Bare `/cancel` drops a staged confirm.
+
+SL/TP and pending fills still alert in Telegram when `/auto` is off.
+Paper is the default. Live real accounts need `--i-accept-risk`.
+
+Free text is advice; if the model recommends a trade, that is staged too.
+`/help` for the rest.
 
 ## Docs
 
