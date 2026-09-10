@@ -3,7 +3,7 @@ from io import BytesIO
 
 import urllib.error
 
-from wincompat import assert_owner_mode
+from wincompat import assert_owner_mode, assert_same_path
 from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.config import AdviceConfig, BotConfig, TelegramConfig
 from mt5_risk_bot.engine import Engine
@@ -324,8 +324,8 @@ def test_http_error_status_and_no_token_leak(monkeypatch) -> None:
 
 
 def test_offset_path_for_uses_journal_stem() -> None:
-    assert offset_path_for("journal.jsonl") == "journal.tg_offset"
-    assert offset_path_for("/tmp/desk.jsonl") == "/tmp/desk.tg_offset"
+    assert_same_path(offset_path_for("journal.jsonl"), "journal.tg_offset")
+    assert_same_path(offset_path_for("/tmp/desk.jsonl"), "/tmp/desk.tg_offset")
 
 
 def test_offset_not_persisted_until_ack(tmp_path) -> None:
@@ -359,7 +359,7 @@ def test_poll_telegram_acks_after_handle(tmp_path) -> None:
     tg = TelegramClient(token="t", chat_id="1", transport=tr, offset_path=path)
     engine = Engine(cfg, PaperBroker(balance=10_000), halt_dir=str(tmp_path), telegram=tg)
     engine.poll_telegram()
-    assert path == offset_path_for(cfg.journal_path)
+    assert_same_path(path, offset_path_for(cfg.journal_path))
     assert (tmp_path / "j.tg_offset").read_text(encoding="utf-8").strip() == "6"
     loaded = TelegramClient(token="t", chat_id="1", transport=FakeTransport(), offset_path=path)
     assert loaded.offset == 6

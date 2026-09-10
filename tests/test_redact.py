@@ -4,7 +4,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
-from wincompat import assert_owner_mode
+from wincompat import assert_owner_mode, assert_same_path
 from mt5_risk_bot.journal import (
     InstanceLock,
     InstanceLockError,
@@ -92,8 +92,8 @@ def test_journal_file_is_0600_after_write(tmp_path: Path) -> None:
 
 
 def test_lock_path_for_uses_journal_stem() -> None:
-    assert lock_path_for("journal.jsonl") == Path("journal.lock")
-    assert lock_path_for("/tmp/desk.jsonl") == Path("/tmp/desk.lock")
+    assert_same_path(lock_path_for("journal.jsonl"), "journal.lock")
+    assert_same_path(lock_path_for("/tmp/desk.jsonl"), "/tmp/desk.lock")
 
 
 def test_instance_lock_file_is_0600(tmp_path: Path) -> None:
