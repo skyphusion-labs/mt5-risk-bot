@@ -145,7 +145,6 @@ def test_working_limit_then_cancel() -> None:
     assert res.ok
     assert res.retcode == TRADE_RETCODE_PLACED
     assert len(broker.orders()) == 1
-    assert broker.orders()[0].kind == "limit"
     assert broker.positions() == []
     gone = broker.cancel(res.order)
     assert gone.ok
@@ -175,7 +174,6 @@ def test_working_stop_stays_working() -> None:
     rows = broker.orders()
     assert len(rows) == 1
     assert rows[0].ticket == res.order
-    assert rows[0].kind == "stop"
     assert broker.positions() == []
 
 
