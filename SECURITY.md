@@ -20,6 +20,7 @@ ignored (the update is still consumed). Replies go only to that chat.
 
 `journal.jsonl` is chmod 0600 on open and after each write.
 `journal.tg_offset` is chmod 0600 on each persist.
+`HALT` is chmod 0600 when the process writes it.
 
 A real-money account is refused unless the process was started with
 `--i-accept-risk`.

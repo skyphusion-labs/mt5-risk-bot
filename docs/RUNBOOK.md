@@ -104,6 +104,8 @@ The `HALT` path is relative to the process working directory (LaunchAgent
 `WorkingDirectory`). Remove the file and `/resume` (or restart, if you
 are clearing drawdown) when you intend to resume.
 
+`main()` sets umask 077 so files the process creates are owner-only.
+
 ## Confirm
 
 `/confirm` TTL is `telegram.confirm_seconds` (default 120). Staging
