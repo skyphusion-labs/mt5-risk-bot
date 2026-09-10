@@ -35,7 +35,8 @@ void Process()
    if(!FileIsExist("mt4_risk_bot.req", FILE_COMMON))
       return;
    gBusy = true;
-   int h = FileOpen("mt4_risk_bot.req", FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   int share = FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE;
+   int h = FileOpen("mt4_risk_bot.req", share);
    if(h == INVALID_HANDLE)
    {
       gBusy = false;
@@ -47,12 +48,14 @@ void Process()
    FileClose(h);
    FileDelete("mt4_risk_bot.req", FILE_COMMON);
    string reply = Handle(body);
-   int w = FileOpen("mt4_risk_bot.res", FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON);
+   int w = FileOpen("mt4_risk_bot.res.tmp", FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(w != INVALID_HANDLE)
    {
       FileWriteString(w, reply);
       FileFlush(w);
       FileClose(w);
+      FileDelete("mt4_risk_bot.res", FILE_COMMON);
+      FileMove("mt4_risk_bot.res.tmp", FILE_COMMON, "mt4_risk_bot.res", FILE_COMMON);
    }
    gBusy = false;
 }

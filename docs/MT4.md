@@ -13,9 +13,14 @@ Engine still sends `MarketOrder` and `WorkingOrder` only.
 Directory: `mt4.files_dir` or `MT4_FILES_DIR`.
 That path is Terminal Common Files, not the data folder for one install.
 
+Windows default if the key is empty:
+
 ```
 %APPDATA%\MetaQuotes\Terminal\Common\Files
 ```
+
+`%APPDATA%` in a configured path expands. The bot and the terminal must run
+on the same Windows host. `journal.lock` uses `msvcrt.locking` there.
 
 | File | Writer | Reader |
 | --- | --- | --- |

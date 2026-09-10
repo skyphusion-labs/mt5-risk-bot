@@ -7,6 +7,7 @@ Terminal Common Files. Engine still sees MarketOrder / WorkingOrder only.
 
 from __future__ import annotations
 
+import sys
 import threading
 import time
 from pathlib import Path
@@ -161,8 +162,43 @@ def _split_row(text: str, fields: tuple[str, ...]) -> dict[str, Any]:
     return out
 
 
+def _mailbox_encoding() -> str:
+    # FILE_ANSI on Windows is the ANSI code page. latin-1 is 8-bit clean.
+    if sys.platform == "win32":
+        return "mbcs"
+    return "utf-8"
+
+
+def _retry_unlink(path: Path, deadline: float) -> None:
+    while True:
+        try:
+            path.unlink(missing_ok=True)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+
+
+def _atomic_write(path: Path, text: str, deadline: float) -> None:
+    tmp = path.with_name(path.name + ".tmp")
+    tmp.write_text(text, encoding=_mailbox_encoding(), errors="replace", newline="\n")
+    while True:
+        try:
+            tmp.replace(path)
+            return
+        except PermissionError:
+            if time.monotonic() >= deadline:
+                raise
+            time.sleep(0.02)
+
+
 class FileBridge:
-    """Mailbox in MT4 FILE_COMMON. EA reads .req and writes .res."""
+    """Mailbox in MT4 FILE_COMMON. EA reads .req and writes .res.
+
+    Windows NTFS will refuse unlink/replace while the terminal holds the
+    handle. Retry until timeout. Protocol lines are LF even on Windows.
+    """
 
     def __init__(self, directory: str | Path, timeout_sec: float = 5.0) -> None:
         self.dir = Path(directory)
@@ -180,25 +216,22 @@ class FileBridge:
         req_id = self._n
         req = self.dir / REQ_NAME
         res = self.dir / RES_NAME
-        tmp = self.dir / (REQ_NAME + ".tmp")
-        if res.exists():
-            res.unlink()
-        if req.exists():
-            req.unlink()
-        tmp.write_text(encode(op, payload, req_id), encoding="ascii")
-        tmp.replace(req)
         deadline = time.monotonic() + self.timeout
+        _retry_unlink(res, deadline)
+        _retry_unlink(req, deadline)
+        _atomic_write(req, encode(op, payload, req_id), deadline)
+        enc = _mailbox_encoding()
         while time.monotonic() < deadline:
             if res.exists():
                 try:
-                    text = res.read_text(encoding="ascii", errors="replace")
+                    text = res.read_text(encoding=enc, errors="replace")
                 except OSError:
                     time.sleep(0.02)
                     continue
                 data = decode(text)
                 if int(data.get("id", 0) or 0) == req_id:
-                    res.unlink(missing_ok=True)
-                    req.unlink(missing_ok=True)
+                    _retry_unlink(res, deadline)
+                    _retry_unlink(req, deadline)
                     return data
             time.sleep(0.02)
         raise RuntimeError("mt4 bridge timeout")

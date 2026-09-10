@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mt5-risk-bot"
-version = "1.1.0"
+version = "1.1.1"
 description = "Risk-first MetaTrader desk. Paper by default. No profit guarantee."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -37,7 +37,7 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
-pythonpath = ["src"]
+pythonpath = ["src", "tests"]
 addopts = "--cov=mt5_risk_bot --cov-report=term-missing --cov-fail-under=80"
 
 [tool.coverage.run]

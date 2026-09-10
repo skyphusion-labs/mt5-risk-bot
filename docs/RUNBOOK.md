@@ -117,11 +117,14 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
 MetaTrader 4 has no official Python package.
 Copy `mt4/Experts/Mt4RiskBot.mq4` into `MQL4/Experts`.
 Compile it. Attach it to one chart. Enable AutoTrading.
-Set `mt4.files_dir` (or `MT4_FILES_DIR`) to Common Files:
+Set `mt4.files_dir` (or `MT4_FILES_DIR`) to Common Files.
+On Windows, omit it. Default:
 
 ```
 %APPDATA%\MetaQuotes\Terminal\Common\Files
 ```
+
+The Python bot runs on that same Windows host. `fcntl` is not used there.
 
 `doctor --connect` is the gate (mailbox ping, `account`, `trade_mode`).
 It is non-zero if the Expert is missing, the folder is wrong, or the ping times out.
@@ -359,7 +362,7 @@ launchctl bootout gui/$(id -u)/org.skyphusion.mt5-risk-bot
 `Umask` 63 is 077, matching `main()`.
 Watchdog liveness is `journal.heartbeat` next to the journal (ISO ts, chmod 0600).
 Stale mtime means the loop is not ticking.
-The flock is released when the bot dies.
+The lock is released when the bot dies.
 The new bot can acquire `journal.lock`.
 A leftover `journal.lock` file is not a held lock.
 The confirm is restored from the live journal if the TTL has not expired.
@@ -490,7 +493,8 @@ Grep `reject` if it never trades.
 `loop_error` is a tick that raised.
 The bot kept running.
 `journal.tg_offset` is the Telegram `getUpdates` cursor (not JSONL).
-`journal.lock` is an exclusive flock so two loops cannot share the journal or offset.
+`journal.lock` is an exclusive lock so two loops cannot share the journal or offset.
+Unix: flock. Windows: msvcrt.locking.
 `journal.heartbeat` is an ISO timestamp rewritten each successful `step_all`.
 Before a write that would exceed 10 MiB, the live file is renamed to `journal.jsonl.1`.
 That is one generation.

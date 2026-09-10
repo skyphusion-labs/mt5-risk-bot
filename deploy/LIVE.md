@@ -39,8 +39,19 @@ python -m mt5_risk_bot doctor --connect
 python -m mt5_risk_bot run --mode mt5 --loop
 ```
 
-On an MT4 host, attach `Mt4RiskBot.mq4`, set `ACCOUNT_MODE=mt4` and
-`MT4_FILES_DIR`, then `run --mode mt4 --loop`. See `docs/MT4.md`.
+On a Windows MT4 host, attach `Mt4RiskBot.mq4`. `ACCOUNT_MODE=mt4`.
+`MT4_FILES_DIR` may be omitted (Common Files default). Then
+`run --mode mt4 --loop`. See `docs/MT4.md`.
+
+cmd.exe:
+
+```
+set ACCOUNT_MODE=mt4
+set TELEGRAM_BOT_TOKEN=...
+set TELEGRAM_CHAT_ID=...
+python -m mt5_risk_bot doctor --connect
+python -m mt5_risk_bot run --mode mt4 --loop
+```
 
 5. Demo (`trade_mode=0`) does not need `/live on`.
 6. Real money (`trade_mode=2`): `/live on I-ACCEPT-RISK` then `/approve always`.

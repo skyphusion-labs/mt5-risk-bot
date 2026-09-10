@@ -4,6 +4,7 @@ import sys
 from dataclasses import dataclass
 from pathlib import Path
 
+from wincompat import assert_owner_mode
 from mt5_risk_bot.journal import (
     InstanceLock,
     InstanceLockError,
@@ -87,7 +88,7 @@ def test_redact_text_strips_botfather_token() -> None:
 def test_journal_file_is_0600_after_write(tmp_path: Path) -> None:
     path = tmp_path / "journal.jsonl"
     Journal(path).write("ping")
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert_owner_mode(path)
 
 
 def test_lock_path_for_uses_journal_stem() -> None:
@@ -102,7 +103,7 @@ def test_instance_lock_file_is_0600(tmp_path: Path) -> None:
     try:
         path = lock_path_for(journal)
         assert path.exists()
-        assert path.stat().st_mode & 0o777 == 0o600
+        assert_owner_mode(path)
     finally:
         lock.release()
 
@@ -144,7 +145,7 @@ def test_instance_lock_acquire_raises_when_flock_blocks(tmp_path: Path, monkeypa
     def blocked(*_args, **_kwargs):
         raise BlockingIOError("locked")
 
-    monkeypatch.setattr("mt5_risk_bot.journal.fcntl.flock", blocked)
+    monkeypatch.setattr("mt5_risk_bot.journal._lock_nb", blocked)
     lock = InstanceLock(journal)
     try:
         lock.acquire()

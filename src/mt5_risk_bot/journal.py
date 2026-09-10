@@ -8,10 +8,10 @@ Rotated history is <name>.1.
 
 from __future__ import annotations
 
-import fcntl
 import json
 import os
 import re
+import sys
 from collections import deque
 from datetime import datetime, timezone
 from pathlib import Path
@@ -29,7 +29,7 @@ class Journal:
         self.path = Path(path)
         self.path.parent.mkdir(parents=True, exist_ok=True)
         if self.path.exists():
-            os.chmod(self.path, 0o600)
+            _chmod600(self.path)
 
     def write(self, event: str, **fields: Any) -> None:
         rec = {
@@ -42,7 +42,7 @@ class Journal:
         self._rotate_if_needed(len(line.encode("utf-8")))
         with self.path.open("a", encoding="utf-8") as fh:
             fh.write(line)
-        os.chmod(self.path, 0o600)
+        _chmod600(self.path)
 
     def _rotate_if_needed(self, incoming: int) -> None:
         if not self.path.exists():
@@ -53,7 +53,7 @@ class Journal:
         dest = self.path.with_name(self.path.name + ".1")
         self.path.replace(dest)
         self.path.touch()
-        os.chmod(self.path, 0o600)
+        _chmod600(self.path)
 
     def tail(self, n: int = 20) -> list[dict[str, Any]]:
         if n <= 0 or not self.path.exists():
@@ -103,7 +103,10 @@ def lock_path_for(journal_path: str | Path) -> Path:
 
 
 class InstanceLock:
-    """Exclusive flock next to the journal. Released on close or crash."""
+    """Exclusive lock next to the journal. Released on close or crash.
+
+    Unix: flock. Windows: msvcrt.locking. Same file, same fail.
+    """
 
     def __init__(self, journal_path: str | Path) -> None:
         self.path = lock_path_for(journal_path)
@@ -112,10 +115,10 @@ class InstanceLock:
     def acquire(self) -> None:
         self.path.parent.mkdir(parents=True, exist_ok=True)
         fh = self.path.open("a+", encoding="utf-8")
-        os.chmod(self.path, 0o600)
+        _chmod600(self.path)
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_EX | fcntl.LOCK_NB)
-        except BlockingIOError as exc:
+            _lock_nb(fh)
+        except OSError as exc:
             fh.close()
             raise InstanceLockError(
                 f"already running: another process holds {self.path} "
@@ -129,7 +132,7 @@ class InstanceLock:
         if fh is None:
             return
         try:
-            fcntl.flock(fh.fileno(), fcntl.LOCK_UN)
+            _unlock(fh)
         finally:
             fh.close()
 
@@ -161,6 +164,44 @@ def redact(v: Any) -> Any:
     if isinstance(v, str):
         return redact_text(v)
     return v
+
+
+def _chmod600(path: Path) -> None:
+    try:
+        os.chmod(path, 0o600)
+    except OSError:
+        return
+
+
+def _lock_nb(fh: TextIO) -> None:
+    """Non-blocking exclusive lock. Raises OSError if held."""
+    fd = fh.fileno()
+    if sys.platform == "win32":
+        import msvcrt
+
+        fh.seek(0)
+        if fh.read(1) == "":
+            fh.write("0")
+            fh.flush()
+        fh.seek(0)
+        msvcrt.locking(fd, msvcrt.LK_NBLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_EX | fcntl.LOCK_NB)
+
+
+def _unlock(fh: TextIO) -> None:
+    fd = fh.fileno()
+    if sys.platform == "win32":
+        import msvcrt
+
+        fh.seek(0)
+        msvcrt.locking(fd, msvcrt.LK_UNLCK, 1)
+        return
+    import fcntl
+
+    fcntl.flock(fd, fcntl.LOCK_UN)
 
 
 def _jsonable(v: Any) -> Any:

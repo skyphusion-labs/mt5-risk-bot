@@ -118,6 +118,8 @@ Then run `pip install mt5-mac`.
 MetaTrader 4 has no official Python package.
 Attach `mt4/Experts/Mt4RiskBot.mq4` to one chart.
 Set `mt4.files_dir` to Common Files (`MT4_FILES_DIR`).
+On Windows, omit it. Default is `%APPDATA%\\MetaQuotes\\Terminal\\Common\\Files`.
+The bot process runs on that Windows host (`journal.lock` uses `msvcrt`).
 
 1. Set `account.mode = "mt4"`.
 2. Run doctor with a mailbox check.

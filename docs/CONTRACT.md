@@ -40,7 +40,7 @@ Auto EMA trading is off until `/auto on`.
 | Secrets | Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `AI_PROVIDER`, `ADVICE_URL`, `ADVICE_TOKEN`. |
 | Agent billing | `AI_PROVIDER=computer` posts to the agent. The agent bills through the gateway (`CF_AIG_TOKEN`), not a provider key. |
 | Redact | Journal writes, `loop_error` stderr, and Telegram `send` redact BotFather tokens. Named secret keys in the journal become `[REDACTED]`. |
-| File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600. The bot sets umask 077. |
+| File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600 on Unix. The bot sets umask 077. Windows has no POSIX mode bits; the lock is still exclusive. |
 | Sizer | `RiskManager.evaluate` is the only sizer. It is not optional. |
 
 ## Forbidden claims
@@ -188,7 +188,8 @@ A dropped MT5 IPC calls `initialize` again.
 One failed poll, send, or broker tick is journaled (`reconnect` or `loop_error`).
 The bot stays up.
 Two `run --loop` processes cannot share a journal.
-`run` takes an exclusive flock on `journal.lock` (same stem as `journal_path`).
+`run` takes an exclusive lock on `journal.lock` (same stem as `journal_path`).
+Unix: `flock`. Windows: `msvcrt.locking`. Same fail (`already running`, exit 2).
 A second `run --loop` prints `already running` to stderr and exits non-zero.
 The lock is released on exit or crash.
 Each `step_all` that reaches `account` writes `journal.heartbeat`.
@@ -214,7 +215,9 @@ It always runs an in-process paper `/buy` `/confirm` `/close`.
 No live terminal is required.
 `--connect` is the optional venue login check.
 MT5: binding, login, `trade_mode`. Non-zero if the binding is missing or login fails.
-MT4: mailbox ping plus `account` (`account.mode=mt4`, Expert attached, `mt4.files_dir` set).
+MT4: mailbox ping plus `account` (`account.mode=mt4`, Expert attached).
+`mt4.files_dir` / `MT4_FILES_DIR` is Common Files. On Windows, empty means
+`%APPDATA%\\MetaQuotes\\Terminal\\Common\\Files`.
 A traceback is not a pass.
 Production live is `doctor --connect` then `run --mode mt5` or `run --mode mt4`.
 `trade_mode=2` still needs `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.

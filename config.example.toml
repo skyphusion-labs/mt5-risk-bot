@@ -15,8 +15,9 @@ timeout_ms = 60000
 # login / password / server: leave empty. Use env vars.
 
 [mt4]
-# Common Files folder. Windows: %APPDATA%\MetaQuotes\Terminal\Common\Files
-# Or export MT4_FILES_DIR. Attach mt4/Experts/Mt4RiskBot.mq4 to one chart.
+# Common Files folder. Attach mt4/Experts/Mt4RiskBot.mq4 to one chart.
+# Windows: leave empty (defaults to %APPDATA%\MetaQuotes\Terminal\Common\Files)
+# or set MT4_FILES_DIR. %APPDATA% in this value expands.
 files_dir = ""
 timeout_ms = 5000
 
@@ -63,7 +64,7 @@ comment = "mt5-risk-bot"
 # journal.jsonl is the fill log (SSOT). journal.tg_offset is chmod 0600. Process umask 077.
 # journal.heartbeat is written each successful step_all. chmod 0600.
 # journal.jsonl rotates to journal.jsonl.1 at 10 MiB.
-# journal.lock is an exclusive flock. A second run --loop on this path exits 2.
+# journal.lock is exclusive (flock / msvcrt). A second run --loop on this path exits 2.
 journal_path = "journal.jsonl"
 
 # Telegram is required for `run`. Secrets from the environment only:

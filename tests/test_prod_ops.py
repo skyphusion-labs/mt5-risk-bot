@@ -1,5 +1,4 @@
 import os
-import select
 import subprocess
 import sys
 from datetime import datetime
@@ -10,6 +9,7 @@ from mt5_risk_bot.config import BotConfig, SessionConfig
 from mt5_risk_bot.engine import Engine
 from mt5_risk_bot.journal import InstanceLock, InstanceLockError, Journal, lock_path_for
 from mt5_risk_bot.synthetic import generate_bars
+from wincompat import assert_owner_mode
 
 
 def _cfg(tmp_path: Path) -> BotConfig:
@@ -31,13 +31,13 @@ def test_heartbeat_file_after_step_all_is_0600(tmp_path: Path) -> None:
     assert not dest.exists()
     engine.step_all()
     assert dest.is_file()
-    assert dest.stat().st_mode & 0o777 == 0o600
+    assert_owner_mode(dest)
     datetime.fromisoformat(dest.read_text(encoding="utf-8").strip())
     dest.unlink()
     engine.halted = True
     engine.step_all()
     assert dest.is_file()
-    assert dest.stat().st_mode & 0o777 == 0o600
+    assert_owner_mode(dest)
     engine.stop()
 
 
@@ -59,7 +59,7 @@ def test_journal_rotates_when_write_would_pass_cap(tmp_path: Path, monkeypatch) 
     assert '"event": "second"' in live
     assert '"event": "first"' not in live
     assert [r.get("event") for r in j.tail(20)] == ["second"]
-    assert path.stat().st_mode & 0o777 == 0o600
+    assert_owner_mode(path)
     j.write("third", blob="c" * 80)
     assert '"event": "second"' in rotated.read_text(encoding="utf-8")
     assert '"event": "first"' not in rotated.read_text(encoding="utf-8")
@@ -73,7 +73,7 @@ def _src_pythonpath() -> str:
 
 
 def test_overlapping_instance_lock_fails_second(tmp_path: Path) -> None:
-    # BSD flock allows the same process to re-lock; overlap needs a second process.
+    # Same-process re-lock is allowed on some Unix flocks; overlap needs a second process.
     journal = str(tmp_path / "j.jsonl")
     env = os.environ.copy()
     env["PYTHONPATH"] = _src_pythonpath()
@@ -93,10 +93,6 @@ def test_overlapping_instance_lock_fails_second(tmp_path: Path) -> None:
     )
     try:
         assert holder.stdout is not None
-        ready, _, _ = select.select([holder.stdout], [], [], 5)
-        if not ready:
-            err = holder.stderr.read() if holder.stderr else ""
-            raise AssertionError(f"lock holder produced no output: {err}")
         line = holder.stdout.readline().strip()
         if line != "held":
             err = holder.stderr.read() if holder.stderr else ""
@@ -109,7 +105,7 @@ def test_overlapping_instance_lock_fails_second(tmp_path: Path) -> None:
             raise AssertionError("second acquire must fail")
         lock_file = lock_path_for(journal)
         assert lock_file.is_file()
-        assert lock_file.stat().st_mode & 0o777 == 0o600
+        assert_owner_mode(lock_file)
     finally:
         holder.kill()
         holder.wait(timeout=5)
