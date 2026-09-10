@@ -80,6 +80,142 @@ def test_doctor_connect_calls_ensure_connected(capsys, monkeypatch) -> None:
     assert "trade_mode=0" in out
 
 
+def test_doctor_connect_fails_without_binding(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    def boom():
+        raise RuntimeError("No MT5 Python binding")
+
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", boom)
+    assert main(["doctor", "--connect"]) == 1
+    out = capsys.readouterr().out
+    assert "connect: fail (no mt5 binding)" in out
+    assert "paper round-trip /buy /confirm /close: ok" in out
+
+
+def test_doctor_connect_fails_on_ensure_error(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    class BoomBroker:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.disconnected = False
+
+        def ensure_connected(self) -> None:
+            raise RuntimeError("mt5.initialize failed: IPC")
+
+        def disconnect(self) -> None:
+            self.disconnected = True
+
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", lambda: object())
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.Mt5Broker", BoomBroker)
+    assert main(["doctor", "--connect"]) == 1
+    out = capsys.readouterr().out
+    assert "connect: fail" in out
+    assert "initialize failed" in out
+
+
+def test_doctor_connect_fail_redacts_botfather_token(capsys, monkeypatch) -> None:
+    secret = "1234567890:AA" + "x" * 35
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    class BoomBroker:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def ensure_connected(self) -> None:
+            raise RuntimeError(f"login failed token={secret}")
+
+        def disconnect(self) -> None:
+            return None
+
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", lambda: object())
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.Mt5Broker", BoomBroker)
+    assert main(["doctor", "--connect"]) == 1
+    out = capsys.readouterr().out
+    assert "connect: fail" in out
+    assert secret not in out
+    assert "[REDACTED]" in out
+
+
+def test_doctor_connect_falls_back_to_connect(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    created: list = []
+
+    class NoEnsure:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+            self.calls: list[str] = []
+            created.append(self)
+
+        def connect(self) -> None:
+            self.calls.append("connect")
+
+        def disconnect(self) -> None:
+            self.calls.append("disconnect")
+
+        def account(self):
+            self.calls.append("account")
+            return type(
+                "Acct",
+                (),
+                {
+                    "login": 2,
+                    "server": "Demo",
+                    "equity": 1.0,
+                    "currency": "USD",
+                    "trade_mode": 0,
+                },
+            )()
+
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", lambda: object())
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.Mt5Broker", NoEnsure)
+    assert main(["doctor", "--connect"]) == 0
+    out = capsys.readouterr().out
+    assert created[0].calls[0] == "connect"
+    assert "ensure_connected" not in created[0].calls
+    assert "connected login=2" in out
+    assert "disconnect" in created[0].calls
+
+
+def test_doctor_connect_disconnect_error_still_ok(capsys, monkeypatch) -> None:
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+
+    class OkThenBoom:
+        def __init__(self, **kwargs) -> None:
+            del kwargs
+
+        def ensure_connected(self) -> None:
+            return None
+
+        def account(self):
+            return type(
+                "Acct",
+                (),
+                {
+                    "login": 3,
+                    "server": "Demo",
+                    "equity": 1.0,
+                    "currency": "USD",
+                    "trade_mode": 0,
+                },
+            )()
+
+        def disconnect(self) -> None:
+            raise RuntimeError("shutdown")
+
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", lambda: object())
+    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.Mt5Broker", OkThenBoom)
+    assert main(["doctor", "--connect"]) == 0
+    out = capsys.readouterr().out
+    assert "connected login=3" in out
+
+
 def test_paper_round_trip_ok() -> None:
     assert paper_round_trip() == "ok"
 

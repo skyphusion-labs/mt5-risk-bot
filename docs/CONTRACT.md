@@ -105,8 +105,9 @@ still `confirm_stage` and the TTL has not expired.
 `doctor` pings Telegram when the token is set, and always runs an
 in-process paper `/buy` `/confirm` `/close`. No live terminal required.
 `--connect` is the optional MT5 login check (binding, login, `trade_mode`).
-Production live is `doctor --connect` then `run --mode mt5`. `trade_mode=2`
-still needs `--i-accept-risk`.
+It is non-zero if the binding is missing or login fails; a traceback is
+not a pass. Production live is `doctor --connect` then `run --mode mt5`.
+`trade_mode=2` still needs `--i-accept-risk`.
 
 ## Gate
 

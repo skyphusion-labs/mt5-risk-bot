@@ -37,6 +37,7 @@ export MT5_LOGIN=...
 export MT5_PASSWORD=...
 export MT5_SERVER=YourBroker-Demo
 python -m mt5_risk_bot doctor --connect --config config.toml
+# non-zero if the binding is missing or login fails
 python -m mt5_risk_bot run --mode mt5 --loop --config config.toml
 ```
 

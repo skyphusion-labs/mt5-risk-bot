@@ -14,6 +14,7 @@
 - `/tp TICKET PRICE VOL` scales out VOL at PRICE; circuit still refuses.
 - UTC day roll sends a recap notify (equity vs day_start, journal tail). `/recap` dumps it. Not a trade.
 - `doctor` pings Telegram (skip if unset) and paper `/buy` `/confirm` `/close` with no live terminal.
+- `doctor --connect` is non-zero if the MT5 binding is missing or login fails.
 - Live `Mt5Broker.orders` maps `orders_get` onto `PendingOrder` (covered without a terminal).
 - If the circuit would halt, advice is hold/close only; buy/sell is not staged.
 - `/replace TICKET PRICE` moves a working order; circuit and risk_pct still refuse.

@@ -119,7 +119,10 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     rc = 0
     if ping.startswith("fail") or paper != "ok":
         rc = 1
-    if args.connect and mt5_ok:
+    if args.connect:
+        if not mt5_ok:
+            print("connect: fail (no mt5 binding)")
+            return 1
         cfg = _cfg(args) if args.config else load_config()
         from mt5_risk_bot.broker.mt5_live import Mt5Broker
 
@@ -130,17 +133,25 @@ def cmd_doctor(args: argparse.Namespace) -> int:
             path=cfg.mt5.terminal_path,
             timeout_ms=cfg.mt5.timeout_ms,
         )
-        ensure = getattr(broker, "ensure_connected", None)
-        if callable(ensure):
-            ensure()
-        else:
-            broker.connect()
-        acct = broker.account()
-        print(
-            f"connected login={acct.login} server={acct.server} "
-            f"equity={acct.equity:.2f} {acct.currency} trade_mode={acct.trade_mode}"
-        )
-        broker.disconnect()
+        try:
+            ensure = getattr(broker, "ensure_connected", None)
+            if callable(ensure):
+                ensure()
+            else:
+                broker.connect()
+            acct = broker.account()
+            print(
+                f"connected login={acct.login} server={acct.server} "
+                f"equity={acct.equity:.2f} {acct.currency} trade_mode={acct.trade_mode}"
+            )
+        except (RuntimeError, OSError, ValueError) as exc:
+            print(f"connect: fail ({redact_text(str(exc))})")
+            rc = 1
+        finally:
+            try:
+                broker.disconnect()
+            except (RuntimeError, OSError, ValueError, AttributeError):
+                pass
     return rc
 
 

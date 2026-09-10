@@ -51,8 +51,9 @@ Keep that in a terminal, tmux, or the user LaunchAgent in
 `docs/launchd.plist.example`. Ctrl-C or `launchctl bootout` stops it.
 
 MT5 loop: MetaTrader 5.app must already be running and logged in. `doctor
---connect` is the gate (binding, login, `trade_mode`). Demo is
-`trade_mode=0` and does not need `--i-accept-risk`. Real money
+--connect` is the gate (binding, login, `trade_mode`). Non-zero if the
+binding is missing or login fails; do not start live on a traceback.
+Demo is `trade_mode=0` and does not need `--i-accept-risk`. Real money
 (`trade_mode=2`) is refused without `--i-accept-risk`.
 
 ```bash
@@ -75,7 +76,8 @@ restart.
 1. Broker demo account. Enable AutoTrading.
 2. `export MT5_LOGIN MT5_PASSWORD MT5_SERVER` (never commit these).
 3. `account.mode = "mt5"` in `config.toml`.
-4. `python -m mt5_risk_bot doctor --connect --config config.toml` (exit 0).
+4. `python -m mt5_risk_bot doctor --connect --config config.toml` (exit 0;
+   non-zero if the binding is missing or login fails).
 5. `python -m mt5_risk_bot run --mode mt5 --loop --config config.toml`
 6. Confirm `trade_mode=0` in the doctor output.
 
