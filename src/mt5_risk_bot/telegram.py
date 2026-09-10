@@ -230,10 +230,11 @@ HELP = (
     "/sl TICKET PRICE   /tp TICKET PRICE [VOL]   /be TICKET\n"
     "/trail on|off|TICKET\n"
     "/replace TICKET PRICE\n"
-    "/confirm  /approve always|off  /cancel [TICKET]  /orders  /history  /recap  /risk\n"
+    "/confirm  /cancel [TICKET]  /orders  /history  /recap  /risk\n"
     "/symbols list|add|remove [SYMBOL]\n"
     "/positions  /status  /ask ...\n"
     "/model grok|claude|computer   /auto on|off\n"
+    "/approve always|off   /live on I-ACCEPT-RISK|off\n"
     "/halt  /resume  /help\n"
     "Anything not a slash command goes to the AI."
 )

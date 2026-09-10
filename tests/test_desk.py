@@ -186,6 +186,30 @@ def test_parse_advice_json() -> None:
     assert "Stay out" in adv.text
 
 
+def test_live_arm_from_chat(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    assert "live=off" in engine.handle_command(TgCommand("1", 1, "/live", 1))
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/live on", 2))
+    on = engine.handle_command(TgCommand("1", 1, "/live on I-ACCEPT-RISK", 3))
+    assert "live armed" in on
+    assert engine.cfg.live_accepted
+    engine.handle_command(TgCommand("1", 1, "/live off", 4))
+    assert not engine.cfg.live_accepted
+    engine.stop()
+
+
+def test_live_arm_survives_restart(tmp_path) -> None:
+    first = _engine(tmp_path)
+    first.start()
+    first.handle_command(TgCommand("1", 1, "/live on I-ACCEPT-RISK", 1))
+    first.stop()
+    second = _engine(tmp_path)
+    second.start()
+    assert second.cfg.live_accepted
+    second.stop()
+
+
 def test_approve_always_sends_without_confirm(tmp_path) -> None:
     engine = _engine(tmp_path)
     engine.start()

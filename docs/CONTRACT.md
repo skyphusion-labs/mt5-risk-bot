@@ -28,7 +28,7 @@ Auto EMA trading is off until `/auto on`.
 | Daily loss | Daily loss of `daily_loss_pct` (default 2%) of start-of-UTC-day equity flattens positions for the bot's magic and halts until the next UTC day. |
 | Drawdown | Drawdown of `max_drawdown_pct` (default 10%) from peak equity flattens and stays halted until an operator inspects and restarts. |
 | Halt | `HALT` or `/halt` flattens immediately (positions and working orders). |
-| Real money | Real-money accounts (`trade_mode = 2`) refuse orders unless `--i-accept-risk` was passed. |
+| Real money | Real-money accounts (`trade_mode = 2`) refuse orders unless `--i-accept-risk` was passed at start or `/live on I-ACCEPT-RISK` was sent in the locked chat. |
 | Paper default | Paper is the default mode. |
 | Alerts | SL/TP hits and pending-order fills emit Telegram alerts even when `/auto` is off. |
 | Notify | Default notify events include `open`, `close`, `pending`, and `recap`. |
@@ -65,7 +65,8 @@ Auto EMA trading is off until `/auto on`.
 | `/risk` | Show daily-loss and drawdown room vs caps. |
 | `/buy` `/sell` SYMBOL `[sl=] [tp=] [limit=PRICE] [stop=PRICE]` | Stage a market order, or a working limit/stop. Do not set both limit and stop. |
 | `/confirm` | Market: reprice to the live tick, preview, send. Limit/stop: preview at the staged price, send. |
-| `/approve always\|off` | always: after risk preview, send. No `/confirm`. Default off. Real-money still needs `--i-accept-risk` at start. |
+| `/approve always\|off` | always: after risk preview, send. No `/confirm`. Default off. |
+| `/live on I-ACCEPT-RISK\|off` | Arm or disarm real-money sends from chat. Phrase required. Same fuse as `--i-accept-risk`. |
 | `/cancel` | Drop the staged confirm. |
 | `/cancel TICKET` | Cancel a working order. |
 | `/replace TICKET PRICE` | Move a working order entry. Uses `TRADE_ACTION_MODIFY`. The circuit and `risk_pct` still refuse. |

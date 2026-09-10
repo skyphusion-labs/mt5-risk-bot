@@ -318,7 +318,8 @@ A recommended market, limit, stop, or close-ticket is staged.
 `/approve off` restores staging.
 The bot still sizes the order.
 The bot can refuse it.
-Real-money still needs `--i-accept-risk` at start. Then `/approve always` in chat.
+Real-money: `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.
+Then `/approve always` if you want sends without `/confirm`.
 `/auto on` is the only way the EMA regime trades on its own.
 `/trail on` trails open positions each tick.
 It does not turn auto on.

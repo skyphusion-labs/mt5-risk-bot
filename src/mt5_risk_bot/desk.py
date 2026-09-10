@@ -94,6 +94,11 @@ class Desk:
         mode = last_fn("approve_always", "approve_off")
         if isinstance(mode, dict) and mode.get("event") == "approve_always":
             self.approve_always = True
+        live = last_fn("live_on", "live_off")
+        if isinstance(live, dict) and live.get("event") == "live_on":
+            cfg = getattr(self.engine, "cfg", None)
+            if cfg is not None:
+                cfg.live_accepted = True
         if not isinstance(rec, dict) or rec.get("event") != "confirm_stage":
             return
         stamp = time.time() if now is None else now
@@ -159,6 +164,7 @@ class Desk:
                 "be": lambda: self._be(cmd.args),
                 "confirm": self._confirm,
                 "approve": lambda: self._approve(cmd.args),
+                "live": lambda: self._live(cmd.args),
                 "cancel": lambda: self._cancel(cmd.args),
                 "orders": lambda: self.engine.orders_text(),
                 "replace": lambda: self._replace(cmd.args),
@@ -502,13 +508,35 @@ class Desk:
             return False
         return int(getattr(acct, "trade_mode", 0) or 0) == 2
 
+    def _live(self, args: str) -> str:
+        raw = args.strip()
+        cfg = getattr(self.engine, "cfg", None)
+        if raw.upper() == "ON I-ACCEPT-RISK":
+            if cfg is not None:
+                cfg.live_accepted = True
+            self._write_confirm("live_on")
+            return (
+                "live armed. real-money sends allowed if the terminal is "
+                "trade_mode=2. risk still sizes and can refuse. "
+                "/live off to disarm"
+            )
+        if raw.lower() == "off":
+            if cfg is not None:
+                cfg.live_accepted = False
+            self._write_confirm("live_off")
+            return "live disarmed. real-money sends refused until /live on I-ACCEPT-RISK"
+        if raw.lower() == "on":
+            return "usage: /live on I-ACCEPT-RISK"
+        armed = bool(cfg and getattr(cfg, "live_accepted", False))
+        return f"live={'on' if armed else 'off'}"
+
     def _approve(self, args: str) -> str:
         token = args.strip().lower()
         if token in {"always", "on"}:
             if self._live_needs_flag():
                 return (
-                    "real-money: start the bot with --i-accept-risk then "
-                    "/approve always"
+                    "real-money: /live on I-ACCEPT-RISK in this chat, "
+                    "then /approve always"
                 )
             self.approve_always = True
             self._write_confirm("approve_always")
