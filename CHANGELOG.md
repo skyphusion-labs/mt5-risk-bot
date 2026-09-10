@@ -2,8 +2,13 @@
 
 ## 0.2.0
 
-- Telegram is the desk: /buy /sell /close /sl /tp /confirm, free-text advice.
-- Grok (xAI) and Claude (Anthropic) via env keys. Advice never auto-sends.
+- Telegram is the desk: /buy /sell /close /sl /tp /be /trail /history /risk /confirm.
+- `/confirm` reprices market orders, re-runs risk, honors halt, reports retcode.
+- Partial close `/close TICKET VOL`. Staged confirm is not overwritten.
+- Limit/stop working orders (`limit=` / `stop=`), `/orders`, `/cancel TICKET`.
+- Tick fill alerts and SL/TP checks run even when `/auto` is off.
+- `/quote` with no symbol lists the configured book. `/trail` never loosens.
+- Grok (xAI) and Claude (Anthropic) via env keys. Last 6 turns kept. Advice never auto-sends.
 - Auto EMA regime is off until `/auto on`.
 
 ## 0.1.0

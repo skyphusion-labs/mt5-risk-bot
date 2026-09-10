@@ -115,12 +115,12 @@ def _chunks(text: str, size: int) -> list[str]:
 
 HELP = (
     "mt5-risk-bot  (not financial advice)\n"
-    "/quote SYMBOL\n"
+    "/quote [SYMBOL]\n"
     "/buy SYMBOL [sl=] [tp=] [limit=PRICE] [stop=PRICE]\n"
     "/sell SYMBOL [sl=] [tp=] [limit=PRICE] [stop=PRICE]\n"
     "/close TICKET|SYMBOL|all [VOL]\n"
-    "/sl TICKET PRICE   /tp TICKET PRICE   /be TICKET\n"
-    "/confirm  /cancel [TICKET]  /orders  /history\n"
+    "/sl TICKET PRICE   /tp TICKET PRICE   /be TICKET   /trail TICKET\n"
+    "/confirm  /cancel [TICKET]  /orders  /history  /risk\n"
     "/positions  /status  /ask ...\n"
     "/model grok|claude   /auto on|off\n"
     "/halt  /resume  /help\n"

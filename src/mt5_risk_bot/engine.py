@@ -589,6 +589,40 @@ class Engine:
             return f"be failed retcode={result.retcode} {result.comment}"
         return f"be #{ticket} sl -> {entry}"
 
+    def trail(self, ticket: int) -> str:
+        pos = self._pos(ticket)
+        if pos is None:
+            return "no such ticket"
+        bars = self.broker.rates(
+            pos.symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+        )
+        spec = self.broker.symbol(pos.symbol)
+        new_sl, new_tp = self.strategy.manage(pos, bars, spec)
+        if abs(new_sl - pos.sl) < 1e-12 and abs((new_tp or 0) - (pos.tp or 0)) < 1e-12:
+            return f"trail #{ticket} unchanged"
+        result = self._modify(pos, new_sl, new_tp)
+        if not result.ok:
+            return f"trail failed retcode={result.retcode} {result.comment}"
+        return f"trail #{ticket} sl -> {new_sl}"
+
+    def risk_text(self) -> str:
+        acct = self.broker.account()
+        self.risk.observe(acct, self.now_fn())
+        snap = self.risk.snapshot
+        r = self.cfg.risk
+        daily_loss = snap.day_start_equity - acct.equity
+        daily_cap = snap.day_start_equity * r.daily_loss_pct
+        dd = snap.peak_equity - acct.equity
+        dd_cap = snap.peak_equity * r.max_drawdown_pct if snap.peak_equity else 0.0
+        n = len(self.broker.positions(magic=r.magic))
+        return (
+            f"risk_pct={r.risk_pct:.2%}  positions={n}/{r.max_positions}\n"
+            f"daily_loss={daily_loss:.2f}/{daily_cap:.2f}  "
+            f"drawdown={dd:.2f}/{dd_cap:.2f}\n"
+            f"equity={acct.equity:.2f} peak={snap.peak_equity:.2f} "
+            f"day_start={snap.day_start_equity:.2f}"
+        )
+
     def history_text(self, n: int = 15) -> str:
         rows = self.journal.tail(n)
         if not rows:

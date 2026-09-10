@@ -146,9 +146,29 @@ def test_parse_advice_bad_json() -> None:
 
 def test_quote_usage(tmp_path) -> None:
     engine = _engine(tmp_path)
-    assert "usage" in engine.handle_command(TgCommand("1", 1, "/quote", 1))
+    engine.start()
+    book = engine.handle_command(TgCommand("1", 1, "/quote", 1))
+    assert "EURUSD" in book
+    assert "bid=" in book
     assert "usage" in engine.handle_command(TgCommand("1", 1, "/close", 2))
     assert "unknown" in engine.handle_command(TgCommand("1", 1, "/nope", 3))
+    engine.stop()
+
+
+def test_risk_and_trail(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    risk = engine.handle_command(TgCommand("1", 1, "/risk", 1))
+    assert "risk_pct=" in risk
+    assert "daily_loss=" in risk
+    assert "usage" in engine.handle_command(TgCommand("1", 1, "/trail", 2))
+    assert "no such ticket" in engine.handle_command(TgCommand("1", 1, "/trail 999", 3))
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 4))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 5))
+    pos = engine.broker.positions()[0]
+    reply = engine.handle_command(TgCommand("1", 1, f"/trail {pos.ticket}", 6))
+    assert reply.startswith("trail #")
+    engine.stop()
 
 
 def test_confirm_after_halt_does_not_open(tmp_path) -> None:

@@ -48,6 +48,8 @@ class Desk:
                 "status": self.engine.status_text,
                 "positions": self.engine.positions_text,
                 "quote": lambda: self._quote(cmd.args),
+                "risk": self.engine.risk_text,
+                "trail": lambda: self._trail(cmd.args),
                 "buy": lambda: self._trade(SignalKind.BUY, cmd.args, "telegram"),
                 "sell": lambda: self._trade(SignalKind.SELL, cmd.args, "telegram"),
                 "close": lambda: self._close(cmd.args),
@@ -73,7 +75,13 @@ class Desk:
     def _quote(self, args: str) -> str:
         symbol = args.split()[0].upper() if args.strip() else ""
         if not symbol:
-            return "usage: /quote EURUSD"
+            lines = []
+            for name in self.engine.cfg.symbols:
+                try:
+                    lines.append(self.engine.quote_text(name))
+                except RuntimeError:
+                    continue
+            return "\n".join(lines) if lines else "usage: /quote EURUSD"
         return self.engine.quote_text(symbol)
 
     def _trade(self, kind: SignalKind, args: str, source: str) -> str:
@@ -171,6 +179,12 @@ class Desk:
         if not token or not token.isdigit():
             return "usage: /be TICKET"
         return self.engine.breakeven(int(token))
+
+    def _trail(self, args: str) -> str:
+        token = args.split()[0] if args.strip() else ""
+        if not token or not token.isdigit():
+            return "usage: /trail TICKET"
+        return self.engine.trail(int(token))
 
     def _history(self) -> str:
         return self.engine.history_text()

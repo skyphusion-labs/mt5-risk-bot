@@ -41,6 +41,10 @@ Real accounts (`trade_mode=2`) also need `--i-accept-risk`.
 order. `/confirm` sends it. `/orders` lists working orders; `/cancel TICKET`
 drops one. Bare `/cancel` drops a staged confirm.
 
+`/quote` with no symbol lists the book. `/risk` shows daily-loss and
+drawdown room. `/trail TICKET` moves SL using the ATR trail and never
+loosens.
+
 SL/TP and pending fills still alert in Telegram when `/auto` is off.
 Paper is the default. Live real accounts need `--i-accept-risk`.
 

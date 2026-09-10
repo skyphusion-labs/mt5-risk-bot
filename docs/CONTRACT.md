@@ -49,7 +49,8 @@ off until `/auto on`.
 
 | Command | Effect |
 | --- | --- |
-| `/quote SYMBOL` | bid/ask plus ATR/ADX/EMA when bars exist |
+| `/quote [SYMBOL]` | one symbol, or all configured symbols if omitted |
+| `/risk` | daily-loss and drawdown room vs caps |
 | `/buy` `/sell` SYMBOL `[sl=] [tp=] [limit=PRICE] [stop=PRICE]` | stage market, or a working limit/stop (not both) |
 | `/confirm` | market: reprice to the live tick, preview, send. limit/stop: preview at the staged price, send |
 | `/cancel` | drop the staged confirm |
@@ -58,6 +59,7 @@ off until `/auto on`.
 | `/close TICKET\|SYMBOL\|all [VOL]` | flatten or partial close |
 | `/sl` `/tp` TICKET PRICE | modify; success only if the broker applied it |
 | `/be TICKET` | move SL to entry; never loosen |
+| `/trail TICKET` | ATR trail / breakeven from the strategy; never loosen |
 | `/history` | last journal events |
 | `/ask ...` or free text | Grok or Claude (last 6 turns), may stage a trade |
 | `/model grok\|claude` | switch provider |
