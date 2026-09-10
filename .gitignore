@@ -10,7 +10,11 @@ build/
 htmlcov/
 config.toml
 journal.jsonl
+journal.jsonl.1
 journal.lock
+journal.heartbeat
+journal.tg_offset
+journal.advice.json
 HALT
 .env
 *.log

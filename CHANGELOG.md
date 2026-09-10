@@ -17,6 +17,7 @@ See README.md and docs/CONTRACT.md.
 - `Side` has no MT5 order type integers. Adapters map buy/sell for `order_send`.
 - Engine uses `OrderResult.unchanged` and `OrderResult.invalid_stops`. It does not import MT5 retcode integers.
 - Advice send: default is `/confirm`. `/approve always` sends after risk preview. README and advice context match CONTRACT.
+- Runtime journal siblings (`journal.advice.json`, `journal.heartbeat`, `journal.tg_offset`, `journal.jsonl.1`) are gitignored.
 
 ## 0.3.0
 
