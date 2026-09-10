@@ -109,6 +109,9 @@ class Desk:
         if time.time() > pending.expires_at:
             self.pending = None
             return "confirm expired"
+        if getattr(self.engine, "halted", False):
+            self.pending = None
+            return "refused: halted"
         sig = pending.signal
         spec = self.engine.broker.symbol(sig.symbol)
         tick = self.engine.broker.tick(sig.symbol)
@@ -116,12 +119,19 @@ class Desk:
         sig = sig.reprice(entry, spec)
         decision = self.engine.preview(sig, manual=True)
         if not decision.allowed:
+            if decision.halt:
+                self.pending = None
             return f"refused: {decision.reason}"
         result = self.engine.submit(sig, decision.volume)
         self.pending = None
         if not result.ok:
-            return f"send failed retcode={result.retcode} {result.comment}"
-        return f"sent {sig.kind.value} {sig.symbol} vol={decision.volume}"
+            return (
+                f"send failed ok={result.ok} retcode={result.retcode} {result.comment}"
+            ).strip()
+        return (
+            f"sent {sig.kind.value} {sig.symbol} vol={decision.volume} "
+            f"ok={result.ok} retcode={result.retcode}"
+        )
 
     def _cancel(self) -> str:
         if self.pending is None:
@@ -140,6 +150,8 @@ class Desk:
             return f"closed {n}"
         if token.isdigit():
             return self.engine.close_ticket(int(token), "telegram", vol)
+        if vol is not None:
+            return "usage: /close TICKET|SYMBOL|all [VOL]"
         n = self.engine.close_symbol(token.upper(), "telegram")
         return f"closed {n} {token.upper()}"
 

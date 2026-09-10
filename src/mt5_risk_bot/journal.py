@@ -26,9 +26,10 @@ class Journal:
     def tail(self, n: int = 20) -> list[dict[str, Any]]:
         if n <= 0 or not self.path.exists():
             return []
-        lines = self.path.read_text(encoding="utf-8").splitlines()
+        with self.path.open("r", encoding="utf-8") as fh:
+            lines = deque(fh, maxlen=n)
         out: list[dict[str, Any]] = []
-        for line in lines[-n:]:
+        for line in lines:
             line = line.strip()
             if not line:
                 continue

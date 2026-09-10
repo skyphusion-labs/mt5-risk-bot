@@ -47,17 +47,17 @@ off until `/auto on`.
 | --- | --- |
 | `/quote SYMBOL` | bid/ask plus ATR/ADX/EMA when bars exist |
 | `/buy` `/sell` SYMBOL `[sl=] [tp=]` | stage a market order |
-| `/confirm` `/cancel` | send or drop the staged order |
+| `/confirm` `/cancel` | reprice to the live tick, risk-check, send; or drop |
 | `/close TICKET\|SYMBOL\|all [VOL]` | flatten or partial close |
 | `/sl` `/tp` TICKET PRICE | modify; success only if the broker applied it |
 | `/be TICKET` | move SL to entry; never loosen |
 | `/history` | last journal events |
-| `/ask ...` or free text | Grok or Claude, may stage a trade |
+| `/ask ...` or free text | Grok or Claude (last 6 turns), may stage a trade |
 | `/model grok\|claude` | switch provider |
 | `/auto on\|off` | optional EMA regime |
-| `/status` `/positions` `/halt` `/resume` | account |
+| `/status` `/positions` `/halt` `/resume` | account; `/halt` flattens and drops pending |
 
-`/confirm` reprices and re-runs `preview`. Halt, daily-loss, and drawdown still refuse. A second `/buy` while a pending is live is refused until `/cancel`. Advice never overwrites a live pending. Success replies come from `OrderResult.ok`, not from "the ticket existed".
+`/confirm` reprices and re-runs `preview`. Halt, daily-loss, and drawdown still refuse. The reply includes `ok` and `retcode`; only `OrderResult.ok` starts with `sent `. A second `/buy` while a pending is live is refused until `/cancel`. Advice never overwrites a live pending. Close and SL/TP success replies come from `OrderResult.ok`, not from "the ticket existed".
 
 Manual `/buy` `/sell` skip the session window. Auto does not.
 

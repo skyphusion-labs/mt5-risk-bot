@@ -293,6 +293,9 @@ class Engine:
                 raise RuntimeError("no ATR and no tp; pass tp=")
             dist = self.cfg.strategy.atr_tp_mult * a0
             tp = entry + dist if kind is SignalKind.BUY else entry - dist
+        entry = spec.normalize_price(entry)
+        sl = spec.normalize_price(sl)
+        tp = spec.normalize_price(tp)
         if kind is SignalKind.BUY and not (sl < entry < tp):
             raise RuntimeError("buy needs sl < entry < tp")
         if kind is SignalKind.SELL and not (tp < entry < sl):
@@ -300,9 +303,9 @@ class Engine:
         return Signal(
             kind=kind,
             symbol=symbol,
-            entry=spec.normalize_price(entry),
-            sl=spec.normalize_price(sl),
-            tp=spec.normalize_price(tp),
+            entry=entry,
+            sl=sl,
+            tp=tp,
             atr=a0,
             reason="manual",
         )
@@ -349,6 +352,8 @@ class Engine:
         pos = self._pos(ticket)
         if pos is None:
             return "no such ticket"
+        if volume is not None and volume <= 0:
+            raise ValueError("volume must be > 0")
         result = self._close(pos, reason, volume)
         if not result.ok:
             return f"close failed retcode={result.retcode} {result.comment}"
@@ -476,11 +481,18 @@ class Engine:
         if self.telegram is None:
             return
         timeout = max(0, int(self.cfg.poll_seconds))
-        for cmd in self.telegram.poll_commands(timeout=timeout):
+        try:
+            cmds = self.telegram.poll_commands(timeout=timeout)
+        except (ValueError, RuntimeError, OSError):
+            return
+        for cmd in cmds:
             try:
                 self.telegram.send(self.desk.handle(cmd))
             except (ValueError, RuntimeError, OSError) as exc:
-                self.telegram.send(f"error: {exc}")
+                try:
+                    self.telegram.send(f"error: {exc}")
+                except (ValueError, RuntimeError, OSError):
+                    continue
 
     def step_all(self) -> None:
         self.poll_telegram()
