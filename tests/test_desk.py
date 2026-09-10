@@ -836,6 +836,33 @@ def test_computer_ask_posts_session(tmp_path) -> None:
     assert body["session"] == "42"
     assert body["question"] == "remember copper"
     assert "context" in body
+    assert body["history"] == []
+
+
+def test_computer_ask_posts_journal_history(tmp_path) -> None:
+    payload = {
+        "text": (
+            "Hold.\n"
+            '{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"x"}'
+        )
+    }
+    llm = FakeLlm(payload)
+    engine = _engine(tmp_path, llm=llm)
+    engine.start()
+    engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    engine.handle_command(TgCommand("1", 1, "/confirm", 2))
+    engine.advisor.cfg.provider = "computer"
+    engine.advisor.cfg.computer_url = "https://example.test/ask"
+    engine.advisor.cfg.computer_token = "tok"
+    engine.handle_command(TgCommand("42", 7, "/ask remember copper", 3))
+    url, body = llm.sent[-1]
+    assert url == "https://example.test/ask"
+    assert isinstance(body["history"], list)
+    assert body["history"]
+    events = [r.get("event") for r in body["history"] if isinstance(r, dict)]
+    assert "open" in events
+    assert engine.advice_history() == body["history"]
+    engine.stop()
 
 
 def _fail_send(broker, *, opens: bool = False, closes: bool = False, sltp: bool = False) -> None:

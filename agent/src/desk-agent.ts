@@ -7,7 +7,7 @@ import type { Env } from "./env";
 
 export const SYSTEM = [
   "You are a trading desk analyst for one MetaTrader 5 account.",
-  "Your working memory is the Computer workspace: notes.md, log.md, snapshot.md.",
+  "Your working memory is the Computer workspace: notes.md, log.md, snapshot.md, history.json.",
   "Read those files. Update notes.md with durable facts (plans, levels, what the operator said).",
   "You give a view, not a guarantee. Never claim consistent profits.",
   "The risk engine sizes and can refuse; you do not send orders.",
@@ -22,6 +22,7 @@ type AskBody = {
   question?: string;
   context?: string;
   model?: string;
+  history?: unknown;
 };
 
 export class DeskAgent extends DurableObject<Env> {
@@ -46,11 +47,12 @@ export class DeskAgent extends DurableObject<Env> {
     }
     const question = String(body.question || "").trim();
     const context = String(body.context || "");
+    const history = Array.isArray(body.history) ? body.history : [];
     if (!question) {
       return json({ error: "question required" }, 400);
     }
     try {
-      const text = await this.ask(question, context, String(body.model || ""));
+      const text = await this.ask(question, context, String(body.model || ""), history);
       return json({ text });
     } catch (err) {
       const msg = err instanceof Error ? err.message : "ask failed";
@@ -58,7 +60,12 @@ export class DeskAgent extends DurableObject<Env> {
     }
   }
 
-  async ask(question: string, context: string, modelId: string): Promise<string> {
+  async ask(
+    question: string,
+    context: string,
+    modelId: string,
+    history: unknown[],
+  ): Promise<string> {
     const token = this.env.CF_AIG_TOKEN;
     const account = this.env.CF_ACCOUNT_ID;
     const gateway = this.env.AI_GATEWAY_ID;
@@ -67,6 +74,10 @@ export class DeskAgent extends DurableObject<Env> {
     }
     await this.workspace.fs.mkdir("/workspace", { recursive: true });
     await this.workspace.fs.writeFile("/workspace/snapshot.md", context || "(no snapshot)");
+    await this.workspace.fs.writeFile(
+      "/workspace/history.json",
+      `${JSON.stringify(history, null, 2)}\n`,
+    );
     const prev = await readUtf8(this.workspace, "/workspace/log.md");
     const stamp = new Date().toISOString();
     await this.workspace.fs.writeFile(
@@ -99,6 +110,7 @@ export class DeskAgent extends DurableObject<Env> {
       system: SYSTEM,
       prompt: [
         "Desk snapshot is /workspace/snapshot.md.",
+        "Journal history is /workspace/history.json.",
         "Durable notes are /workspace/notes.md. Read and update them.",
         "Conversation log is /workspace/log.md.",
         `Operator: ${question}`,

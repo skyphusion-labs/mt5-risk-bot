@@ -912,6 +912,9 @@ class Engine:
     def advice_circuit_reason(self) -> str:
         return self.risk.circuit_reason(self.broker.account(), self.now_fn())
 
+    def advice_history(self, n: int = 40) -> list[dict[str, Any]]:
+        return self.journal.tail(n)
+
     def advice_context(self) -> str:
         lines = [
             self.status_text(),

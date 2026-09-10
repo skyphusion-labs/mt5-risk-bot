@@ -123,7 +123,13 @@ class Advisor:
         self._memory: list[dict[str, str]] = []
         self.load()
 
-    def ask(self, question: str, context: str, session: str = "") -> Advice:
+    def ask(
+        self,
+        question: str,
+        context: str,
+        session: str = "",
+        history: list[dict[str, Any]] | None = None,
+    ) -> Advice:
         if not self.cfg.enabled:
             return Advice(
                 text=(
@@ -133,7 +139,7 @@ class Advisor:
             )
         user = f"{context}\n\nUser: {question}"
         if self.cfg.provider == "computer":
-            raw = self._computer(question, context, session)
+            raw = self._computer(question, context, session, history or [])
         elif self.cfg.provider == "claude":
             raw = self._claude(user)
         else:
@@ -183,13 +189,20 @@ class Advisor:
         tmp.replace(path)
         os.chmod(path, 0o600)
 
-    def _computer(self, question: str, context: str, session: str) -> str:
+    def _computer(
+        self,
+        question: str,
+        context: str,
+        session: str,
+        history: list[dict[str, Any]],
+    ) -> str:
         data = self.transport.post_json(
             self.cfg.computer_url,
             {
                 "session": session or "default",
                 "question": question,
                 "context": context,
+                "history": history,
                 "model": self.cfg.computer_model,
             },
             timeout=120.0,

@@ -452,7 +452,12 @@ class Desk:
             return "ask a question, or /buy /sell"
         if self.advisor is None:
             return "AI not configured"
-        advice = self.advisor.ask(question, self.engine.advice_context(), session=session)
+        advice = self.advisor.ask(
+            question,
+            self.engine.advice_context(),
+            session=session,
+            history=self.engine.advice_history(),
+        )
         lines = [advice.text]
         if advice.summary:
             lines.append(advice.summary)

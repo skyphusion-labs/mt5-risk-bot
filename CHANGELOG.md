@@ -11,7 +11,8 @@ See README.md and docs/CONTRACT.md.
 - `run` takes an exclusive flock on `journal.lock` next to the journal. A second `run --loop` on the same journal exits 2 with stderr `already running`.
 - launchd example: `KeepAlive`, `Umask` 63 (077), `journal.heartbeat` path comment. Secrets stay `REPLACE_ME`.
 - Advice conversation persists in `journal.advice.json` (last 40 turns, chmod 0600) and restores on restart. This is the desk context, not an in-memory buffer.
-- `AI_PROVIDER=computer` sends `/ask` to a Cloudflare Computer Durable Object. Working memory is the workspace filesystem. Inference is AI Gateway Unified Billing (`CF_AIG_TOKEN`), not provider BYOK.
+- `AI_PROVIDER=computer` sends `/ask` to a Cloudflare Computer Durable Object. Working memory is the workspace filesystem (`notes.md`, `log.md`, `snapshot.md`, `history.json` from `journal.tail`). Inference is AI Gateway Unified Billing (`CF_AIG_TOKEN`), not provider BYOK.
+- `broker_for(cfg)` selects PaperBroker or Mt5Broker from `account.mode`. `PendingOrder.kind` is `limit` or `stop`; engine lists and replaces from that string, not MT5 type ints.
 - `PendingOrder.kind` is `limit` or `stop`. Engine and desk never read MT5 `type_code`.
 
 ## 0.3.0

@@ -6,7 +6,7 @@ The desk is Telegram chat commands.
 The bot is the Python process on this computer.
 The gateway is Cloudflare AI Gateway `mt5-risk-bot`.
 
-Working memory is the workspace filesystem (`/workspace/notes.md`, `log.md`, `snapshot.md`).
+Working memory is the workspace filesystem (`/workspace/notes.md`, `log.md`, `snapshot.md`, `history.json`).
 Computer tools are `read`, `write`, `edit`, `ls`, and `grep`.
 Inference is Unified Billing on the gateway.
 It is not provider BYOK.
@@ -71,6 +71,7 @@ Do not paste tokens into chat.
    `export AI_PROVIDER=computer`
    `export ADVICE_URL=https://mt5-risk-agent.skyphusion.workers.dev/ask`
 
-`/ask` and free text POST `{session, question, context, model}`.
+`/ask` and free text POST `{session, question, context, history, model}`.
+`history` is `journal.tail` (JSON list). The agent writes it to `/workspace/history.json`.
 Session is the Telegram chat id.
 The agent does not send trades.
