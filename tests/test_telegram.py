@@ -10,7 +10,7 @@ class FakeTransport:
         self.updates: list[dict] = []
         self.fail = False
 
-    def post_json(self, url: str, payload: dict, timeout: float = 10.0) -> dict:
+    def post_json(self, url: str, payload: dict, timeout: float = 10.0, headers=None) -> dict:
         del timeout
         if self.fail:
             from mt5_risk_bot.telegram import TelegramError

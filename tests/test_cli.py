@@ -34,7 +34,7 @@ def test_help() -> None:
         assert exc.code == 0
 
 
-def test_run_paper_needs_data() -> None:
+def test_run_requires_telegram() -> None:
     assert main(["run", "--mode", "paper"]) == 2
 
 

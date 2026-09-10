@@ -18,16 +18,31 @@ API_ROOT = "https://api.telegram.org"
 
 
 class Transport(Protocol):
-    def post_json(self, url: str, payload: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]: ...
+    def post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        timeout: float = 10.0,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]: ...
 
 
 class UrlLibTransport:
-    def post_json(self, url: str, payload: dict[str, Any], timeout: float = 10.0) -> dict[str, Any]:
+    def post_json(
+        self,
+        url: str,
+        payload: dict[str, Any],
+        timeout: float = 10.0,
+        headers: dict[str, str] | None = None,
+    ) -> dict[str, Any]:
         body = json.dumps(payload).encode("utf-8")
+        hdrs = {"Content-Type": "application/json"}
+        if headers:
+            hdrs.update(headers)
         req = urllib.request.Request(
             url,
             data=body,
-            headers={"Content-Type": "application/json"},
+            headers=hdrs,
             method="POST",
         )
         try:
@@ -63,7 +78,14 @@ class TgCommand:
         first = first.split("@", 1)[0]
         if first.startswith("/"):
             return first[1:].lower()
-        return first.lower()
+        return ""
+
+    @property
+    def args(self) -> str:
+        parts = self.text.strip().split(maxsplit=1)
+        if self.text.startswith("/"):
+            return parts[1] if len(parts) > 1 else ""
+        return self.text.strip()
 
 
 def parse_command(update: dict[str, Any]) -> TgCommand | None:
@@ -84,12 +106,17 @@ def parse_command(update: dict[str, Any]) -> TgCommand | None:
 
 
 HELP = (
-    "mt5-risk-bot\n"
-    "/status     equity, halt, peak\n"
-    "/positions  open trades (this magic)\n"
-    "/halt       flatten and stop new trades\n"
-    "/resume     clear operator HALT file only\n"
-    "/help"
+    "mt5-risk-bot  (not financial advice)\n"
+    "/quote SYMBOL\n"
+    "/buy SYMBOL [sl=] [tp=]\n"
+    "/sell SYMBOL [sl=] [tp=]\n"
+    "/close TICKET|SYMBOL|all\n"
+    "/sl TICKET PRICE   /tp TICKET PRICE\n"
+    "/confirm  /cancel\n"
+    "/positions  /status  /ask ...\n"
+    "/model grok|claude   /auto on|off\n"
+    "/halt  /resume  /help\n"
+    "Anything not a slash command goes to the AI."
 )
 
 

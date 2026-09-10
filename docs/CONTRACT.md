@@ -2,24 +2,35 @@
 
 Code that disagrees with this file is wrong.
 
+This bot is a **Telegram desk**. The user trades and asks Grok or Claude
+from one chat. MetaTrader 5 is the execution venue. The risk engine is
+the only thing that may size or refuse an order. Auto EMA trading is
+off until `/auto on`.
+
 ## Allowed claims
 
-- Every new order is sized so a full stop-out loses at most `risk_pct` of
-  equity (default 0.5%). If the broker minimum lot would exceed that, the
-  trade is skipped.
+- Telegram is required for `run`. Slash commands place, close, and
+  modify trades. Free text goes to the configured model.
+- AI advice never sends an order. A staged suggestion waits for
+  `/confirm` (default 120s).
+- Every new order is sized so a full stop-out loses at most `risk_pct`
+  of equity (default 0.5%). If the broker minimum lot would exceed that,
+  the trade is skipped.
 - Daily loss of `daily_loss_pct` (default 2%) of start-of-UTC-day equity
   flattens this magic and halts until the next UTC day.
 - Drawdown of `max_drawdown_pct` (default 10%) from peak equity flattens
   and stays halted until an operator inspects and restarts.
-- `HALT` or Telegram `/halt` flattens immediately.
+- `HALT` or `/halt` flattens immediately.
 - Real-money accounts (`trade_mode = 2`) refuse orders unless
   `--i-accept-risk` was passed.
 - Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`,
-  `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`.
+  `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`,
+  `ANTHROPIC_API_KEY`, `AI_PROVIDER`.
 
 ## Forbidden claims
 
 - Consistent positive returns.
+- That Grok or Claude is a signal you should follow blindly.
 - Paper P/L equals live P/L. Paper fills at bid/ask. Same-bar SL and TP:
   SL wins.
 
@@ -27,32 +38,25 @@ Code that disagrees with this file is wrong.
 
 | Mode | Orders | Data |
 | --- | --- | --- |
-| `paper` | in-process PaperBroker | synthetic, CSV, or `--feed-mt5` |
+| `paper` | in-process PaperBroker | synthetic, `--feed-mt5`, or empty |
 | `mt5` | terminal `order_send` | live terminal |
 
-## Telegram
-
-Disabled unless both `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID` are set.
-Commands accepted only from that chat id.
+## Telegram commands
 
 | Command | Effect |
 | --- | --- |
-| `/status` | equity, halt, peak |
-| `/positions` | this magic |
-| `/halt` | write HALT, flatten |
-| `/resume` | unlink HALT; cannot clear daily_loss or max_drawdown |
+| `/quote SYMBOL` | bid/ask |
+| `/buy` `/sell` SYMBOL `[sl=] [tp=]` | stage a market order |
+| `/confirm` `/cancel` | send or drop the staged order |
+| `/close TICKET\|SYMBOL\|all` | flatten |
+| `/sl` `/tp` TICKET PRICE | modify |
+| `/ask ...` or free text | Grok or Claude, may stage a trade |
+| `/model grok\|claude` | switch provider |
+| `/auto on\|off` | optional EMA regime |
+| `/status` `/positions` `/halt` `/resume` | account |
 
-Alerts: start, stop, open, close, halt, order_check_fail.
+Manual `/buy` `/sell` skip the session window. Auto does not.
 
 ## Gate
 
-`pytest` with `--cov-fail-under=80`. CI jobs are named `ci` and `coverage`
-to match the org ruleset on `main`.
-
-```
-python3 -m venv .venv && . .venv/bin/activate
-pip install -e ".[dev]"
-pytest
-python -m mt5_risk_bot doctor
-python -m mt5_risk_bot backtest --market trend --no-session-filter
-```
+`pytest` with `--cov-fail-under=80`. CI jobs are named `ci` and `coverage`.

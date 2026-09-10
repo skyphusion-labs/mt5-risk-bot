@@ -190,6 +190,7 @@ class RiskManager:
         tick: Tick,
         positions: list[Position],
         now: datetime,
+        manual: bool = False,
     ) -> RiskDecision:
         trip = self.circuit(account, now)
         if not trip.allowed:
@@ -199,7 +200,7 @@ class RiskManager:
         if signal.kind is SignalKind.FLAT or signal.side is None:
             return RiskDecision(allowed=False, reason="no_signal")
 
-        if not in_session(now, self.cfg.session):
+        if not manual and not in_session(now, self.cfg.session):
             return RiskDecision(allowed=False, reason="outside_session")
 
         ours = [p for p in positions if p.magic == r.magic]

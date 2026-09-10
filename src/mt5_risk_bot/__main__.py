@@ -51,6 +51,9 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("Homebrew has no MetaTrader cask; Python is enough for paper/backtest.")
     print("telegram token:", "SET" if os.environ.get("TELEGRAM_BOT_TOKEN") else "unset")
     print("telegram chat:", "SET" if os.environ.get("TELEGRAM_CHAT_ID") else "unset")
+    print("xai key:", "SET" if os.environ.get("XAI_API_KEY") else "unset")
+    print("anthropic key:", "SET" if os.environ.get("ANTHROPIC_API_KEY") else "unset")
+    print("ai provider:", os.environ.get("AI_PROVIDER", "grok"))
     if args.connect and mt5_ok:
         cfg = _cfg(args) if args.config else load_config()
         from mt5_risk_bot.broker.mt5_live import Mt5Broker
@@ -163,15 +166,15 @@ def cmd_run(args: argparse.Namespace) -> int:
                 broker.seed_bars(name, rates)
             live.disconnect()
             print("paper broker seeded from MT5 history; orders stay local")
-        else:
-            print("paper mode with no data: pass --synthetic or --feed-mt5, or use backtest")
-            return 2
 
     halt_dir = str(Path(cfg.risk.halt_file).parent) or "."
     tg = TelegramClient.from_config(cfg.telegram)
+    if tg is None:
+        print("telegram is the front door: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
+        return 2
     engine = Engine(cfg, broker, halt_dir=halt_dir, telegram=tg)
     engine.start()
-    keep_on_halt = tg is not None
+    keep_on_halt = True
     try:
         while True:
             engine.step_all()
@@ -202,7 +205,7 @@ def cmd_telegram(args: argparse.Namespace) -> int:
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
         prog="mt5-risk-bot",
-        description="Risk-first MT5 trading bot. Paper by default. No profit guarantee.",
+        description="Telegram desk for MT5: full trades and Grok/Claude advice. Risk gates every order.",
     )
     p.add_argument("--config", help="path to TOML config")
     sub = p.add_subparsers(dest="cmd", required=True)

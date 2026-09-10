@@ -26,6 +26,7 @@ halt_file = "HALT"          # create this file to flatten immediately
 deviation_points = 20
 
 [strategy]
+auto = false                # Telegram is the desk. /auto on enables the EMA regime.
 timeframe = "H1"
 fast_ema = 21
 slow_ema = 55
@@ -52,8 +53,17 @@ poll_seconds = 15
 comment = "mt5-risk-bot"
 journal_path = "journal.jsonl"
 
-# Secrets from the environment only:
+# Telegram is required for `run`. Secrets from the environment only:
 #   export TELEGRAM_BOT_TOKEN=...
 #   export TELEGRAM_CHAT_ID=...
+#   export XAI_API_KEY=...            # Grok
+#   export ANTHROPIC_API_KEY=...      # Claude
+#   export AI_PROVIDER=grok           # grok | claude
 [telegram]
 notify_events = ["start", "stop", "open", "close", "halt", "order_check_fail"]
+confirm_seconds = 120
+
+[advice]
+provider = "grok"
+grok_model = "grok-4"
+claude_model = "claude-sonnet-4-5"

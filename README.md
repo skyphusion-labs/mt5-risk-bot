@@ -1,10 +1,10 @@
 # mt5-risk-bot
 
-Risk-first MetaTrader 5 bot. Paper by default. No profit guarantee.
+Telegram desk for MetaTrader 5. You trade from chat. Grok or Claude
+advises in the same chat. The risk engine sizes and can refuse. No
+profit guarantee.
 
-Position size is `equity * risk_pct / stop distance` (0.5% default). Daily-loss
-and max-drawdown circuits flatten this magic and halt. A `HALT` file or
-Telegram `/halt` does the same immediately.
+Auto EMA trading is **off** until you send `/auto on`.
 
 ## Run
 
@@ -12,14 +12,18 @@ Telegram `/halt` does the same immediately.
 python3 -m venv .venv && source .venv/bin/activate
 pip install -e ".[dev]"
 cp config.example.toml config.toml
+export TELEGRAM_BOT_TOKEN=...
+export TELEGRAM_CHAT_ID=...
+export XAI_API_KEY=...          # Grok (default)
+# export ANTHROPIC_API_KEY=...  # Claude
+# export AI_PROVIDER=claude
 pytest
 python -m mt5_risk_bot doctor
-python -m mt5_risk_bot backtest --market trend --no-session-filter
+python -m mt5_risk_bot run --mode paper --loop --config config.toml
 ```
 
 Live/demo needs a running terminal. Official `MetaTrader5` is Windows-only.
 On macOS: MetaTrader 5.app from metatrader5.com plus `pip install mt5-mac`.
-Homebrew does not ship the terminal.
 
 ```bash
 export MT5_LOGIN=...
@@ -30,23 +34,15 @@ python -m mt5_risk_bot run --mode mt5 --loop --config config.toml
 
 Real accounts (`trade_mode=2`) also need `--i-accept-risk`.
 
-## Telegram
+## Chat
 
-```bash
-export TELEGRAM_BOT_TOKEN=...
-export TELEGRAM_CHAT_ID=...
-python -m mt5_risk_bot telegram --message ping
-```
-
-Commands (that chat only): `/status` `/positions` `/halt` `/resume` `/help`.
+`/buy EURUSD` stages a sized order (ATR stop if you omit `sl=`). `/confirm`
+sends it. Free text is advice; if the model recommends a trade, that is
+staged too. `/help` for the rest.
 
 ## Docs
 
-| File | What |
-| --- | --- |
-| `docs/CONTRACT.md` | Behaviour the tests enforce |
-| `docs/MT5-API.md` | Python API notes this bot uses |
-| `docs/RUNBOOK.md` | Operate, halt, demo, live |
+`docs/CONTRACT.md` is the behaviour tests enforce.
 
 ## License
 

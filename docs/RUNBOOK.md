@@ -65,13 +65,19 @@ python -m mt5_risk_bot doctor --connect --config config.toml
 If `initialize` fails, launch MetaTrader 5.app yourself and wait until it
 is fully up.
 
-## Telegram
+## Telegram desk
 
-1. Talk to BotFather, create a bot, copy the token.
-2. `export TELEGRAM_BOT_TOKEN=...` (never commit it).
-3. Message the bot, then get your chat id (`TELEGRAM_CHAT_ID`).
+`run` will not start without `TELEGRAM_BOT_TOKEN` and `TELEGRAM_CHAT_ID`.
+
+1. BotFather, copy the token.
+2. Message the bot, set `TELEGRAM_CHAT_ID`.
+3. `export XAI_API_KEY=...` (Grok) and/or `ANTHROPIC_API_KEY=...` (Claude).
 4. `python -m mt5_risk_bot telegram --message ping`
-5. Leave `run --loop` going; it long-polls commands on each engine tick.
+5. `python -m mt5_risk_bot run --mode mt5 --loop --config config.toml`
+
+Free text is `/ask`. A recommended trade is staged; `/confirm` sends it
+through the risk engine. `/auto on` is the only way the EMA regime trades
+on its own.
 
 `/halt` writes `HALT` and flattens. `/resume` only clears that file.
 Daily-loss and max-drawdown cannot be cleared from Telegram.

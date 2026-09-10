@@ -13,11 +13,14 @@ from mt5_risk_bot.constants import (
     TRADE_ACTION_SLTP,
     choose_filling,
 )
+from mt5_risk_bot.desk import Desk
+from mt5_risk_bot.indicators import atr as atr_bars
 from mt5_risk_bot.journal import Journal
+from mt5_risk_bot.llm import Advisor
 from mt5_risk_bot.models import Bar, Position, Signal, SignalKind
-from mt5_risk_bot.risk import RiskManager
+from mt5_risk_bot.risk import RiskDecision, RiskManager
 from mt5_risk_bot.strategy import TrendStrategy
-from mt5_risk_bot.telegram import HELP, TelegramClient, TgCommand
+from mt5_risk_bot.telegram import TelegramClient, TgCommand
 
 
 class Engine:
@@ -30,6 +33,7 @@ class Engine:
         halt_dir: str = ".",
         now_fn: Any = None,
         telegram: TelegramClient | None = None,
+        advisor: Advisor | None = None,
     ) -> None:
         self.cfg = cfg
         self.broker = broker
@@ -40,6 +44,8 @@ class Engine:
         self.last_bar_time: dict[str, int] = {}
         self.halted = False
         self.telegram = telegram
+        self.advisor = advisor if advisor is not None else Advisor(cfg.advice)
+        self.desk = Desk(self, self.advisor)
 
     def _emit(self, event: str, **fields: Any) -> None:
         self.journal.write(event, **fields)
@@ -247,6 +253,121 @@ class Engine:
             return
         self._open(sig, decision.volume)
 
+    def market_signal(
+        self,
+        kind: SignalKind,
+        symbol: str,
+        sl: float | None = None,
+        tp: float | None = None,
+    ) -> Signal:
+        symbol = symbol.upper()
+        spec = self.broker.symbol(symbol)
+        self.broker.select_symbol(symbol)
+        tick = self.broker.tick(symbol)
+        if tick.bid <= 0 or tick.ask <= 0:
+            raise RuntimeError(f"no tick for {symbol}")
+        bars = self.broker.rates(
+            symbol, self.cfg.strategy.timeframe_id, self.strategy.needed_bars()
+        )
+        a0 = 0.0
+        if bars:
+            vals = [v for v in atr_bars(bars, self.cfg.strategy.atr_period) if v == v]
+            if vals:
+                a0 = vals[-1]
+        entry = tick.ask if kind is SignalKind.BUY else tick.bid
+        if sl is None:
+            if a0 <= 0:
+                raise RuntimeError("no ATR and no sl; pass sl=")
+            dist = self.cfg.strategy.atr_stop_mult * a0
+            sl = entry - dist if kind is SignalKind.BUY else entry + dist
+        if tp is None:
+            if a0 <= 0:
+                raise RuntimeError("no ATR and no tp; pass tp=")
+            dist = self.cfg.strategy.atr_tp_mult * a0
+            tp = entry + dist if kind is SignalKind.BUY else entry - dist
+        return Signal(
+            kind=kind,
+            symbol=symbol,
+            entry=spec.normalize_price(entry),
+            sl=spec.normalize_price(sl),
+            tp=spec.normalize_price(tp),
+            atr=a0,
+            reason="manual",
+        )
+
+    def preview(self, signal: Signal, *, manual: bool = True) -> RiskDecision:
+        return self.risk.evaluate(
+            account=self.broker.account(),
+            signal=signal,
+            spec=self.broker.symbol(signal.symbol),
+            tick=self.broker.tick(signal.symbol),
+            positions=self.broker.positions(magic=self.cfg.risk.magic),
+            now=self.now_fn(),
+            manual=manual,
+        )
+
+    def submit(self, signal: Signal, volume: float) -> None:
+        self._open(signal, volume)
+
+    def quote_text(self, symbol: str) -> str:
+        tick = self.broker.tick(symbol.upper())
+        return f"{symbol.upper()} bid={tick.bid} ask={tick.ask} spread={tick.spread:.6f}"
+
+    def close_ticket(self, ticket: int, reason: str) -> bool:
+        for pos in self.broker.positions(magic=self.cfg.risk.magic):
+            if pos.ticket == ticket:
+                self._close(pos, reason)
+                return True
+        return False
+
+    def close_symbol(self, symbol: str, reason: str) -> int:
+        n = 0
+        for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
+            if pos.symbol == symbol:
+                self._close(pos, reason)
+                n += 1
+        return n
+
+    def close_all(self, reason: str) -> int:
+        rows = list(self.broker.positions(magic=self.cfg.risk.magic))
+        for pos in rows:
+            self._close(pos, reason)
+        return len(rows)
+
+    def set_sl(self, ticket: int, price: float) -> str:
+        pos = self._pos(ticket)
+        if pos is None:
+            return "no such ticket"
+        self._modify(pos, price, pos.tp)
+        return f"sl #{ticket} -> {price}"
+
+    def set_tp(self, ticket: int, price: float) -> str:
+        pos = self._pos(ticket)
+        if pos is None:
+            return "no such ticket"
+        self._modify(pos, pos.sl, price)
+        return f"tp #{ticket} -> {price}"
+
+    def _pos(self, ticket: int) -> Position | None:
+        for pos in self.broker.positions(magic=self.cfg.risk.magic):
+            if pos.ticket == ticket:
+                return pos
+        return None
+
+    def advice_context(self) -> str:
+        lines = [
+            self.status_text(),
+            self.positions_text(),
+            f"symbols={','.join(self.cfg.symbols)} risk_pct={self.cfg.risk.risk_pct}",
+            f"auto={self.cfg.strategy.auto} provider={self.cfg.advice.provider}",
+        ]
+        for name in self.cfg.symbols:
+            try:
+                lines.append(self.quote_text(name))
+            except RuntimeError:
+                continue
+        return "\n".join(lines)
+
     def status_text(self) -> str:
         acct = self.broker.account()
         reason = self.risk.halt_reason or ("halt_file" if self.risk.halt_path().exists() else "")
@@ -271,36 +392,22 @@ class Engine:
         )
 
     def handle_command(self, cmd: TgCommand) -> str:
-        if cmd.name in {"start", "help"}:
-            return HELP
-        if cmd.name == "status":
-            return self.status_text()
-        if cmd.name == "positions":
-            return self.positions_text()
-        if cmd.name == "halt":
-            self.risk.write_halt_file("telegram")
-            self.flatten("telegram")
-            self._emit("halt", reason="telegram", equity=self.broker.account().equity)
-            return "flattened and halted. /resume clears the operator HALT file."
-        if cmd.name == "resume":
-            leftover = self.risk.clear_operator_halt()
-            if leftover:
-                return f"HALT file cleared; still halted: {leftover}"
-            self.halted = False
-            return "operator halt cleared. trading may resume."
-        return "unknown command. /help"
+        return self.desk.handle(cmd)
 
     def poll_telegram(self) -> None:
         if self.telegram is None:
             return
-        for cmd in self.telegram.poll_commands():
-            self.telegram.send(self.handle_command(cmd))
+        timeout = max(0, int(self.cfg.poll_seconds))
+        for cmd in self.telegram.poll_commands(timeout=timeout):
+            self.telegram.send(self.desk.handle(cmd))
 
     def step_all(self) -> None:
         self.poll_telegram()
         if self.halted:
             return
         if self._apply_circuit(self.broker.account(), self.now_fn()):
+            return
+        if not self.cfg.strategy.auto:
             return
         for symbol in self.cfg.symbols:
             if self.halted:

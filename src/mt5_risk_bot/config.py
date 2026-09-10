@@ -28,6 +28,7 @@ class RiskConfig:
 
 @dataclass
 class StrategyConfig:
+    auto: bool = False
     timeframe: str = "H1"
     fast_ema: int = 21
     slow_ema: int = 55
@@ -73,10 +74,28 @@ class TelegramConfig:
     token: str = ""
     chat_id: str = ""
     notify_events: tuple[str, ...] = DEFAULT_TG_EVENTS
+    confirm_seconds: int = 120
 
     @property
     def enabled(self) -> bool:
         return bool(self.token and self.chat_id)
+
+
+@dataclass
+class AdviceConfig:
+    provider: str = "grok"  # grok | claude
+    grok_model: str = "grok-4"
+    claude_model: str = "claude-sonnet-4-5"
+    grok_key: str = ""
+    claude_key: str = ""
+    grok_url: str = "https://api.x.ai/v1/chat/completions"
+    claude_url: str = "https://api.anthropic.com/v1/messages"
+
+    @property
+    def enabled(self) -> bool:
+        if self.provider == "claude":
+            return bool(self.claude_key)
+        return bool(self.grok_key)
 
 
 @dataclass
@@ -89,6 +108,7 @@ class BotConfig:
     session: SessionConfig = field(default_factory=SessionConfig)
     mt5: Mt5Config = field(default_factory=Mt5Config)
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
+    advice: AdviceConfig = field(default_factory=AdviceConfig)
     poll_seconds: int = 15
     comment: str = "mt5-risk-bot"
     journal_path: str = "journal.jsonl"
@@ -125,6 +145,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     sess_s = _section(data, "session")
     mt5_s = _section(data, "mt5")
     tg_s = _section(data, "telegram")
+    advice_s = _section(data, "advice")
     engine_s = _section(data, "engine")
     symbols_s = data.get("symbols", {})
 
@@ -139,6 +160,9 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     server = os.environ.get("MT5_SERVER", str(mt5_s.get("server", "") or ""))
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", str(tg_s.get("token", "") or ""))
     tg_chat = os.environ.get("TELEGRAM_CHAT_ID", str(tg_s.get("chat_id", "") or ""))
+    grok_key = os.environ.get("XAI_API_KEY", str(advice_s.get("grok_key", "") or ""))
+    claude_key = os.environ.get("ANTHROPIC_API_KEY", str(advice_s.get("claude_key", "") or ""))
+    provider = os.environ.get("AI_PROVIDER", str(advice_s.get("provider", "grok") or "grok")).lower()
     events_raw = tg_s.get("notify_events", list(DEFAULT_TG_EVENTS))
     if isinstance(events_raw, str):
         events = tuple(x.strip() for x in events_raw.split(",") if x.strip())
@@ -167,6 +191,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             deviation_points=int(risk_s.get("deviation_points", 20)),
         ),
         strategy=StrategyConfig(
+            auto=bool(strat_s.get("auto", False)),
             timeframe=str(strat_s.get("timeframe", "H1")),
             fast_ema=int(strat_s.get("fast_ema", 21)),
             slow_ema=int(strat_s.get("slow_ema", 55)),
@@ -196,6 +221,16 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             token=tg_token,
             chat_id=tg_chat,
             notify_events=events or DEFAULT_TG_EVENTS,
+            confirm_seconds=int(tg_s.get("confirm_seconds", 120)),
+        ),
+        advice=AdviceConfig(
+            provider=provider if provider in {"grok", "claude"} else "grok",
+            grok_model=str(advice_s.get("grok_model", "grok-4")),
+            claude_model=str(advice_s.get("claude_model", "claude-sonnet-4-5")),
+            grok_key=grok_key,
+            claude_key=claude_key,
+            grok_url=str(advice_s.get("grok_url", "https://api.x.ai/v1/chat/completions")),
+            claude_url=str(advice_s.get("claude_url", "https://api.anthropic.com/v1/messages")),
         ),
     )
     _validate(cfg)
@@ -222,5 +257,7 @@ def _validate(cfg: BotConfig) -> None:
     if s.atr_tp_mult / s.atr_stop_mult < r.min_rr - 1e-9:
         raise ValueError("atr_tp_mult / atr_stop_mult must be >= min_rr")
     cfg.strategy.timeframe_id  # raises if unknown
+    if cfg.advice.provider not in {"grok", "claude"}:
+        raise ValueError("advice.provider must be grok or claude")
     if not cfg.symbols:
         raise ValueError("at least one symbol required")
