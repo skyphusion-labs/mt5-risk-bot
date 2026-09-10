@@ -45,6 +45,8 @@ Real accounts (`trade_mode=2`) also need `--i-accept-risk`.
 chat echoes redact BotFather tokens (`[REDACTED]`). `/confirm` is restored
 from the journal if the 120s TTL has not expired. Halt is `touch HALT`
 or `/halt` (process stays up).
+Journal, offset, and HALT files are owner-only (0600); the process sets
+umask 077. Secrets stay in the environment (see `SECURITY.md`).
 
 ## Chat
 
