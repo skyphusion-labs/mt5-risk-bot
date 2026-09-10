@@ -52,6 +52,7 @@ skip_friday_after_utc = "16:00"
 [engine]
 poll_seconds = 15
 comment = "mt5-risk-bot"
+# journal.jsonl and journal.tg_offset are chmod 0600; process umask 077
 journal_path = "journal.jsonl"
 
 # Telegram is required for `run`. Secrets from the environment only:
