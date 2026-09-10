@@ -6,7 +6,8 @@ The agent is the Cloudflare Computer worker.
 The gateway is Cloudflare AI Gateway `mt5-risk-bot`.
 
 You send desk commands from one Telegram chat.
-The bot sizes every order and can refuse it.
+The bot sizes every order.
+The bot can refuse an order.
 Advice never sends an order.
 `/confirm` is the only send.
 
@@ -23,6 +24,7 @@ Auto EMA trading is off until `/auto on`.
 | the desk | Telegram chat commands |
 | the agent | the Cloudflare Computer worker |
 | the gateway | Cloudflare AI Gateway `mt5-risk-bot` |
+| the circuit | halt, daily-loss, and drawdown gates |
 
 ## Install and paper run
 
@@ -77,7 +79,7 @@ See `agent/README.md` and `docs/RUNBOOK.md`.
 `--loop` retries Telegram HTTP 429 and 5xx.
 `--loop` calls `initialize` again after a dropped MT5 IPC.
 The Telegram offset is `journal.tg_offset` next to the journal.
-One failed tick is journaled as `loop_error`.
+One failed tick is journaled as `reconnect` or `loop_error`.
 The bot stays up.
 Two `run --loop` processes cannot share one journal.
 The second process prints `already running` and exits 2.
@@ -140,7 +142,8 @@ Bare `/cancel` drops a staged confirm.
 `/confirm` then sends two market orders.
 The first send closes the ticket.
 The second send opens the opposite side.
-The circuit can refuse the second send and leave you flat.
+The circuit can refuse the second send.
+Then you are left flat.
 `/closeby TICKET OTHER` offsets two opposite hedges on the same symbol.
 It uses `TRADE_ACTION_CLOSE_BY`.
 Hedge accounts only.
@@ -161,14 +164,14 @@ A UTC day roll sends a recap.
 A recap is not a trade.
 
 Free text is advice.
-The model may stage a market, `limit=`, `stop=`, or close-ticket order.
+The model can stage a market, `limit=`, `stop=`, or close-ticket order.
 `/confirm` is the only send.
-If the circuit would halt, advice is hold or close only.
+If the next order would trip the circuit, advice is hold or close only.
 Send `/help` for the rest.
 
 ## Docs
 
-`docs/CONTRACT.md` is the behaviour tests enforce.
+`docs/CONTRACT.md` is the behaviour that tests enforce.
 `docs/RUNBOOK.md` is paper, live, HALT, confirm-on-restart, lock, heartbeat, journal rotate, and launchd.
 `docs/launchd.plist.example` is a user LaunchAgent.
 It uses paper `--loop`, `KeepAlive`, and `Umask` 63.

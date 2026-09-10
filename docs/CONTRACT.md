@@ -6,10 +6,12 @@ The bot is the Python process on this computer.
 The desk is Telegram chat commands.
 The agent is the Cloudflare Computer worker.
 The gateway is Cloudflare AI Gateway `mt5-risk-bot`.
+The circuit is halt, daily-loss, and drawdown gates.
+The risk engine is the sizer in the bot (`RiskManager.evaluate`).
 
 You trade and ask for advice from one chat.
 MetaTrader 5 is the execution venue.
-The risk engine is the only thing that may size or refuse an order.
+The risk engine is the only thing that can size or refuse an order.
 Auto EMA trading is off until `/auto on`.
 
 ## Allowed claims
@@ -23,7 +25,7 @@ Auto EMA trading is off until `/auto on`.
 | Confirm | A staged suggestion waits for `/confirm` (default 120s). |
 | Size | Every new order is sized so a full stop-out loses at most `risk_pct` of equity (default 0.5%). |
 | Min lot | If the broker minimum lot would exceed that, the trade is skipped. |
-| Daily loss | Daily loss of `daily_loss_pct` (default 2%) of start-of-UTC-day equity flattens this magic and halts until the next UTC day. |
+| Daily loss | Daily loss of `daily_loss_pct` (default 2%) of start-of-UTC-day equity flattens positions for the bot's magic and halts until the next UTC day. |
 | Drawdown | Drawdown of `max_drawdown_pct` (default 10%) from peak equity flattens and stays halted until an operator inspects and restarts. |
 | Halt | `HALT` or `/halt` flattens immediately (positions and working orders). |
 | Real money | Real-money accounts (`trade_mode = 2`) refuse orders unless `--i-accept-risk` was passed. |
@@ -34,7 +36,7 @@ Auto EMA trading is off until `/auto on`.
 | Secrets | Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `AI_PROVIDER`, `ADVICE_URL`, `ADVICE_TOKEN`. |
 | Agent billing | `AI_PROVIDER=computer` posts to the agent. The agent bills through the gateway (`CF_AIG_TOKEN`), not a provider key. |
 | Redact | Journal writes, `loop_error` stderr, and Telegram `send` redact BotFather tokens. Named secret keys in the journal become `[REDACTED]`. |
-| File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600. Process umask 077. |
+| File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600. The bot sets umask 077. |
 | Sizer | `RiskManager.evaluate` is the only sizer. It is not optional. |
 
 ## Forbidden claims
@@ -65,19 +67,19 @@ Auto EMA trading is off until `/auto on`.
 | `/confirm` | Market: reprice to the live tick, preview, send. Limit/stop: preview at the staged price, send. |
 | `/cancel` | Drop the staged confirm. |
 | `/cancel TICKET` | Cancel a working order. |
-| `/replace TICKET PRICE` | Move a working order entry. Uses `TRADE_ACTION_MODIFY`. Circuit and `risk_pct` still refuse. |
+| `/replace TICKET PRICE` | Move a working order entry. Uses `TRADE_ACTION_MODIFY`. The circuit and `risk_pct` still refuse. |
 | `/orders` | List working orders. |
 | `/close TICKET\|SYMBOL\|all [VOL]` | Flatten or partial close. |
 | `/closeby TICKET OTHER` | Hedge-account only. `TRADE_ACTION_CLOSE_BY` offsets two opposite tickets. Same symbol, opposite sides. Remainder 0 or at least `volume_min`. Not a new send. Netting terminals refuse CLOSE_BY. Paper always hedges. |
-| `/reverse TICKET [sl=] [tp=]` | Two market sends: close the ticket, then the opposite side. `/confirm` is the send. Stage and preview exclude that ticket. Mirrors SL/TP distances if omitted. Circuit and `risk_pct` still refuse. After flatten they can leave you flat. |
+| `/reverse TICKET [sl=] [tp=]` | Two market sends: close the ticket, then the opposite side. `/confirm` is the send. Stage and preview exclude that ticket. Mirrors SL/TP distances if omitted. The circuit and `risk_pct` still refuse. After flatten they can leave you flat. |
 | `/sl` TICKET PRICE | Modify a position or a working order. Success only if the broker applied it. |
-| `/tp` TICKET PRICE `[VOL]` | Full TP, or scale-out VOL at PRICE (partial close when hit). Circuit still refuses. |
+| `/tp` TICKET PRICE `[VOL]` | Full TP, or scale-out VOL at PRICE (partial close when hit). The circuit still refuses. |
 | `/be TICKET` | Move SL to entry. Never loosen. |
 | `/trail on\|off\|TICKET` | on: `manage()` existing positions every tick. No EMA entries. Default off. TICKET: one-shot. Never loosen. |
 | `/history` | Last journal events. |
 | `/recap` | Equity vs UTC `day_start` plus `journal.tail`. Also sent on UTC day roll as notify `recap`. |
 | `/symbols list\|add\|remove [SYMBOL]` | Configured book (runtime). Bare `/symbols` lists. Cannot drop the last name, or a name with positions/orders. |
-| `/ask ...` or free text | Grok, Claude, or the agent. Local: last 40 turns in `journal.advice.json`. `AI_PROVIDER=computer`: Durable Object workspace (`notes.md`, `log.md`, `snapshot.md`) plus Computer tools. Session is the Telegram chat id. JSON may stage. Never sends. |
+| `/ask ...` or free text | Grok, Claude, or the agent. Local: last 40 turns in `journal.advice.json`. `AI_PROVIDER=computer`: Durable Object workspace (`notes.md`, `log.md`, `snapshot.md`) plus Computer tools. Session is the Telegram chat id. JSON can stage. Never sends. |
 | `/model grok\|claude\|computer` | Switch provider. |
 | `/auto on\|off` | Optional EMA regime. Fill alerts do not wait for this. |
 | `/status` `/positions` `/halt` `/resume` | Account. `/halt` flattens, drops the confirm, and cancels working orders. |
@@ -109,7 +111,7 @@ Advice JSON fields: `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `
 A close action with `ticket` stages that close.
 `/confirm` is still the only send.
 Context always includes `/risk`, positions, working orders, and quotes.
-If the circuit would halt, context says hold/close only.
+If the next order would trip the circuit, context says hold/close only.
 Buy/sell is not staged.
 
 Buy limit must be below ask.
@@ -132,7 +134,8 @@ Staging and the first confirm preview exclude that ticket so `already_in_symbol`
 Halt, daily-loss, drawdown, and `risk_pct` still refuse.
 The ticket stays open if they refuse before the close send.
 After the close send succeeds, preview runs again on the live book.
-Realized P/L can trip the circuit or leave no room for `risk_pct`.
+Realized P/L can trip the circuit.
+It can also leave no room for `risk_pct`.
 The reply is `closed #TICKET; reverse refused: ...`.
 There is no opposite position then.
 A failed opposite send is `closed #TICKET; send failed ...`.
@@ -141,7 +144,8 @@ Reverse is for open positions, not working orders.
 ## Close-by
 
 `/closeby TICKET OTHER` is a flatten, not a new order.
-Both tickets must be this magic, same symbol, opposite sides.
+Both tickets must use the bot's magic (20260909).
+They must be the same symbol and opposite sides.
 Overlap volume closes.
 The larger side keeps the remainder.
 Same ticket, same side, or a leftover below `volume_min` is refused.
@@ -168,7 +172,8 @@ Auto does not.
 
 `run --loop` retries Telegram HTTP 429 and 5xx with backoff.
 It resumes `getUpdates` at the same offset.
-That offset is written next to the journal (`journal.tg_offset`) after each update is handled or skipped.
+That offset is written next to the journal (`journal.tg_offset`).
+The write happens after each update is handled or skipped.
 A restart does not replay or drop commands.
 A dropped MT5 IPC calls `initialize` again.
 One failed poll, send, or broker tick is journaled (`reconnect` or `loop_error`).
@@ -177,9 +182,11 @@ Two `run --loop` processes cannot share a journal.
 `run` takes an exclusive flock on `journal.lock` (same stem as `journal_path`).
 A second `run --loop` prints `already running` to stderr and exits non-zero.
 The lock is released on exit or crash.
-Each `step_all` that reaches `account` writes `journal.heartbeat` (ISO timestamp, chmod 0600, atomic replace).
+Each `step_all` that reaches `account` writes `journal.heartbeat`.
+The file is an ISO timestamp, chmod 0600, atomic replace.
 A failed reconnect does not.
-Before a journal write that would exceed 10 MiB, the live file is renamed to `<name>.1` (replacing any previous `.1`).
+Before a journal write that would exceed 10 MiB, the live file is renamed to `<name>.1`.
+That replaces any previous `.1`.
 The new live file is chmod 0600.
 `tail` and `last_event` (confirm restore) read only the live file.
 

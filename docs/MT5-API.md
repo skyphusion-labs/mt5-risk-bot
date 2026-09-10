@@ -1,12 +1,12 @@
-# MetaTrader 5 API (what this bot uses)
+# MetaTrader 5 API (what the bot uses)
+
+The bot is the Python process on this computer.
 
 Pulled from the official MQL5 Python Integration reference
 (https://www.mql5.com/en/docs/integration/python_metatrader5)
 and the trade-server return-code table.
 The bot mirrors these constants in `mt5_risk_bot/constants.py`.
 The paper broker and the live adapter share one vocabulary.
-
-The bot is the Python process on this computer.
 
 ## Binding
 
@@ -18,11 +18,11 @@ It is not available as a native macOS wheel.
 macOS options:
 
 1. Install `mt5-mac` (PyPI 0.3.0).
-   It talks JSON to Python-for-Windows inside the Wine runtime bundled in MetaTrader 5.app.
+   It talks JSON to Python-for-Windows inside the Wine runtime in MetaTrader 5.app.
    Same function names.
 2. Use a Windows VPS running the official package.
-   That VPS may expose REST (`mt5api`, `mt5-bridge`).
-   This bot does not speak those HTTP APIs.
+   That VPS can expose REST (`mt5api`, `mt5-bridge`).
+   The bot does not speak those HTTP APIs.
 3. Use paper or backtest.
    No terminal is required.
 
@@ -77,12 +77,12 @@ Dict mapped onto `MqlTradeRequest`:
 | Field | Role |
 | --- | --- |
 | `action` | TRADE_ACTION_DEAL=1, PENDING=5, SLTP=6, MODIFY=7, REMOVE=8, CLOSE_BY=10 |
-| `magic` | EA id. This bot uses 20260909. Positions are filtered by it. |
+| `magic` | EA id. The bot uses 20260909. Positions are filtered by it. |
 | `symbol` | Instrument |
 | `volume` | Lots. Must snap to `volume_min` / `volume_step` / `volume_max`. |
 | `type` | ORDER_TYPE_BUY=0, SELL=1, plus pending types 2-7 |
 | `price` | Required for instant/request execution. Optional for market execution. |
-| `sl` / `tp` | Absolute prices. This bot requires SL. |
+| `sl` / `tp` | Absolute prices. The bot requires SL. |
 | `deviation` | Max slippage in points |
 | `type_filling` | FOK=0, IOC=1, RETURN=2. Must match `SYMBOL_FILLING_MODE` bits |
 | `type_time` | GTC=0, DAY=1, SPECIFIED=2 |
@@ -102,16 +102,21 @@ Change position SL/TP: `TRADE_ACTION_SLTP` with `position`, `sl`, `tp`.
 Change a pending order: `TRADE_ACTION_MODIFY` with `order`, `price`, `sl`, `tp`.
 Close two opposite hedges: `TRADE_ACTION_CLOSE_BY` with `position` and `position_by`.
 Hedge accounts only.
-A netting terminal refuses CLOSE_BY (one net position per symbol; there is no opposite ticket).
-The paper broker always hedges (a new ticket per deal) so close-by works in paper.
+A netting terminal refuses CLOSE_BY.
+A netting account has one net position per symbol.
+There is no opposite ticket.
+The paper broker always hedges (a new ticket per deal).
+Close-by works in paper.
 That is not a claim that paper P/L equals live.
 
 ## Filling mode (10030)
 
 `SYMBOL_FILLING_MODE` is a bitfield: FOK=1, IOC=2.
 If neither bit is set, RETURN is the market/exchange default.
+CAUTION
 Hardcoding RETURN is the usual cause of `TRADE_RETCODE_INVALID_FILL` (10030).
-This bot picks FOK if allowed, else IOC, else RETURN.
+
+The bot picks FOK if allowed, else IOC, else RETURN.
 It retries the other two on 10030.
 
 FOK = all-or-nothing (size stays equal to the risk calc).
@@ -168,7 +173,7 @@ From "The checks a trading robot must pass before publication in the Market":
 - Handle hedging vs netting.
 - Log retcodes.
 
-This bot does those on both paper and live paths.
+The bot does those on both paper and live paths.
 
 ## What the Python package is not
 
