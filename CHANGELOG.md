@@ -6,6 +6,64 @@ See README.md and docs/CONTRACT.md.
 
 ## Unreleased
 
+Smaller items batch (#15), in priority order. No version bump encoded here
+(several PRs open today already claim conflicting numbers); assigned at
+merge.
+
+- **Redaction gap, and it was an exfiltration path, not just a logging
+  gap.** `journal.redact_text` covered the BotFather token pattern only.
+  Advice turns persist to `journal.advice.json` and are replayed verbatim
+  into `Advisor._memory` on every subsequent provider call, so a
+  `sk-ant-...` or `xai-...` key pasted once into a chat question (or
+  echoed back in a model reply) was written to disk unredacted and
+  resent to the third-party provider on every following turn. Verified
+  the replay claim directly: the raw key showed up in the SECOND
+  outbound HTTP payload in a test before this fix. Widened the pattern
+  list; `_remember` (write) and `load` (read, so an already-persisted
+  legacy turn is cleaned on the next process start too) both already
+  routed through the one function, so one fix closes both the disk and
+  the replay side.
+- **`desk.py` vs `risk.py` mode-gate mismatch.** `Desk._live_needs_flag`
+  gated the "arm live first" warning on `mode != "mt5"`; `risk.py`'s real
+  send gate uses `mode in {"mt5", "mt4"}`. The desk side was wrong: on an
+  MT4 real account, `/approve always` armed with no warning at all. The
+  send was still refused downstream (`live_not_accepted`, risk.py's gate
+  is correct), so this was never a path to an unwarned send, but the desk
+  lied about the precondition until that refusal. Fixed to match risk.py's
+  set form.
+- **`/resume` message, and a sharper finding underneath it.** The issue
+  named `daily_loss`: `clear_operator_halt` trusted a single `_halt_reason`
+  slot that `circuit()` overwrites to `"halt_file"` on every call while the
+  operator HALT file exists, so a poll tick between `/halt` and `/resume`
+  made `/resume` claim "trading may resume" during a live `daily_loss`
+  halt. For `daily_loss` / `max_drawdown` this really was message-only:
+  every gate recomputes them fresh from the snapshot, so the next gate
+  call re-halts. It is NOT message-only for `state_unreadable` /
+  `state_unwritable`: neither is recomputed the same way (the state file
+  is read once, at start), so the same clobbering let `clear_operator_halt`
+  silently drop a COULD NOT MEASURE halt with nothing to re-derive it
+  from, and let `_persist_state`'s evidence-preservation guard reopen and
+  overwrite the corrupt file it exists to protect. Fixed with a dedicated,
+  never-clobbered slot for the state-integrity reason, and daily_loss /
+  max_drawdown re-derived from the snapshot instead of trusted from the
+  stale slot.
+- **Model pin.** `claude-sonnet-4-5` -> `claude-sonnet-5` in all 3 places
+  it appears (`config.py` dataclass default, `config.py` loader default,
+  `config.example.toml`). `grok_model` / `computer_model` checked and are
+  current; not touched. Nothing asserted on the old string.
+- **`ruff` and `mypy` in CI**, as a new `lint` job feeding the `ci`
+  aggregator's `needs:`. `ruff` selects `E4,E7,E9,F` deliberately (real
+  bugs: unused imports, undefined names, syntax-adjacent issues), not the
+  rest of `E`/`W`: this codebase's own idiom runs long, dense lines, and a
+  line-length gate would be a rewrite, not "a cheap win". `mypy` runs
+  against `src/mt5_risk_bot` with two narrow, documented per-module
+  overrides (`desk.py`'s deliberately `object`-typed `engine`; the MT5
+  binding's `Any | None` optional-import pattern in `mt5_live.py`), plus
+  four small `dict[str, object]` annotations and two `PaperBroker`
+  narrowing asserts in `__main__.py` that were genuine (if minor) type
+  gaps, not gate suppressions. Both tools verified clean against `src/` at
+  this commit before landing.
+
 Docs corrected to match current code (#14). No behaviour change.
 
 - `SECURITY.md` said real money is refused unless the bot started with

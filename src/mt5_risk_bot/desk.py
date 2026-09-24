@@ -521,7 +521,12 @@ class Desk:
 
     def _live_needs_flag(self) -> bool:
         cfg = getattr(self.engine, "cfg", None)
-        if cfg is None or getattr(cfg, "mode", "paper") != "mt5":
+        # risk.py's send gate (:255, :275) is {"mt5", "mt4"}; this warning
+        # gate was != "mt5" only, so an MT4 real account skipped straight to
+        # "approve always" with no live-arm warning at all (#15 item 2). The
+        # send was always still refused downstream (live_not_accepted), but
+        # the desk lied about the precondition until that refusal.
+        if cfg is None or getattr(cfg, "mode", "paper") not in {"mt5", "mt4"}:
             return False
         if getattr(cfg, "live_accepted", False):
             return False
