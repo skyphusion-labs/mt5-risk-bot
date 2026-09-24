@@ -902,7 +902,13 @@ def test_computer_ask_posts_journal_history(tmp_path) -> None:
     assert body["history"]
     events = [r.get("event") for r in body["history"] if isinstance(r, dict)]
     assert "open" in events
-    assert engine.advice_history() == body["history"]
+    # advice_turn closes the turn, so it is written AFTER the model call: the
+    # journal now holds exactly one record more than the history that was
+    # posted. Comparing the two as equal was only true while the advice path
+    # wrote nothing at all (#29).
+    after = engine.advice_history()
+    assert after[-1]["event"] == "advice_turn"
+    assert after[:-1] == body["history"]
     engine.stop()
 
 

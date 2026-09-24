@@ -4,6 +4,18 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.2.0
+
+- Every refusal on the desk and advice paths is now a structured journal record. Before this, `reject` was written on the auto/EMA leg only, so a refusal of anything a human or the model initiated left no machine-readable trace and could only be read as the English reply `refused: <reason>`. Asserting a gate on that string is asserting on prose.
+- One event name for every gate that says no, on every path: `reject`, carrying the NAMED `reason` plus `source` (`auto`, `telegram`, `advice`) and `stage` (`signal`, `stage`, `stage_close`, `confirm`, `reverse`, `confirm_reverse`, `reverse_after_close`, `approve`). `symbol`, `kind`, `rr`, `ticket`, and `command` ride along when the refused request had them. The auto leg now carries `source` and `stage` too, so the discriminator is total instead of being read from an absent field.
+- A refusal is journaled and is never echoed back into the chat that triggered it. It goes through `journal.write`, never `Engine._emit`, which is the chat broadcast path.
+- With no journal configured a refusal still prints to stderr. A control that goes silent because a file is missing cannot report that it was exercised.
+- The advice turn itself is now recorded: `advice_turn` with `provider`, `session`, `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, and `staged`. The question and the model reply are never journaled, so the redaction surface does not grow and `advice_history` stays free of prose.
+- `advice_circuit_block` records the circuit refusing to let the model stage at all. That gate decided whether the model could trade and wrote nothing.
+- `advice_stage_failed` carries `measured=false` for an advice action that could not be turned into an order at all. COULD NOT MEASURE is not REFUSED and is deliberately not a `reject`, so a refusal-reason count cannot absorb an unmeasured outcome.
+- `/auto on` and `/auto off` write `auto_on` and `auto_off`. `/live` and `/approve` were both audited and arming the autonomous trader was not.
+- No behaviour changes. Every refusal returns the same reply it did before; the records are additive.
+
 ## 1.1.5
 
 - Safety fix. A pre-trade check that never ran is no longer treated as a check that passed. MQL5 `order_check` reports a PASSED check as retcode `0`, and the MT5 adapter used to synthesize retcode `0` when the terminal call returned nothing, so the engine guard let the failure through and sent the order. A call that returns nothing now yields `RETCODE_UNKNOWN` (`-1`) and `OrderResult.measured` is false. The engine aborts before sending.

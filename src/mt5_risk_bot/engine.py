@@ -473,8 +473,13 @@ class Engine:
             now=now,
         )
         if not decision.allowed:
+            # journal.write, never _emit: a refusal is not broadcast to chat.
+            # source and stage are what let one reject event name every path
+            # apart, so the auto leg has to carry them too.
             self.journal.write(
                 "reject",
+                source="auto",
+                stage="signal",
                 symbol=symbol,
                 reason=decision.reason,
                 kind=sig.kind.value,
