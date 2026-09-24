@@ -4,6 +4,19 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.3.2
+
+The MT4 symbol reader no longer fabricates values it never measured (issue #30, superseding #12).
+
+- All 15 reads in `Mt4Broker.symbol` used `d.get(key, DEFAULT) or DEFAULT`. `or` fires on a legitimate ZERO as well as on absence, so a broker-reported zero became a EURUSD-shaped default that nothing downstream could tell from a measurement. Two real producers of zero: `MarketInfo` answers 0 for a symbol that is not in Market Watch, and the Expert truncated `tick_value` to four decimals so any real value below 0.00005 arrived as zero.
+- `SymbolSpec.unmeasured` records the fields that were not measured. An unmeasured field is left at a value that cannot be mistaken for usable, never at a plausible default.
+- The risk gate refuses with `spec_not_measured:<fields>` BEFORE any gate reads the spec. Previously an unusable `volume_step` produced `size_zero`, which says the budget was too small: a different fact. The last-line guard could not catch the tick-value case at all, because `risk.py` recomputes `money_per_lot_at_stop` from the same corrupt spec.
+- `1.0` was not a conservative default. Below 1.0 it undersizes, which is safe; above 1.0 it oversizes by exactly the ratio, so a 2.5 tick value spends 2.5x the intended budget. MQL4 has ONE tick-value identifier, `MODE_TICKVALUE`, with no loss-leg variant, so the MT5 remedy does not transfer and the honest fix is to refuse.
+- The 4 fields the Expert cannot send (`trade_mode`, `currency_base`, `currency_profit`, `currency_margin`) are marked unmeasured instead of invented. `trade_mode` no longer defaults to 4 (full trading), which had meant a close-only symbol presented as fully tradable. That was LATENT rather than live: nothing in `src/` reads `SymbolSpec.trade_mode`, only `Account.trade_mode` is consumed. Closed so it cannot become live later.
+- Zero remains a real reading where zero is real: `digits` on an instrument quoted in whole points, and `stops_level`, `freeze_level` and `spread`. Only fields where zero is impossible are treated as failed measurements.
+- The Expert now serialises `volume_min`, `volume_max`, `volume_step` and `tick_value` with 8 decimals instead of 2 and 4. A 0.001 lot step used to arrive as `0.00` and refuse every order with no explanation. This removes TRUNCATION as a producer of zero; it does not remove zero itself, and that one is still a refusal.
+- `docs/MT4.md` now states field by field what MT4 can and cannot supply, and says outright that MT4 has one tick value by design, so the loss-leg field is not re-proposed.
+
 ## 1.3.1
 
 Two MT4 Expert reply defects (issue #31). They are separate defects that happened to live in the same file.

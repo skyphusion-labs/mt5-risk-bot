@@ -100,8 +100,19 @@ def reads_of(method: object) -> set[str]:
     Deriving the read set from the source rather than restating it here is what
     makes the send-versus-read denominator below a measurement instead of a
     memo. It goes red when the adapter starts or stops reading a field.
+
+    Three spellings, because #30 replaced the symbol reader's
+    `d.get(key, DEFAULT) or DEFAULT` with explicit measurement helpers:
+    `.get("key")`, `measure("key", ...)` / `derived("key", ...)`, and `d["key"]`.
+    Recognising only the first would collapse this denominator to zero and the
+    pin would read GREEN for the wrong reason, which is the exact failure this
+    helper exists to prevent.
     """
-    return set(re.findall(r'\.get\(\s*"([a-z_]+)"', inspect.getsource(method)))
+    src = inspect.getsource(method)
+    found = set(re.findall(r'\.get\(\s*"([a-z_]+)"', src))
+    found |= set(re.findall(r'\b(?:measure|derived)\(\s*"([a-z_]+)"', src))
+    found |= set(re.findall(r'\bd\[\s*"([a-z_]+)"\s*\]', src))
+    return found
 
 
 # ---------------------------------------------------------------------------
@@ -140,7 +151,11 @@ class TestWireContract:
         The four the Expert never emits are the four the adapter can only
         default. `trade_mode` is the one that matters: `models.py:122` defaults
         it to 4, MT5's "full" trade mode, so a symbol the broker has restricted
-        is reported as unrestricted. Pinned here so #30 changes it visibly.
+        was reported as unrestricted. #30 changed that: the four are now recorded
+        in `SymbolSpec.unmeasured` instead of being fabricated. The denominator
+        itself is unchanged, and that is the point of keeping this pin: MQL4
+        cannot send any of the four, so the gap is permanent and what had to
+        change was the adapter's honesty about it, not the count.
         """
         sent = GOLDEN["symbol"].keys_sent() - {"id", "ok"}
         read = reads_of(Mt4Broker.symbol)
@@ -445,47 +460,59 @@ class TestMeasuredVersusDefaulted:
             spec = broker(tmp_path).symbol("XAUUSD")
         assert spec.trade_tick_value == 2.5
 
-    def test_zero_tick_value_is_indistinguishable_from_a_measured_one(self, tmp_path: Path) -> None:
-        """The wire says `0.0000` and the spec says `1.0`.
+    def test_zero_tick_value_is_distinguishable_from_a_measured_one(self, tmp_path: Path) -> None:
+        """Was `..._is_indistinguishable_from_...`, inverted by #30.
 
-        `MarketInfo` returns 0 for `MODE_TICKVALUE` on an unselected symbol, and
-        `DoubleToString(x, 4)` (:319) truncates anything under 0.00005 to the
-        same string. `mt4_live.py:286` then replaces it via `or 1.0`.
+        The pin it replaced recorded the defect: `MarketInfo` returns 0 for
+        `MODE_TICKVALUE` on an unselected symbol, the adapter replaced it via
+        `or 1.0`, and the resulting object was byte-identical to a genuine 1.0
+        measurement. Only the transcript retained the evidence.
 
-        Current behaviour, pinned so #30 can change it and be seen to change it:
-        the resulting object is byte-identical to a genuine 1.0 measurement, and
-        only the transcript retains the evidence that it was zero.
+        The two now differ in the object, not only on the wire.
         """
         transcript = t_symbol(tick_value="0.0000")
         assert transcript.value_sent("tick_value") == "0.0000"
         with wired(tmp_path, {"symbol": transcript}):
             spec = broker(tmp_path).symbol("USDJPY")
-        assert spec.trade_tick_value == 1.0
-        genuine = t_symbol(tick_value="1.0000")
+        assert "tick_value" in spec.unmeasured
+        assert spec.trade_tick_value == 0.0
+        genuine = t_symbol(tick_value="1.00000000")
         with wired(tmp_path, {"symbol": genuine}):
             other = broker(tmp_path).symbol("USDJPY")
-        assert spec.trade_tick_value == other.trade_tick_value
+        assert other.trade_tick_value == 1.0
+        assert "tick_value" not in other.unmeasured
+        assert spec.trade_tick_value != other.trade_tick_value
         assert transcript.value_sent("tick_value") != genuine.value_sent("tick_value")
 
-    def test_symbol_trade_mode_is_defaulted_because_the_expert_sends_nothing(
+    def test_symbol_trade_mode_is_unmeasured_because_the_expert_cannot_send_it(
         self, tmp_path: Path
     ) -> None:
-        """`SymbolReply` (:313-324) emits no `trade_mode`, so 4 is a default.
+        """Was `..._is_defaulted_because_...`, inverted by #30.
 
-        Four is MT5's "full" trade mode (`models.py:122`), so every symbol the
-        adapter describes reads as fully tradable regardless of what the broker
-        actually permits. Nothing in `src/` reads `SymbolSpec.trade_mode` today,
-        so the consequence is latent rather than live; it becomes live the moment
-        a caller trusts the field.
+        `SymbolReply` emits no `trade_mode` and MQL4 has no trade-mode
+        identifier, so it can never be measured over this wire. It used to
+        default to 4, MT5's "full" mode, so every symbol read as fully tradable
+        regardless of what the broker permits. It is now recorded as unmeasured
+        and left at 0, MQL5's DISABLED, which is the fail-closed direction.
+
+        Still LATENT rather than live: nothing in `src/` reads
+        `SymbolSpec.trade_mode`, only `Account.trade_mode` is consumed. Closed
+        so it cannot become live later.
         """
         transcript = GOLDEN["symbol"]
         assert transcript.value_sent("trade_mode") is None
         with wired(tmp_path, {"symbol": transcript}):
             spec = broker(tmp_path).symbol("EURUSD")
-        assert spec.trade_mode == 4
+        assert "trade_mode" in spec.unmeasured
+        assert spec.trade_mode != 4
 
     def test_symbol_currencies_are_derived_from_the_name_not_measured(self, tmp_path: Path) -> None:
-        """No currency field is on the wire; `mt4_live.py:294-296` slices the name."""
+        """No currency field is on the wire; the adapter slices the name.
+
+        MQL4 has no per-symbol currency identifier, so the convention stays
+        (it is useful and usually right) but #30 records all three as unmeasured
+        so no caller mistakes a naming convention for a measurement.
+        """
         transcript = GOLDEN["symbol"]
         for key in ("currency_base", "currency_profit", "currency_margin"):
             assert transcript.value_sent(key) is None
@@ -494,6 +521,8 @@ class TestMeasuredVersusDefaulted:
         assert spec.currency_base == "EUR"
         assert spec.currency_profit == "USD"
         assert spec.currency_margin == ""
+        for key in ("currency_base", "currency_profit", "currency_margin"):
+            assert key in spec.unmeasured
 
     def test_short_symbol_name_yields_empty_currencies(self, tmp_path: Path) -> None:
         """A name under six characters, for instance an index, has nothing to slice."""
