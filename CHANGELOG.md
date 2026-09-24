@@ -16,6 +16,31 @@ See README.md and docs/CONTRACT.md.
 - Per-file coverage floors, declared in `[tool.mt5_risk_bot.coverage_floors]` in `pyproject.toml`. `broker/mt4_live.py` has a floor of 97%. A package-wide `--cov-fail-under` cannot go red for one file.
 - `broker/mt4_live.py` coverage: 86.94% to 97.59%. Tests touching it: 18 to 114. Suite: 305 to 415.
 
+
+## 1.3.0
+
+Sender-level authorization for Telegram commands (GHSA-9fg6-2x5f-3jvp).
+
+- `TELEGRAM_ALLOW_SENDERS`, or `telegram.allow_senders` in `config.toml`, lists the Telegram sender ids that may command the desk. Every inbound command is checked against it, read-only commands included. A comma separates ids in the environment variable.
+- An update whose sender cannot be read is refused. An identity that was not measured is not an authorized one.
+- A group, supergroup, or channel chat id is negative. On a negative chat id with an empty allow-list, `run` and `doctor` exit non-zero instead of starting.
+- An empty allow-list on a private chat id is unchanged behaviour. An existing single-operator deployment needs no config edit.
+- A refused command is journaled as `command_rejected` with the sender id, the chat id, and the command name. It is never answered in chat.
+
+
+## 1.2.0
+
+An MT4 market order can no longer be left open with no stop while the desk is told the send failed (issue #23).
+
+- An MT4 market send is two calls: `OrderSend` with no stop, then `OrderModify`. If the second call failed, the Expert attempted one unchecked `OrderClose` and reported a plain failure either way. If that close also failed, or if the Expert could not even SELECT the ticket, the position stayed open with no stop and the desk was told the send failed. Nothing on either side reconciled that state.
+- The rollback is now verified against the book rather than against a return value. The Expert re-reads the ticket and only reports a clean failure when `OrderCloseTime()` confirms it is gone. A failed `OrderSelect` now rolls back instead of abandoning the ticket.
+- When the rollback cannot be verified, the reply carries `survivor_ticket=<ticket>` and `error=sl_modify_failed_position_live`. `Fail()` had no ticket field at all, so the wire previously could not express this state even in principle.
+- `OrderResult.survivor_ticket`: `0` nothing survived, a positive ticket is live exposure the desk was told did not exist, `None` is COULD NOT MEASURE. Venues that attach the stop with the entry, including MT5, have no such window and report `0`.
+- An Expert older than 1.2.0 does not send the field. That reads as `None`, never as `0`. An unanswered question is not an all clear.
+- Two journal events: `unmanaged_position` and `survivor_unknown`. Both are also sent to Telegram in words, because a live unstopped position the desk does not know about is not a journal-only condition.
+- Working orders get the same treatment, with `OrderDelete` and `sl_modify_failed_order_live`.
+- `OnInit` scans the book at startup and prints every position that is open with no stop. New `ReconcileMagic` input filters the scan; `0` reports all. The Expert reports these and does not adopt them.
+- `docs/MT4.md` documented the two-step entry as an ECN feature and stated that the Expert closes the ticket on a modify failure. It did not close it reliably. The section now states the three outcomes and which one leaves money at risk.
 ## 1.1.5
 
 - Safety fix. A pre-trade check that never ran is no longer treated as a check that passed. MQL5 `order_check` reports a PASSED check as retcode `0`, and the MT5 adapter used to synthesize retcode `0` when the terminal call returned nothing, so the engine guard let the failure through and sent the order. A call that returns nothing now yields `RETCODE_UNKNOWN` (`-1`) and `OrderResult.measured` is false. The engine aborts before sending.
