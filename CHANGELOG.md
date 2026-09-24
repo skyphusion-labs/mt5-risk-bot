@@ -4,6 +4,34 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.3.0
+
+Ships the handover config gate (#25). `/approve always` and `/auto on` are the
+two paths to a real-money send with no human keystroke: `/approve always`
+sends inside the same Telegram `handle()` call as the advice turn, and
+`/auto on` trades from the EMA signal with no confirm step at all.
+
+- `telegram.allow_approve_always` and `telegram.allow_auto` in `config.toml`
+  (env: `TELEGRAM_ALLOW_APPROVE_ALWAYS`, `TELEGRAM_ALLOW_AUTO`). Both default
+  true, so an existing deployment that never sets these keys is unaffected.
+- Set either false and the matching command is refused with a named reason
+  (`approve_always_disabled`, `auto_disabled`), journaled as `reject`
+  (`source=telegram`, `stage=approve`/`auto`), and never answered in chat.
+  With no journal reachable the refusal still prints to stderr.
+  `/approve off` and `/auto off` are never refused.
+- A value that is present but not a clean boolean parses to false, never to
+  the default: a config typo or a string-valued env var (`bool("false")` is
+  `True` in Python) can only ever remove the capability, never grant it.
+- `config.handover.toml`, a new file, ships with both set false. Copy it to
+  `config.toml` for a handed-over desk.
+
+Version chosen, not assumed: `main` is 1.1.5, and PR #40 (1.1.6) and PR #49
+(1.2.0) are both open. This adds new config surface rather than fixing a
+defect in existing behaviour, so MINOR under the project rule; 1.3.0 avoids
+colliding with either open lane's claimed number. Whoever merges last still
+needs to renumber deliberately; a clean merge is not evidence the version is
+right (see #38's "version trap").
+
 ## 1.1.5
 
 - Safety fix. A pre-trade check that never ran is no longer treated as a check that passed. MQL5 `order_check` reports a PASSED check as retcode `0`, and the MT5 adapter used to synthesize retcode `0` when the terminal call returned nothing, so the engine guard let the failure through and sent the order. A call that returns nothing now yields `RETCODE_UNKNOWN` (`-1`) and `OrderResult.measured` is false. The engine aborts before sending.

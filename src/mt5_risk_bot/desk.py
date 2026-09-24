@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import sys
 import time
 from dataclasses import dataclass
 
@@ -146,6 +147,26 @@ class Desk:
         write = getattr(journal, "write", None)
         if callable(write):
             write(event, **fields)
+
+    def _journal_only(self, event: str, **fields: object) -> None:
+        """Write a control decision to the journal and NOT to the chat.
+
+        A refusal is never echoed back into the chat that asked for it. PR
+        #40 set that precedent for command_rejected by going to
+        journal.write rather than Engine._emit; this follows the same
+        route and the same silence guard: with no journal reachable the
+        control still reports that it fired, on stderr, so a control that
+        goes quiet because a file is missing cannot look unexercised.
+        """
+        journal = getattr(self.engine, "journal", None)
+        write = getattr(journal, "write", None)
+        if callable(write):
+            try:
+                write(event, **fields)
+                return
+            except (OSError, ValueError, RuntimeError, TypeError):
+                pass
+        print(redact_text(f"{event} {fields}"), file=sys.stderr)
 
     def _set_pending(self, pending: Pending) -> None:
         self.pending = pending
@@ -566,6 +587,20 @@ class Desk:
     def _approve(self, args: str) -> str:
         token = args.strip().lower()
         if token in {"always", "on"}:
+            cfg = getattr(self.engine, "cfg", None)
+            tg_cfg = getattr(cfg, "telegram", None)
+            if not getattr(tg_cfg, "allow_approve_always", True):
+                self._journal_only(
+                    "reject",
+                    source="telegram",
+                    stage="approve",
+                    reason="approve_always_disabled",
+                    command="approve",
+                )
+                return (
+                    "approve always is disabled on this deployment. "
+                    "risk stays sizing-only; /confirm each order"
+                )
             if self._live_needs_flag():
                 return (
                     "real-money: /live on I-ACCEPT-RISK in this chat, "
@@ -586,6 +621,19 @@ class Desk:
     def _auto(self, args: str) -> str:
         token = args.strip().lower()
         if token in {"on", "1", "true"}:
+            tg_cfg = getattr(self.engine.cfg, "telegram", None)
+            if not getattr(tg_cfg, "allow_auto", True):
+                self._journal_only(
+                    "reject",
+                    source="telegram",
+                    stage="auto",
+                    reason="auto_disabled",
+                    command="auto",
+                )
+                return (
+                    "auto is disabled on this deployment. "
+                    "enable telegram.allow_auto in config.toml to run unattended"
+                )
             self.engine.cfg.strategy.auto = True
             return "auto on"
         if token in {"off", "0", "false"}:

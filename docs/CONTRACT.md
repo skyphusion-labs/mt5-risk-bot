@@ -47,6 +47,7 @@ Auto EMA trading is off until `/auto on`.
 | Redact | Journal writes, `loop_error` stderr, and Telegram `send` redact BotFather tokens. Named secret keys in the journal become `[REDACTED]`. |
 | File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.equity.json`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600 on Unix. The bot sets umask 077. Windows has no POSIX mode bits; the lock is still exclusive. |
 | Sizer | `RiskManager.evaluate` is the only sizer. It is not optional. |
+| Handover posture | `telegram.allow_approve_always` and `telegram.allow_auto` (env: `TELEGRAM_ALLOW_APPROVE_ALWAYS`, `TELEGRAM_ALLOW_AUTO`) gate `/approve always` and `/auto on`. Both default true: unset, behaviour is unchanged. Set false, the command is refused with a named reason (`approve_always_disabled`, `auto_disabled`), journaled as `reject` (`source=telegram`), and never answered in chat. A value that is present but not a clean boolean is read as false, never as the default: a bad env var or a config typo can only remove the capability, never grant it. `/approve off` and `/auto off` are never refused. `config.handover.toml` sets both false. |
 
 ## Forbidden claims
 
