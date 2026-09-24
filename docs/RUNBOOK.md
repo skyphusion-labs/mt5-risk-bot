@@ -229,6 +229,13 @@ Laptop: `agent/.dev.vars` (0600, gitignored).
 
 `/model computer` at runtime.
 Session is the Telegram chat id (one workspace per chat).
+The agent needs `session` in the body. It must be a JSON string.
+Use letters, digits, dot, underscore, and hyphen. The length is 1 to 64.
+A missing or bad session gets `400 {"error":"invalid session"}`.
+The agent builds no workspace for a session it refuses.
+There is no automatic fallback. Send `default` to share one desk on purpose.
+`ADVICE_SESSIONS` is optional. Set it to a comma list to serve only those keys.
+The bot sends the chat id, so it needs no change.
 Redeploy: `cd agent && npx wrangler deploy` (needs `CLOUDFLARE_API_TOKEN`).
 The agent is still a Cloudflare preview.
 

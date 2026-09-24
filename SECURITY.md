@@ -61,4 +61,10 @@ A refused command gets no reply.
 `HALT` is chmod 0600 when the bot writes it.
 
 WARNING
-A real-money account is refused unless the bot started with `--i-accept-risk`.
+Two things arm a real-money account, both per process, neither restored by
+a restart: starting the bot with `--i-accept-risk`, or `/live on
+I-ACCEPT-RISK` in the locked Telegram chat at any time while it runs. A
+restart never re-arms from an earlier `/live on` in the journal; `start`
+writes `live_not_restored` instead, and `/live` says so until the phrase
+is re-typed. `/live off` disarms immediately. The risk engine still sizes
+and can refuse a sized order even while armed.

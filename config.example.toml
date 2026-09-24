@@ -89,6 +89,6 @@ confirm_seconds = 120
 [advice]
 provider = "grok"
 grok_model = "grok-4"
-claude_model = "claude-sonnet-4-5"
+claude_model = "claude-sonnet-5"
 computer_model = "xai/grok-4.6"
 # computer_url / computer_token: environment only (ADVICE_URL, ADVICE_TOKEN)
