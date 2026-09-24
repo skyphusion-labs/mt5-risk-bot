@@ -4,7 +4,7 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
-## 1.2.1
+## 1.3.1
 
 Two MT4 Expert reply defects (issue #31). They are separate defects that happened to live in the same file.
 
@@ -21,6 +21,16 @@ Two MT4 Expert reply defects (issue #31). They are separate defects that happene
 - A position row is 13 pipe-separated fields with the comment at index 10. A broker comment containing a pipe (brokers do append `[sl]` and `from #123`) shifted `swap` onto the comment tail and `time` onto `swap`, and `positions()` raised `ValueError` out of `float()`. The desk could not enumerate its own book, triggered by data the broker controls rather than by anything the desk did.
 - The Expert now has `Wire()` and applies it to every broker string it writes. A test asserts the Expert's rule and `_wire`'s rule are the same rule, and a golden transcript carries a comment with a pipe through the real mailbox and checks all 13 fields land in the right places.
 - `docs/MT4.md` stated the sanitation rule without saying which side owns it, and promised `retcode` was the MT4 error "when known", which was never true on the failing paths. Both corrected, including the one deliberate asymmetry: `_wire` forces ASCII and `Wire()` does not.
+## 1.3.0
+
+Sender-level authorization for Telegram commands (GHSA-9fg6-2x5f-3jvp).
+
+- `TELEGRAM_ALLOW_SENDERS`, or `telegram.allow_senders` in `config.toml`, lists the Telegram sender ids that may command the desk. Every inbound command is checked against it, read-only commands included. A comma separates ids in the environment variable.
+- An update whose sender cannot be read is refused. An identity that was not measured is not an authorized one.
+- A group, supergroup, or channel chat id is negative. On a negative chat id with an empty allow-list, `run` and `doctor` exit non-zero instead of starting.
+- An empty allow-list on a private chat id is unchanged behaviour. An existing single-operator deployment needs no config edit.
+- A refused command is journaled as `command_rejected` with the sender id, the chat id, and the command name. It is never answered in chat.
+
 
 ## 1.2.0
 

@@ -114,7 +114,7 @@ Python maps those onto `TRADE_RETCODE_*` so `OrderResult.ok` stays venue-neutral
 `retcode=0` on a failure means the Expert did not report a reason. It is NOT a
 broker rejection, and the adapter does not present it as one: it reports
 `RETCODE_UNKNOWN`, `OrderResult.measured` is false, and the comment says the
-reason was not reported. An Expert older than 1.2.1 produces this on every
+reason was not reported. An Expert older than 1.3.1 produces this on every
 failed send and modify, because `GetLastError()` clears the error register when
 it is read and the retry helpers read it first. Recompile and reattach
 `Mt4RiskBot.mq4` if you see it.
