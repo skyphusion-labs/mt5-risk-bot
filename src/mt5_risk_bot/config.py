@@ -193,7 +193,6 @@ class TelegramConfig:
     chat_id: str = ""
     notify_events: tuple[str, ...] = DEFAULT_TG_EVENTS
     confirm_seconds: int = 120
-<<<<<<< HEAD
     # Handover posture (#25). Both default True: an operator who has never
     # heard of this key gets today's behaviour unchanged. The shipped
     # handover template sets both false. Fail-closed parsing lives in
@@ -201,9 +200,7 @@ class TelegramConfig:
     # config value, only the loader can.
     allow_approve_always: bool = True
     allow_auto: bool = True
-=======
     allow_senders: tuple[int, ...] = ()
->>>>>>> origin/main
 
     @property
     def enabled(self) -> bool:
@@ -419,12 +416,9 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             chat_id=tg_chat,
             notify_events=events or DEFAULT_TG_EVENTS,
             confirm_seconds=int(tg_s.get("confirm_seconds", 120)),
-<<<<<<< HEAD
             allow_approve_always=tg_allow_approve_always,
             allow_auto=tg_allow_auto,
-=======
             allow_senders=tg_allow,
->>>>>>> origin/main
         ),
         advice=AdviceConfig(
             provider=provider if provider in {"grok", "claude", "computer"} else "grok",
