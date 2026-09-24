@@ -20,6 +20,15 @@ because a money gate that cannot measure must not trade:
   it is a deliberate act that also resets the peak.
 - `state_unwritable`: the snapshot could not be written, so the next restart
   would lose it.
+
+The last-line size guard in `evaluate` takes two caps. One re-derives what
+`sizing.lots_for_risk` already applied and cannot fire against the current
+sizer; it is the backstop for a future change that loosens it, and a test
+breaks the sizer deliberately so it is seen firing. The other is the room left
+before the daily-loss and drawdown halts, computed from the persisted
+`EquitySnapshot` the sizer never sees, so it can DISAGREE with the sizer
+instead of recomputing it. Before issue #55 only the first cap existed, with a
+tolerance LOOSER than the sizer's own, which is why nothing could reach it.
 """
 
 from __future__ import annotations
@@ -325,6 +334,29 @@ class RiskManager:
             return self._halt("max_drawdown")
         return RiskDecision(allowed=True, reason="ok")
 
+    def loss_room(self, account: Account) -> float:
+        """Money this account may still lose before a halt gate would trip.
+
+        The daily-loss and drawdown budgets are computed from the persisted
+        EquitySnapshot: day_start_equity is set once per UTC day and survives
+        a restart, and peak_equity outlives the process. The sizer is handed
+        neither, so a gate built on them can DISAGREE with the sizer. A gate
+        that recomputes what the sizer already computed, from the inputs the
+        sizer was already given, is not a second layer; it is a slower copy,
+        and it cannot report anything the first layer did not.
+
+        Positive whenever the circuit is clear: both halt gates fire at or
+        before zero room, so evaluate reads this only after circuit passed.
+        Call it after observe, so the snapshot is the current one.
+        """
+        r = self.cfg.risk
+        s = self.snapshot
+        room = s.day_start_equity * r.daily_loss_pct - (s.day_start_equity - account.equity)
+        if s.peak_equity > 0:
+            dd_room = s.peak_equity * r.max_drawdown_pct - (s.peak_equity - account.equity)
+            room = min(room, dd_room)
+        return room
+
     def evaluate(
         self,
         *,
@@ -397,8 +429,24 @@ class RiskManager:
         if lots <= 0:
             return RiskDecision(allowed=False, reason="size_zero")
 
+        # Last line, and two caps that are here for different reasons.
+        #
+        # per_trade re-derives the cap `lots_for_risk` already applied. It
+        # cannot fire against today's sizer, which enforces the same
+        # inequality with the same tolerance before it returns. It is kept as
+        # the backstop for a future change that loosens the sizer, and a test
+        # breaks the sizer on purpose so that half is watched firing: a term
+        # that can only fire after a regression is a backstop, but only if
+        # something can make it fire.
+        #
+        # loss_room is the live half, and the reason this is a second layer
+        # rather than a slower copy of the first. It is derived from the
+        # persisted snapshot, which the sizer is never given, so it can
+        # DISAGREE: a full stop-out on this volume must not carry the account
+        # through a halt it has not tripped yet.
         worst = money_per_lot_at_stop(signal.entry, signal.sl, spec) * lots
-        if worst > account.equity * r.risk_pct * r.max_risk_multiple + 1e-6:
+        per_trade = account.equity * r.risk_pct * r.max_risk_multiple
+        if worst > min(per_trade, self.loss_room(account)) + 1e-9:
             return RiskDecision(allowed=False, reason="size_exceeds_risk")
 
         return RiskDecision(allowed=True, reason="ok", volume=lots)

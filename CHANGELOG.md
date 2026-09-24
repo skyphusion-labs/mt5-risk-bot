@@ -90,6 +90,20 @@ Docs corrected to match current code (#14). No behaviour change.
   the Names table now say so.
 
 
+## 1.5.0
+
+The last-line size guard can fire (issue #55). It was dead. It recomputed the cap `lots_for_risk` had already applied, from the same entry, stop, spec and equity, with a LOOSER tolerance (`1e-6` against the sizer `1e-9`), so every input that would have tripped it had already been turned into 0 lots and reported as `size_zero`. A 497,664-case sweep reached the line 114,840 times and tripped it zero times.
+
+- The guard now takes TWO caps and refuses on the tighter of them. The first is the old per-trade cap, kept as the backstop for a future change that loosens the sizer, with its tolerance brought into line with the sizer own (`1e-9`, not `1e-6`). The second is `RiskManager.loss_room`: what the account may still lose before the daily-loss or max-drawdown halt trips. That figure is derived from the persisted `EquitySnapshot` (`day_start_equity`, `peak_equity`), which `lots_for_risk` is never given, so the gate can DISAGREE with the sizer instead of recomputing it. A second layer that reads the first layer inputs is not a second layer.
+- **Behaviour change an operator will see.** A trade whose full stop-out would carry the account through the daily-loss or drawdown halt is now refused as `size_exceeds_risk` instead of being sent. The halt used to fire after the loss; it now also refuses the size that would cause it. A configuration where one trade risks more than the whole daily loss budget (`risk_pct` times `max_risk_multiple` above `daily_loss_pct`) refuses every entry rather than sending trades the daily loss limit cannot absorb.
+- The same 497,664-case sweep now reaches the line 114,840 times and trips it 54,111 times. A smaller sweep of the same shape ships as a test (2,880 cases, 1,080 reached, 444 refused, 636 allowed) and asserts BOTH counts: a guard that refuses everything is as useless as one that refuses nothing. The shipped grid is a quarter of the measured one because each case rewrites the persisted snapshot, which took the Windows CI leg from 65s to 4m37s at 11,520 cases; a sweep nobody tolerates in CI gets deleted.
+- Independence is asserted as an experiment, not as an argument. Every input `lots_for_risk` receives is held exactly constant, only the persisted snapshot moves, and the verdict flips from `ok` to `size_exceeds_risk`.
+- The per-trade half still cannot fire against the current sizer, by construction. It is exercised by a test that loosens the sizer by 1.5x on purpose and watches the refusal, so the term is a backstop and not decoration.
+- `size_zero` and `size_exceeds_risk` stay two different words for two different situations, asserted on one manager and one account with only the stop distance changing.
+- **The pin that held this line dead did NOT fail when the line became reachable, and that is the second finding.** `test_size_exceeds_risk_is_dominated_by_size_zero` said it would FAIL the day the guard could fire. It re-implemented the guard old arithmetic from `lots_for_risk` instead of calling `evaluate`, so what it measured was the SIZER, which this change does not touch, and it stayed green through the whole of it. It is deleted on purpose, named in the PR that deletes it, and replaced by a case that exercises the reason. A pin on a dead line has to call the line.
+- Not fixed here, and still open: `size_zero` remains one word for two situations (a degenerate input, and a broker minimum lot that would risk more than the budget). Splitting it is a separate change to the reason vocabulary.
+
+
 ## 1.4.1
 
 Tests and findings only. The shipped product is unchanged: no file under `src/` has a behaviour edit in this release, and the version moves only so these findings have a place to be recorded.
