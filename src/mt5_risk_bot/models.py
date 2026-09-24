@@ -102,6 +102,15 @@ class Account:
     trade_mode: int = 0  # 0 demo, 1 contest, 2 real
 
 
+#: The spec fields the sizer and the risk gates actually read. A spec that
+#: could not measure one of these cannot be sized against at all, so the gate
+#: refuses by NAME instead of letting `normalize_volume` return zero and
+#: reporting `size_zero`, which says the budget was too small: a different fact.
+SPEC_SIZING_FIELDS = frozenset(
+    {"point", "tick_size", "tick_value", "volume_step", "volume_min", "volume_max"}
+)
+
+
 @dataclass(frozen=True)
 class SymbolSpec:
     name: str
@@ -122,6 +131,17 @@ class SymbolSpec:
     trade_mode: int = 4  # full
     visible: bool = True
     spread: int = 0
+    #: Wire field names this spec could NOT measure. Empty means every field is
+    #: a measurement. A name here means the venue either did not send the field
+    #: or sent a value that cannot be a measurement, for instance a zero where
+    #: zero is impossible. The field itself is then left at a value that cannot
+    #: be mistaken for usable, never at a plausible default: a fabricated
+    #: default is an absent measurement wearing a measurement's clothes.
+    unmeasured: frozenset[str] = frozenset()
+
+    def unmeasured_for_sizing(self) -> frozenset[str]:
+        """The unmeasured fields that sizing and the risk gates depend on."""
+        return self.unmeasured & SPEC_SIZING_FIELDS
 
     def normalize_price(self, price: float) -> float:
         return round(price, self.digits)
@@ -180,6 +200,13 @@ class OrderResult:
     bid: float = 0.0
     ask: float = 0.0
     request: dict[str, Any] = field(default_factory=dict)
+    # Exposure left behind by a send that reported failure.
+    #   0    the venue checked and nothing survived
+    #   N    ticket N is still on the book and the desk was told otherwise
+    #   None the venue did not answer, which is COULD NOT MEASURE
+    # Venues that attach the stop in the same call as the entry have no
+    # such window and leave this at 0.
+    survivor_ticket: int | None = 0
 
     @property
     def ok(self) -> bool:

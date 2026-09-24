@@ -10,10 +10,12 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
 from mt5_risk_bot.constants import (
+    RETCODE_UNKNOWN,
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID_PRICE,
     TRADE_RETCODE_INVALID_STOPS,
@@ -133,6 +135,21 @@ def _coerce(v: str) -> Any:
 
 def _truthy(v: Any) -> bool:
     return v in {True, 1, "1", "true", "True", "yes"}
+
+
+def _survivor_ticket(d: dict[str, Any], ok: bool) -> int | None:
+    """What the Expert said about exposure left behind by a failed send.
+
+    The Expert states this on every reply from a trade handler, including
+    the ordinary rejections where the answer is zero. Absence therefore
+    means one thing only: the Expert predates this contract and cannot
+    answer. That is COULD NOT MEASURE, and it is reported as None.
+    Returning 0 there would turn an unanswered question into a clean bill
+    of health, which is the defect this field exists to close.
+    """
+    if "survivor_ticket" in d:
+        return int(d.get("survivor_ticket") or 0)
+    return 0 if ok else None
 
 
 def parse_rows(data: dict[str, Any], fields: tuple[str, ...], *, nested: str = "") -> list[dict[str, Any]]:
@@ -275,27 +292,108 @@ class Mt4Broker:
         )
 
     def symbol(self, name: str) -> SymbolSpec:
+        """Read a symbol spec, recording every field that was not measured.
+
+        `d.get(key, DEFAULT) or DEFAULT` was used for all 15 reads here. `or`
+        fires on a legitimate ZERO as well as on absence, so a broker-reported
+        zero became a EURUSD-shaped default that no later check could tell from
+        a real measurement. The last-line guard could not catch it either:
+        `risk.py` recomputes `money_per_lot_at_stop` from this same spec, so a
+        wrong number was compared against a wrong number and passed.
+
+        MQL4 has exactly one tick-value identifier, `MODE_TICKVALUE`. There is
+        no loss-leg variant, so the MT5 remedy of preferring a better field does
+        not transfer. On MT4 the only honest answer is to refuse.
+        """
         d = self._require("symbol", {"symbol": name.upper()})
         n = name.upper()
-        point = float(d.get("point", 0.00001) or 0.00001)
+        unmeasured: set[str] = set()
+
+        def measure(key: str, *, positive: bool) -> float:
+            """The measured value, or 0.0 with `key` recorded as unmeasured.
+
+            `positive` marks a field where zero is not a possible measurement,
+            only a failed one: `MarketInfo` answers 0 for a symbol that is not
+            in Market Watch. Fields where zero IS a real measurement, such as
+            `digits` on an instrument quoted in whole points, pass
+            `positive=False` so the reading survives.
+            """
+            if key not in d:
+                unmeasured.add(key)
+                return 0.0
+            try:
+                value = float(d[key])
+            except (TypeError, ValueError):
+                unmeasured.add(key)
+                return 0.0
+            if positive and value <= 0:
+                unmeasured.add(key)
+                return 0.0
+            return value
+
+        def derived(key: str, convention: str) -> str:
+            """A field the Expert cannot send. The value is a naming convention.
+
+            MQL4's `MarketInfo` has no per-symbol currency identifier, so this
+            is a limit of the platform rather than a gap in the Expert. The
+            convention is kept because it is useful and usually right, and the
+            field is recorded as unmeasured so no caller mistakes it for a
+            measurement.
+            """
+            if key in d:
+                return str(d[key])
+            unmeasured.add(key)
+            return convention
+
+        # Evaluated before the constructor call on purpose: `unmeasured` is
+        # filled in by these, and relying on argument evaluation order to have
+        # happened first would be a trap for the next reader.
+        point = measure("point", positive=True)
+        digits = measure("digits", positive=False)
+        tick_size = measure("tick_size", positive=True)
+        tick_value = measure("tick_value", positive=True)
+        contract_size = measure("contract_size", positive=True)
+        volume_min = measure("volume_min", positive=True)
+        volume_max = measure("volume_max", positive=True)
+        volume_step = measure("volume_step", positive=True)
+        stops_level = measure("stops_level", positive=False)
+        freeze_level = measure("freeze_level", positive=False)
+        spread = measure("spread", positive=False)
+        currency_base = derived("currency_base", n[:3] if len(n) >= 6 else "")
+        currency_profit = derived("currency_profit", n[3:6] if len(n) >= 6 else "")
+        currency_margin = derived("currency_margin", "")
+
+        if "trade_mode" in d:
+            trade_mode = int(d["trade_mode"])
+        else:
+            # MQL4 has no trade-mode identifier, so this can never be measured
+            # over this wire. 0 is MQL5's DISABLED: the fail-closed direction.
+            # It used to default to 4, full trading, which meant a close-only
+            # symbol presented as fully tradable. Nothing in src/ reads this
+            # field today, so that was latent rather than live; it is closed
+            # here so it cannot become live later.
+            unmeasured.add("trade_mode")
+            trade_mode = 0
+
         return SymbolSpec(
             name=n,
-            digits=int(d.get("digits", 5) or 5),
+            digits=int(digits),
             point=point,
-            trade_tick_size=float(d.get("tick_size", point) or point),
-            trade_tick_value=float(d.get("tick_value", 1.0) or 1.0),
-            trade_contract_size=float(d.get("contract_size", 100_000) or 100_000),
-            volume_min=float(d.get("volume_min", 0.01) or 0.01),
-            volume_max=float(d.get("volume_max", 100.0) or 100.0),
-            volume_step=float(d.get("volume_step", 0.01) or 0.01),
-            trade_stops_level=int(d.get("stops_level", 0) or 0),
-            trade_freeze_level=int(d.get("freeze_level", 0) or 0),
+            trade_tick_size=tick_size,
+            trade_tick_value=tick_value,
+            trade_contract_size=contract_size,
+            volume_min=volume_min,
+            volume_max=volume_max,
+            volume_step=volume_step,
+            trade_stops_level=int(stops_level),
+            trade_freeze_level=int(freeze_level),
             filling_mode=1,
-            currency_base=str(d.get("currency_base", n[:3] if len(n) >= 6 else "") or ""),
-            currency_profit=str(d.get("currency_profit", n[3:6] if len(n) >= 6 else "") or ""),
-            currency_margin=str(d.get("currency_margin", "") or ""),
-            trade_mode=int(d.get("trade_mode", 4) or 4),
-            spread=int(d.get("spread", 0) or 0),
+            currency_base=currency_base,
+            currency_profit=currency_profit,
+            currency_margin=currency_margin,
+            trade_mode=trade_mode,
+            spread=int(spread),
+            unmeasured=frozenset(unmeasured),
         )
 
     def tick(self, name: str) -> Tick:
@@ -345,13 +443,15 @@ class Mt4Broker:
         return self._result(self._call("check_market", self._market_payload(order)))
 
     def market(self, order: MarketOrder) -> OrderResult:
-        return self._result(self._call("market", self._market_payload(order)))
+        return self._result(self._call("market", self._market_payload(order)), sends=True)
 
     def check_working(self, order: WorkingOrder) -> OrderResult:
         return self._result(self._call("check_working", self._working_payload(order)), placed=True)
 
     def working(self, order: WorkingOrder) -> OrderResult:
-        return self._result(self._call("working", self._working_payload(order)), placed=True)
+        return self._result(
+            self._call("working", self._working_payload(order)), placed=True, sends=True
+        )
 
     def modify_position(self, ticket: int, sl: float, tp: float, symbol: str = "") -> OrderResult:
         return self._result(
@@ -451,13 +551,21 @@ class Mt4Broker:
             raise RuntimeError(str(d.get("error")))
         return d
 
-    def _result(self, d: dict[str, Any], *, placed: bool = False) -> OrderResult:
+    def _result(
+        self, d: dict[str, Any], *, placed: bool = False, sends: bool = False
+    ) -> OrderResult:
         if not isinstance(d, dict) or ("ok" not in d and "retcode" not in d):
             # The EA answered with no verdict at all, so nothing was measured.
             # This used to fall through to REJECT, which told the operator the
             # broker said no when the broker had in fact said nothing.
             err = d.get("error") if isinstance(d, dict) else None
-            return OrderResult.unknown(f"no result: {err or 'empty mt4 response'}")
+            unknown = OrderResult.unknown(f"no result: {err or 'empty mt4 response'}")
+            if not sends:
+                return unknown
+            # A send with no verdict cannot tell us whether a position was
+            # opened, so survivorship is unknown too. Zero here would be the
+            # same lie one layer down.
+            return replace(unknown, survivor_ticket=None)
         ok = _truthy(d.get("ok"))
         raw = int(d.get("retcode", 0) or 0)
         if ok:
@@ -465,17 +573,30 @@ class Mt4Broker:
                 code = raw
             else:
                 code = TRADE_RETCODE_PLACED if placed else TRADE_RETCODE_DONE
+        elif raw == 0:
+            # A failure carrying no MT4 error. The Expert destroyed the reason:
+            # GetLastError() clears the register on read, so a second read for
+            # the reply returns 0. Calling that REJECT asserts the broker
+            # refused the order, and nothing measured that. It is COULD NOT
+            # MEASURE, and it reuses #19's vocabulary rather than a second one.
+            code = RETCODE_UNKNOWN
         else:
             code = _MT4_RET.get(raw, raw if raw >= 10004 else TRADE_RETCODE_REJECT)
             if code == 0:
                 code = TRADE_RETCODE_REJECT
+        detail = str(d.get("error") or d.get("comment") or "")
+        if code == RETCODE_UNKNOWN and not ok:
+            detail = (detail + " (reason not reported by the Expert)").strip()
         return OrderResult(
             retcode=code,
-            comment=str(d.get("error") or d.get("comment") or ""),
+            comment=detail,
             order=int(d.get("ticket", 0) or 0),
             deal=int(d.get("ticket", 0) or 0),
             volume=float(d.get("volume", 0) or 0),
             price=float(d.get("price", 0) or 0),
+            # Only a send can strand a position. Every other op is asked
+            # nothing, so it answers 0 rather than an alarming None.
+            survivor_ticket=_survivor_ticket(d, ok) if sends else 0,
         )
 
 
