@@ -4,9 +4,9 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
-## 1.1.7
+## Unreleased (tests and gates only)
 
-- Tests and gates only. No runtime behaviour changes.
+- Tests and gates only. No runtime behaviour changes, so this consumes no release number.
 - MT4 golden wire transcripts. `tests/test_mt4_wire.py` drives the adapter through `FileBridge`, a real mailbox on disk, and a stand-in Expert that answers with the byte-exact text `mt4/Experts/Mt4RiskBot.mq4` emits. Every op has a transcript. The existing suite drove the adapter through a stub that returned native Python dicts, so the pipe-separated decoding never ran through the broker at all.
 - The transcripts distinguish a MEASURED value from a DEFAULTED one. `Transcript.keys_sent()` answers whether the Expert put a field on the wire, and `value_sent()` gives the raw string it sent. A field the Expert never emits is absent, so the value reported for it is the adapter's own default.
 - Pinned, not changed: the Expert sends 11 of the 15 keys the symbol reader consumes. `trade_mode`, `currency_base`, `currency_profit` and `currency_margin` are never on the wire, so a symbol spec always reports trade mode 4 (full). Nothing in `src/` reads `SymbolSpec.trade_mode` yet, so the consequence is latent.
