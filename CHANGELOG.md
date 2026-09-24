@@ -5,6 +5,29 @@ Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
 <<<<<<< HEAD
+## 1.3.3
+
+Advice-staged symbols are whitelisted, and there are daily caps on sends and on advice turns (issue #13).
+
+### The model no longer picks the instrument unchecked
+
+- `cfg.symbols` is a SCAN list: it drives `/quote` and the auto scan. `market_signal` accepts anything the broker knows, so with `/approve always` the model chose the instrument and no gate checked it.
+- A symbol the MODEL picked is now checked against `advice.symbols`, falling back to `symbols.names` when that is empty. Empty never means "allow anything". A miss is `reject` with reason `symbol_not_allowed`.
+- The whitelist is a separate knob from the scan list on purpose: an operator who scans three pairs may still want to act on a fourth BY HAND. A human `/buy` is therefore NOT gated by it. The control exists because the model chose the symbol, not because the symbol is unusual.
+- It gates OPENS only. An advice `close` on an unlisted symbol is still allowed: a control that can stop you reducing exposure is not a risk control.
+- Precedence is explicit: the whitelist runs before the order is built, so an unlisted symbol reports `symbol_not_allowed` rather than `advice_stage_failed`. A rule genuinely did say no, and it avoids spending broker calls on an order that was never permitted.
+
+### Two daily caps, because they bound two different things
+
+- `risk.max_trades_per_day` counts OPENING sends across auto, telegram and advice, and refuses with `max_trades_per_day`. Churn was previously bounded only by `max_positions` plus `daily_loss_pct`, and `daily_loss_pct` fires after the money is gone. Counted at the send, never at the decision: a preview, a refused confirm and an expired stage all call `evaluate()` and none of them is a trade. Closes never count and are never capped.
+- `advice.max_turns_per_day` counts advice turns and refuses BEFORE the provider is called. This is a COST control as much as a risk one: hosted inference is billed per turn, and a turn costs money whether or not it ends in an order, so the send cap cannot see that spend at all. A check placed after the call would cost exactly what it is meant to save.
+- Both counters are durable beside the journal, in the same snapshot as the loss budget, for the same reason: a cap a crash loop can clear is not a cap. They reset only on a new UTC day.
+- Both default to `0`, which disables them, so no existing config changes behaviour.
+
+### Snapshot schema
+
+- `journal.equity.json` is version 2, carrying `trades_today` and `advice_turns_today`. Version 1 still loads, with the counters restored as 0: a reader that rejected the version it wrote yesterday would fail closed on every existing install, which is a self-inflicted outage rather than a safety property. An unknown version is still refused.
+
 ## 1.3.0
 
 Sender-level authorization for Telegram commands (GHSA-9fg6-2x5f-3jvp).

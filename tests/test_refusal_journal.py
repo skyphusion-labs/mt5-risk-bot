@@ -270,12 +270,17 @@ def test_advice_close_without_a_ticket_names_the_reason(tmp_path) -> None:
 
 
 def test_a_stage_that_could_not_be_built_is_not_a_reject(tmp_path) -> None:
-    """GBPJPY has no bars, so there is no ATR to derive a stop from.
+    """GBPUSD has no bars, so there is no ATR to derive a stop from.
 
     Nothing was measured and no rule said no. That is a different event, and
     a test for #11 must not be able to count it as a named refusal reason.
+
+    Was GBPJPY until #13. That symbol is outside the default book, so the
+    advice whitelist now refuses it BEFORE the build is attempted and the
+    reply is a named refusal rather than an unmeasured one. GBPUSD is in the
+    book and still has no bars, so it reaches the path this test is about.
     """
-    engine = _engine(tmp_path, llm=FakeLlm(_advice_payload(symbol="GBPJPY")))
+    engine = _engine(tmp_path, llm=FakeLlm(_advice_payload(symbol="GBPUSD")))
     engine.start()
     reply = engine.handle_command(TgCommand("1", 1, QUESTION, 1))
     assert "could not stage trade" in reply
@@ -283,7 +288,7 @@ def test_a_stage_that_could_not_be_built_is_not_a_reject(tmp_path) -> None:
     assert rec is not None
     assert rec["measured"] is False
     assert rec["action"] == "buy"
-    assert rec["symbol"] == "GBPJPY"
+    assert rec["symbol"] == "GBPUSD"
     assert engine.journal.last_event("reject") is None, (
         "COULD NOT MEASURE was recorded as a rule refusing"
     )

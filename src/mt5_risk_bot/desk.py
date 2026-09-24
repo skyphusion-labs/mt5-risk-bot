@@ -597,12 +597,25 @@ class Desk:
             return "ask a question, or /buy /sell"
         if self.advisor is None:
             return "AI not configured"
+        # BEFORE the provider call and before the "working..." ack, because
+        # this cap exists to bound a BILL. A check after the call would cost
+        # exactly what it is meant to save, and a turn is billed whether or not
+        # it ends in an order, which is why this is a separate budget from
+        # max_trades_per_day rather than a second reading of it.
+        if self.engine.risk.advice_turns_exhausted():
+            self._reject(
+                "advice_turn",
+                "max_advice_turns_per_day",
+                source="advice",
+            )
+            return "refused: max_advice_turns_per_day"
         tg = getattr(self.engine, "telegram", None)
         if tg is not None and getattr(tg, "enabled", False):
             try:
                 tg.send("seen. working...")
             except (ValueError, RuntimeError, OSError):
                 pass
+        self.engine.risk.record_advice_turn()
         advice = self.advisor.ask(
             question,
             self.engine.advice_context(),
@@ -613,8 +626,24 @@ class Desk:
         if advice.summary:
             lines.append(advice.summary)
         staged = False
+        advice_blocked = False
         if advice.action in {"buy", "sell"} and advice.symbol:
-            reason = self.engine.advice_circuit_reason()
+            if not self.engine.cfg.advice_allows(advice.symbol):
+                # The MODEL chose this instrument, not the operator. A human
+                # typing /buy on an unlisted symbol chose it themselves and is
+                # not gated here.
+                self._reject(
+                    "advice_symbol",
+                    "symbol_not_allowed",
+                    source="advice",
+                    symbol=advice.symbol.upper(),
+                )
+                lines.append(
+                    f"not staging {advice.action} {advice.symbol.upper()}: "
+                    "symbol_not_allowed"
+                )
+                advice_blocked = True
+            reason = "" if advice_blocked else self.engine.advice_circuit_reason()
             if reason:
                 self._journal_only(
                     "advice_circuit_block",
@@ -625,7 +654,7 @@ class Desk:
                 lines.append(
                     f"not staging {advice.action}: circuit {reason}; hold or close only"
                 )
-            else:
+            elif not advice_blocked:
                 staged = True
                 kind = SignalKind.BUY if advice.action == "buy" else SignalKind.SELL
                 try:
