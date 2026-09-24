@@ -81,6 +81,9 @@ journal_path = "journal.jsonl"
 # flatten_incomplete is residual exposure after a failed flatten. It is sent even
 # if you leave it out of this list; see telegram.ALWAYS_NOTIFY_EVENTS.
 notify_events = ["start", "stop", "open", "close", "halt", "order_check_fail", "pending", "recap", "flatten_incomplete"]
+# Telegram sender ids allowed to command the desk.
+# Env: TELEGRAM_ALLOW_SENDERS (comma separated). Required when chat_id is negative.
+# allow_senders = [123456789]
 confirm_seconds = 120
 # Handover posture (#25). Both default true if left out: an unattended send
 # with no human keystroke stays available, same as today. Env overrides:

@@ -47,6 +47,8 @@ Example: `python -m mt5_risk_bot --config config.toml run`.
    `export TELEGRAM_BOT_TOKEN=...`
 6. Set the locked chat id.
    `export TELEGRAM_CHAT_ID=...`
+   For a shared chat, also set the sender allow-list.
+   `export TELEGRAM_ALLOW_SENDERS=...`
 7. Set a Grok key if you use default advice.
    `export XAI_API_KEY=...`
 8. Run tests.

@@ -42,6 +42,17 @@ Updates from any other chat are ignored.
 The bot still consumes those updates.
 Replies go only to that chat.
 
+`TELEGRAM_ALLOW_SENDERS` is a comma-separated list of Telegram sender ids.
+`telegram.allow_senders` in `config.toml` is the same list.
+Every command is checked against that list before it runs.
+Read-only commands are checked too.
+An update whose sender cannot be read is refused.
+An empty list keeps a private chat id working with no config edit.
+A group, supergroup, or channel chat id is negative.
+The bot refuses to start on a negative chat id with an empty list.
+A refused command is journaled as `command_rejected` with the sender id.
+A refused command gets no reply.
+
 `journal.jsonl` is chmod 0600 on open and after each write.
 `journal.jsonl.1` stays chmod 0600 after rotate.
 `journal.tg_offset` is chmod 0600 on each persist.
