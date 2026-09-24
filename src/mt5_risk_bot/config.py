@@ -83,6 +83,22 @@ def resolve_mt4_files_dir(raw: str, *, platform: str | None = None) -> str:
     return ""
 
 
+def resolve_state_path(raw: str, *, base_dir: Path) -> str:
+    """Anchor a relative journal_path/halt_file to an explicit base (fc34).
+
+    `base_dir` is the config file's own directory when --config was given,
+    else the process working directory -- both documented, explicit bases.
+    What this refuses is the alternative: a relative path resolving
+    implicitly against wherever the process happens to be started from.
+    Under Windows Task Scheduler that working directory is not the repo,
+    so the journal, the instance lock, and the emergency HALT file must
+    not depend on it. An absolute path (already pinned by the operator)
+    passes through unchanged.
+    """
+    p = Path(raw)
+    return str(p if p.is_absolute() else base_dir / p)
+
+
 @dataclass
 class Mt4Config:
     files_dir: str = ""
@@ -113,12 +129,48 @@ DEFAULT_TG_EVENTS = (
 )
 
 
+def is_shared_chat_id(chat_id: str) -> bool:
+    """True when the id is a Telegram group, supergroup or channel.
+
+    Telegram numbers private chats positively and every shared chat
+    negatively. A non-numeric id is not treated as shared.
+    """
+    try:
+        return int(str(chat_id).strip()) < 0
+    except (TypeError, ValueError):
+        return False
+
+
+def parse_allow_senders(raw: object) -> tuple[int, ...]:
+    """Normalise allow_senders from a TOML list or a comma-separated env var."""
+    if raw is None:
+        return ()
+    items = str(raw).split(",") if isinstance(raw, str) else list(raw)  # type: ignore[arg-type]
+    out: list[int] = []
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        try:
+            value = int(text)
+        except ValueError:
+            raise ValueError(
+                "telegram.allow_senders must be numeric Telegram sender ids"
+            ) from None
+        if value <= 0:
+            raise ValueError("telegram.allow_senders ids must be positive")
+        if value not in out:
+            out.append(value)
+    return tuple(out)
+
+
 @dataclass
 class TelegramConfig:
     token: str = ""
     chat_id: str = ""
     notify_events: tuple[str, ...] = DEFAULT_TG_EVENTS
     confirm_seconds: int = 120
+    allow_senders: tuple[int, ...] = ()
 
     @property
     def enabled(self) -> bool:
@@ -190,6 +242,11 @@ class BotConfig:
             raise ValueError("at least one symbol required")
         if self.telegram.confirm_seconds <= 0:
             raise ValueError("confirm_seconds must be > 0")
+        if is_shared_chat_id(self.telegram.chat_id) and not self.telegram.allow_senders:
+            raise ValueError(
+                "telegram.chat_id is a shared chat: set telegram.allow_senders "
+                "(or TELEGRAM_ALLOW_SENDERS) to the operator sender ids"
+            )
 
 
 def _section(data: dict, name: str) -> dict:
@@ -209,6 +266,11 @@ def _hhmm(s: str) -> str:
 
 def load_config(path: str | Path | None = None) -> BotConfig:
     data: dict = {}
+    # Explicit, documented base for resolve_state_path(): the config
+    # file's own directory when one was given, else the process working
+    # directory. Both are named; neither is "wherever we happened to
+    # start" by accident.
+    base_dir = Path(path).resolve().parent if path is not None else Path.cwd()
     if path is not None:
         raw = Path(path).read_bytes()
         parsed = tomllib.loads(raw.decode("utf-8"))
@@ -243,6 +305,9 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     computer_url = os.environ.get("ADVICE_URL", str(advice_s.get("computer_url", "") or ""))
     computer_token = os.environ.get("ADVICE_TOKEN", str(advice_s.get("computer_token", "") or ""))
     provider = os.environ.get("AI_PROVIDER", str(advice_s.get("provider", "grok") or "grok")).lower()
+    tg_allow = parse_allow_senders(
+        os.environ.get("TELEGRAM_ALLOW_SENDERS", tg_s.get("allow_senders", ()))
+    )
     events_raw = tg_s.get("notify_events", list(DEFAULT_TG_EVENTS))
     if isinstance(events_raw, str):
         events = tuple(x.strip() for x in events_raw.split(",") if x.strip())
@@ -255,7 +320,9 @@ def load_config(path: str | Path | None = None) -> BotConfig:
         symbols=names,
         poll_seconds=int(os.environ.get("POLL_SECONDS", engine_s.get("poll_seconds", 15))),
         comment=str(engine_s.get("comment", "mt5-risk-bot")),
-        journal_path=str(engine_s.get("journal_path", "journal.jsonl")),
+        journal_path=resolve_state_path(
+            str(engine_s.get("journal_path", "journal.jsonl")), base_dir=base_dir
+        ),
         risk=RiskConfig(
             risk_pct=float(risk_s.get("risk_pct", 0.005)),
             daily_loss_pct=float(risk_s.get("daily_loss_pct", 0.02)),
@@ -266,7 +333,9 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             max_spread_atr_frac=float(risk_s.get("max_spread_atr_frac", 0.15)),
             min_free_margin_pct=float(risk_s.get("min_free_margin_pct", 0.50)),
             magic=int(risk_s.get("magic", 20260909)),
-            halt_file=str(risk_s.get("halt_file", "HALT")),
+            halt_file=resolve_state_path(
+                str(risk_s.get("halt_file", "HALT")), base_dir=base_dir
+            ),
             max_risk_multiple=float(risk_s.get("max_risk_multiple", 1.0)),
             deviation_points=int(risk_s.get("deviation_points", 20)),
         ),
@@ -309,6 +378,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             chat_id=tg_chat,
             notify_events=events or DEFAULT_TG_EVENTS,
             confirm_seconds=int(tg_s.get("confirm_seconds", 120)),
+            allow_senders=tg_allow,
         ),
         advice=AdviceConfig(
             provider=provider if provider in {"grok", "claude", "computer"} else "grok",
