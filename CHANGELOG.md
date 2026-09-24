@@ -4,6 +4,13 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.2.0
+
+- Agent: the `/ask` `session` key is validated input. It must be present and a JSON string of 1 to 64 characters, from letters, digits, dot, underscore, and hyphen. A non-string is refused instead of being converted, and an absent or empty key is refused instead of falling back. A refused key gets `400 {"error":"invalid session"}`, and the agent builds no workspace for it (GHSA-q6m5-q538-8g32).
+- Agent: a non-POST `/ask` answers `405 {"error":"POST only"}` from the Worker. Same status and body as before; it is decided before any workspace is addressed.
+- Agent: optional `ADVICE_SESSIONS` pins the served keys to a comma-separated list. Unset by default. Set with no usable entry serves nobody.
+- The bot posts the Telegram chat id, which fits the rule, so the desk needs no change. A hand-made caller that sent a number, an empty key, or a key with spaces, separators or unicode must send a conforming one.
+
 ## 1.1.5
 
 - Safety fix. A pre-trade check that never ran is no longer treated as a check that passed. MQL5 `order_check` reports a PASSED check as retcode `0`, and the MT5 adapter used to synthesize retcode `0` when the terminal call returned nothing, so the engine guard let the failure through and sent the order. A call that returns nothing now yields `RETCODE_UNKNOWN` (`-1`) and `OrderResult.measured` is false. The engine aborts before sending.
