@@ -15,6 +15,7 @@ from pathlib import Path
 from typing import Any, Callable
 
 from mt5_risk_bot.constants import (
+    RETCODE_UNKNOWN,
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID_PRICE,
     TRADE_RETCODE_INVALID_STOPS,
@@ -491,13 +492,23 @@ class Mt4Broker:
                 code = raw
             else:
                 code = TRADE_RETCODE_PLACED if placed else TRADE_RETCODE_DONE
+        elif raw == 0:
+            # A failure carrying no MT4 error. The Expert destroyed the reason:
+            # GetLastError() clears the register on read, so a second read for
+            # the reply returns 0. Calling that REJECT asserts the broker
+            # refused the order, and nothing measured that. It is COULD NOT
+            # MEASURE, and it reuses #19's vocabulary rather than a second one.
+            code = RETCODE_UNKNOWN
         else:
             code = _MT4_RET.get(raw, raw if raw >= 10004 else TRADE_RETCODE_REJECT)
             if code == 0:
                 code = TRADE_RETCODE_REJECT
+        detail = str(d.get("error") or d.get("comment") or "")
+        if code == RETCODE_UNKNOWN and not ok:
+            detail = (detail + " (reason not reported by the Expert)").strip()
         return OrderResult(
             retcode=code,
-            comment=str(d.get("error") or d.get("comment") or ""),
+            comment=detail,
             order=int(d.get("ticket", 0) or 0),
             deal=int(d.get("ticket", 0) or 0),
             volume=float(d.get("volume", 0) or 0),

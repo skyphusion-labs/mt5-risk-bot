@@ -119,6 +119,20 @@ string Ok(string id)
    return "id=" + id + "\nok=1\n";
 }
 
+// Strip the characters the wire uses as structure. The Python side does the
+// same on the way out (`_wire`, mt4_live.py:93-95); doing it on only one side
+// is what let a broker comment containing a pipe shift every field after it.
+// Both ends sanitise and neither trusts the other.
+// Framing characters only: `_wire` also forces ASCII, which MQL4 has no cheap
+// equivalent for. That asymmetry is stated in docs/MT4.md.
+string Wire(string s)
+{
+   StringReplace(s, "\r", " ");
+   StringReplace(s, "\n", " ");
+   StringReplace(s, "|", "/");
+   return s;
+}
+
 string Fail(string id, int err, string msg)
 {
    return "id=" + id + "\nok=0\nretcode=" + IntegerToString(err) + "\nerror=" + msg + "\n";
@@ -237,10 +251,13 @@ bool StopsOk(string sym, int typ, double price, double sl, double tp)
    return true;
 }
 
-int SendRetry(string sym, int typ, double vol, double price, int slip, string comment, int magic)
+// `err` carries the error OUT. GetLastError() clears the register on read, so
+// a caller that reads it a second time gets 0 and reports a rejection with no
+// reason. The loop is the only place that can still see it.
+int SendRetry(string sym, int typ, double vol, double price, int slip, string comment, int magic, int &err)
 {
    int ticket = -1;
-   int err = 0;
+   err = 0;
    for(int i=0; i<8; i++)
    {
       RefreshRates();
@@ -257,16 +274,23 @@ int SendRetry(string sym, int typ, double vol, double price, int slip, string co
    return -1;
 }
 
-bool ModifyRetry(int ticket, double price, double sl, double tp)
+// Same contract as SendRetry. The OrderSelect branch used to return without
+// reading the register at all, which left the caller reading a DIFFERENT call's
+// error rather than nothing; that is a wrong answer, not a missing one.
+bool ModifyRetry(int ticket, double price, double sl, double tp, int &err)
 {
+   err = 0;
    for(int i=0; i<5; i++)
    {
       RefreshRates();
       if(!OrderSelect(ticket, SELECT_BY_TICKET))
+      {
+         err = GetLastError();
          return false;
+      }
       if(OrderModify(ticket, price, sl, tp, 0, clrNONE))
          return true;
-      int err = GetLastError();
+      err = GetLastError();
       if(err != 146 && err != 1)
          return false;
       Sleep(50);
@@ -381,13 +405,13 @@ string AccountReply(string id)
       + "margin=" + DoubleToString(AccountMargin(), 2) + "\n"
       + "margin_free=" + DoubleToString(AccountFreeMargin(), 2) + "\n"
       + "profit=" + DoubleToString(AccountProfit(), 2) + "\n"
-      + "currency=" + AccountCurrency() + "\n"
+      + "currency=" + Wire(AccountCurrency()) + "\n"
       + "leverage=" + IntegerToString(AccountLeverage()) + "\n"
       + "trade_mode=" + IntegerToString(mode) + "\n"
       + "trade_allowed=" + IntegerToString(allowed) + "\n"
       + "trade_expert=" + IntegerToString(expert) + "\n"
-      + "name=" + AccountName() + "\n"
-      + "server=" + AccountServer() + "\n";
+      + "name=" + Wire(AccountName()) + "\n"
+      + "server=" + Wire(AccountServer()) + "\n";
 }
 
 string TickReply(string id, string sym)
@@ -479,7 +503,7 @@ string BookReply(string id, string magicStr, bool pending)
       if(pending)
       {
          line = IntegerToString(OrderTicket())
-            + "|" + OrderSymbol()
+            + "|" + Wire(OrderSymbol())
             + "|" + SideOf(typ)
             + "|" + KindOf(typ)
             + "|" + DoubleToString(OrderLots(), 2)
@@ -487,13 +511,13 @@ string BookReply(string id, string magicStr, bool pending)
             + "|" + DoubleToString(OrderStopLoss(), digits)
             + "|" + DoubleToString(OrderTakeProfit(), digits)
             + "|" + IntegerToString(OrderMagicNumber())
-            + "|" + OrderComment()
+            + "|" + Wire(OrderComment())
             + "|" + IntegerToString((int)OrderOpenTime());
       }
       else
       {
          line = IntegerToString(OrderTicket())
-            + "|" + OrderSymbol()
+            + "|" + Wire(OrderSymbol())
             + "|" + SideOf(typ)
             + "|" + DoubleToString(OrderLots(), 2)
             + "|" + DoubleToString(OrderOpenPrice(), digits)
@@ -502,7 +526,7 @@ string BookReply(string id, string magicStr, bool pending)
             + "|" + DoubleToString(OrderClosePrice(), digits)
             + "|" + DoubleToString(OrderProfit(), 2)
             + "|" + IntegerToString(OrderMagicNumber())
-            + "|" + OrderComment()
+            + "|" + Wire(OrderComment())
             + "|" + DoubleToString(OrderSwap(), 2)
             + "|" + IntegerToString((int)OrderOpenTime());
       }
@@ -536,21 +560,25 @@ string CheckMarket(string id, string body, bool send)
       return FailTrade(id, 130, "invalid_stops", 0);
    if(!send)
       return Ok(id) + "ticket=0\nprice=" + DoubleToString(price, (int)MarketInfo(sym, MODE_DIGITS)) + "\n";
-   int ticket = SendRetry(sym, typ, vol, price, slip, ClipComment(KV(body, "comment")), magic);
+   int sendErr = 0;
+   int ticket = SendRetry(sym, typ, vol, price, slip, ClipComment(KV(body, "comment")), magic, sendErr);
    if(ticket < 0)
-      return FailTrade(id, GetLastError(), "OrderSend", 0);
+      return FailTrade(id, sendErr, "OrderSend", 0);
    if(sl > 0 || tp > 0)
    {
       // A position exists from here on. Failing to select it is not a reason
       // to abandon it; it is a reason to roll it back.
       double openPrice = 0;
+      int modErr = 0;
       if(OrderSelect(ticket, SELECT_BY_TICKET))
          openPrice = OrderOpenPrice();
-      if(openPrice <= 0 || !ModifyRetry(ticket, openPrice, sl, tp))
+      else
+         modErr = GetLastError();
+      if(openPrice <= 0 || !ModifyRetry(ticket, openPrice, sl, tp, modErr))
       {
          if(!RollbackPosition(ticket, sym, slip))
-            return FailTrade(id, 130, "sl_modify_failed_position_live", ticket);
-         return FailTrade(id, 130, "sl_modify_failed", 0);
+            return FailTrade(id, modErr, "sl_modify_failed_position_live", ticket);
+         return FailTrade(id, modErr, "sl_modify_failed", 0);
       }
    }
    if(!OrderSelect(ticket, SELECT_BY_TICKET))
@@ -584,16 +612,18 @@ string CheckWorking(string id, string body, bool send)
       return FailTrade(id, 130, "invalid_stops", 0);
    if(!send)
       return Ok(id) + "ticket=0\n";
-   int ticket = SendRetry(sym, typ, vol, price, Slippage, ClipComment(KV(body, "comment")), magic);
+   int sendErr = 0;
+   int ticket = SendRetry(sym, typ, vol, price, Slippage, ClipComment(KV(body, "comment")), magic, sendErr);
    if(ticket < 0)
-      return FailTrade(id, GetLastError(), "OrderSend", 0);
+      return FailTrade(id, sendErr, "OrderSend", 0);
    if(sl > 0 || tp > 0)
    {
-      if(!ModifyRetry(ticket, price, sl, tp))
+      int modErr = 0;
+      if(!ModifyRetry(ticket, price, sl, tp, modErr))
       {
          if(!RollbackPending(ticket))
-            return FailTrade(id, 130, "sl_modify_failed_order_live", ticket);
-         return FailTrade(id, 130, "sl_modify_failed", 0);
+            return FailTrade(id, modErr, "sl_modify_failed_order_live", ticket);
+         return FailTrade(id, modErr, "sl_modify_failed", 0);
       }
    }
    return Ok(id) + "ticket=" + IntegerToString(ticket) + "\nprice=" + DoubleToString(price, (int)MarketInfo(sym, MODE_DIGITS)) + "\n";
@@ -608,8 +638,9 @@ string ModifyPos(string id, string body)
       return Fail(id, 4108, "not_found");
    if(OrderType() > OP_SELL)
       return Fail(id, 1, "not_position");
-   if(!ModifyRetry(ticket, OrderOpenPrice(), sl, tp))
-      return Fail(id, GetLastError(), "OrderModify");
+   int modErr = 0;
+   if(!ModifyRetry(ticket, OrderOpenPrice(), sl, tp, modErr))
+      return Fail(id, modErr, "OrderModify");
    return Ok(id) + "ticket=" + IntegerToString(ticket) + "\n";
 }
 
@@ -629,8 +660,9 @@ string ModifyPend(string id, string body)
    if(p != "") price = StringToDouble(p);
    if(s != "") sl = StringToDouble(s);
    if(t != "") tp = StringToDouble(t);
-   if(!ModifyRetry(ticket, price, sl, tp))
-      return Fail(id, GetLastError(), "OrderModify");
+   int modErr = 0;
+   if(!ModifyRetry(ticket, price, sl, tp, modErr))
+      return Fail(id, modErr, "OrderModify");
    return Ok(id) + "ticket=" + IntegerToString(ticket) + "\n";
 }
 

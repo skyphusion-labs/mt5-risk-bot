@@ -4,6 +4,24 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.2.1
+
+Two MT4 Expert reply defects (issue #31). They are separate defects that happened to live in the same file.
+
+### The real broker error was destroyed on every failed send and modify
+
+- `GetLastError()` CLEARS the error register as a side effect of reading it. `SendRetry` and `ModifyRetry` read it inside their retry loops and then returned only `-1` / `false`, so the caller's read for the reply returned `0`. Every failed send and modify reached the journal and the chat as a generic rejection with the MT4 error gone. An operator could not tell "not enough money" from "market closed" from "invalid stops" without cross-reading the terminal's own Journal tab.
+- Both helpers now take the error as an out-parameter and the reply carries THAT value. `CheckMarket`, `CheckWorking`, `ModifyPos` and `ModifyPend` no longer read the register while building a reply.
+- `ModifyRetry`'s `OrderSelect` exit recorded nothing at all, so the caller read whatever the register happened to hold: a wrong answer rather than a missing one. Both of its failing exits now record what they saw.
+- `retcode=0` on a failure now reports `RETCODE_UNKNOWN` instead of `REJECT`. Calling it a rejection asserted the broker refused the order, and nothing measured that. It reuses the COULD NOT MEASURE vocabulary from 1.1.5 rather than adding a second one.
+
+### Row payloads were written unsanitised
+
+- Python strips `|`, CR and LF from everything it writes (`_wire`). The Expert did not do the same for `OrderComment()`, `OrderSymbol()`, `AccountName()`, `AccountServer()` or `AccountCurrency()`, all of which are broker-controlled text.
+- A position row is 13 pipe-separated fields with the comment at index 10. A broker comment containing a pipe (brokers do append `[sl]` and `from #123`) shifted `swap` onto the comment tail and `time` onto `swap`, and `positions()` raised `ValueError` out of `float()`. The desk could not enumerate its own book, triggered by data the broker controls rather than by anything the desk did.
+- The Expert now has `Wire()` and applies it to every broker string it writes. A test asserts the Expert's rule and `_wire`'s rule are the same rule, and a golden transcript carries a comment with a pipe through the real mailbox and checks all 13 fields land in the right places.
+- `docs/MT4.md` stated the sanitation rule without saying which side owns it, and promised `retcode` was the MT4 error "when known", which was never true on the failing paths. Both corrected, including the one deliberate asymmetry: `_wire` forces ASCII and `Wire()` does not.
+
 ## 1.2.0
 
 An MT4 market order can no longer be left open with no stop while the desk is told the send failed (issue #23).
