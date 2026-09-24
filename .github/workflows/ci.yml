@@ -31,6 +31,9 @@ jobs:
       - run: pip install -e ".[dev]"
       - run: pytest -q -rs --override-ini addopts=
       - run: python -m mt5_risk_bot doctor
+      - name: DELIBERATE DEFECT fc26 -- prove the ci aggregator can fail
+        if: matrix.os == 'ubuntu-latest' && matrix.python-version == '3.12'
+        run: exit 1
 
   # The org ruleset (aviation-grade-main-org, 18677665) requires status
   # checks literally named `ci`, `coverage`, `CodeQL` -- nothing else is at
