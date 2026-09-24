@@ -176,7 +176,7 @@ def _chmod600(path: Path) -> None:
 def _lock_nb(fh: TextIO) -> None:
     """Non-blocking exclusive lock. Raises OSError if held."""
     fd = fh.fileno()
-    if False:  # DELIBERATE-DEFECT fc26: force POSIX branch to prove the Windows leg can go red
+    if sys.platform == "win32":
         import msvcrt
 
         fh.seek(0)
