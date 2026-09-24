@@ -4,12 +4,32 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## Unreleased
+
+Docs corrected to match current code (#14). No behaviour change.
+
+- `SECURITY.md` said real money is refused unless the bot started with
+  `--i-accept-risk`. That was never the only path: `/live on I-ACCEPT-RISK`
+  in the locked Telegram chat arms it too, and always has. The restart
+  half of the original defect (a journal-restored `/live on` re-arming a
+  fresh process) was already fixed by #17; this corrects the doc to name
+  both arming paths and their per-process, not-restart-restored behaviour,
+  instead of naming only one.
+- `README.md` named `the gateway` (Cloudflare AI Gateway) alongside `the
+  bot` / `the desk` / `the agent` with no scope. Only `AI_PROVIDER=computer`
+  (the agent) routes through it; the default `grok` and `claude` are BYOK
+  straight to `api.x.ai` / `api.anthropic.com`, with none of the gateway's
+  billing, caching, rate limiting, or observability. Both the intro and
+  the Names table now say so.
+
+
 ## 1.4.0
 
 - Agent: the `/ask` `session` key is validated input. It must be present and a JSON string of 1 to 64 characters, from letters, digits, dot, underscore, and hyphen. A non-string is refused instead of being converted, and an absent or empty key is refused instead of falling back. A refused key gets `400 {"error":"invalid session"}`, and the agent builds no workspace for it (GHSA-q6m5-q538-8g32).
 - Agent: a non-POST `/ask` answers `405 {"error":"POST only"}` from the Worker. Same status and body as before; it is decided before any workspace is addressed.
 - Agent: optional `ADVICE_SESSIONS` pins the served keys to a comma-separated list. Unset by default. Set with no usable entry serves nobody.
 - The bot posts the Telegram chat id, which fits the rule, so the desk needs no change. A hand-made caller that sent a number, an empty key, or a key with spaces, separators or unicode must send a conforming one.
+
 
 ## 1.3.0
 
@@ -20,6 +40,7 @@ Sender-level authorization for Telegram commands (GHSA-9fg6-2x5f-3jvp).
 - A group, supergroup, or channel chat id is negative. On a negative chat id with an empty allow-list, `run` and `doctor` exit non-zero instead of starting.
 - An empty allow-list on a private chat id is unchanged behaviour. An existing single-operator deployment needs no config edit.
 - A refused command is journaled as `command_rejected` with the sender id, the chat id, and the command name. It is never answered in chat.
+
 
 ## 1.2.0
 
@@ -34,12 +55,15 @@ An MT4 market order can no longer be left open with no stop while the desk is to
 - Working orders get the same treatment, with `OrderDelete` and `sl_modify_failed_order_live`.
 - `OnInit` scans the book at startup and prints every position that is open with no stop. New `ReconcileMagic` input filters the scan; `0` reports all. The Expert reports these and does not adopt them.
 - `docs/MT4.md` documented the two-step entry as an ECN feature and stated that the Expert closes the ticket on a modify failure. It did not close it reliably. The section now states the three outcomes and which one leaves money at risk.
+
+
 ## 1.1.5
 
 - Safety fix. A pre-trade check that never ran is no longer treated as a check that passed. MQL5 `order_check` reports a PASSED check as retcode `0`, and the MT5 adapter used to synthesize retcode `0` when the terminal call returned nothing, so the engine guard let the failure through and sent the order. A call that returns nothing now yields `RETCODE_UNKNOWN` (`-1`) and `OrderResult.measured` is false. The engine aborts before sending.
 - `order_check_fail` now carries `reason`: `broker_refused` (the venue rejected the check) or `not_measured` (the venue returned nothing, so the check never ran). An operator can tell "the broker said no" from "we never asked".
 - MT4: a mailbox reply carrying no `ok` and no `retcode` was reported as `REJECT`, which said the broker refused when the Expert had in fact answered nothing. It is now `not_measured`. Both abort, so this changes the reason, not the outcome.
 - A genuine `order_check` retcode `0` still passes, and a genuine venue rejection still reports `broker_refused`.
+
 
 ## 1.1.4
 
@@ -51,6 +75,7 @@ An MT4 market order can no longer be left open with no stop while the desk is to
 - `flatten` no longer raises. A broker call that fails mid sweep is journaled (`close_failed`, `cancel_failed`, `close_partial`), the sweep finishes, and `halted` is still set. Before this, an exception on one close skipped the halt entirely.
 - Cancelling working orders checks its results too. A refused cancel is a survivor.
 - `/halt` reports what happened, with counts, instead of the fixed string `flattened and halted.`
+
 
 ## 1.1.3
 
@@ -65,9 +90,11 @@ Restart no longer restores the permissive state and discards the protective one 
 - Two new journal events: `live_not_restored` and `risk_state_error`. `/risk` also prints the state error, so COULD NOT MEASURE is visible at start and in chat, not only at the first refusal.
 - `live_accepted` is now PER PROCESS. `start` never arms real money from a `live_on` journal record; it writes `live_not_restored` and `/live` says arming was not restored. Re-arm with `/live on I-ACCEPT-RISK`. A crash loop can no longer keep real money armed from a `/live on` typed weeks earlier.
 
+
 ## 1.1.2
 
 - Tests compare paths with `pathlib.Path`, not slash strings. Windows `\tmp\...` vs `/tmp/...` is not a failure.
+
 
 ## 1.1.1
 
@@ -76,6 +103,7 @@ Restart no longer restores the permissive state and discards the protective one 
 - Empty `mt4.files_dir` on Windows defaults to `%APPDATA%\\MetaQuotes\\Terminal\\Common\\Files`. `%APPDATA%` in the path expands.
 - Expert opens the mailbox with `FILE_SHARE_READ|FILE_SHARE_WRITE` and writes `.res` via `.res.tmp` + `FileMove`.
 
+
 ## 1.1.0
 
 - MetaTrader 4 is a third venue. `account.mode = "mt4"` selects `Mt4Broker`.
@@ -83,6 +111,7 @@ Restart no longer restores the permissive state and discards the protective one 
 - `run --mode mt4`. `doctor --connect` pings that mailbox when mode is `mt4`.
 - Real-money MT4 (`trade_mode=2`) uses the same fuse as MT5: `--i-accept-risk` or `/live on I-ACCEPT-RISK`.
 - `MT4_FILES_DIR` / `mt4.files_dir` is the Common Files path. Not a secret.
+
 
 ## 1.0.0
 
@@ -99,10 +128,12 @@ Restart no longer restores the permissive state and discards the protective one 
 - Advice send: default is `/confirm`. `/approve always` sends after risk preview. README and advice context match CONTRACT.
 - Runtime journal siblings (`journal.advice.json`, `journal.heartbeat`, `journal.tg_offset`, `journal.jsonl.1`) are gitignored.
 
+
 ## 0.3.0
 
 - Development Status Beta. Production bar holds: Telegram 429/5xx retry and persisted `getUpdates` offset, MT5 reconnect, journaled confirm restore, secret redaction and chat_id lock, doctor paper plus `--connect` fail-closed, launchd, HALT, `--i-accept-risk`, `run --loop` survives a bad `step_all`, config validation on start, pytest and CI coverage >= 80%, journal and offset chmod 0600, close-by hedge-only with a netting fake.
 - Paper is still the default. No profit guarantee.
+
 
 ## 0.2.0
 
@@ -134,6 +165,7 @@ Restart no longer restores the permissive state and discards the protective one 
 - Grok (xAI) and Claude (Anthropic) via env keys. Last 6 turns kept. Advice never auto-sends.
 - Advice JSON may stage `limit=` / `stop=` or close TICKET. `/ask` context includes `/risk`, orders, positions, quotes.
 - Auto EMA regime is off until `/auto on`.
+
 
 ## 0.1.0
 
