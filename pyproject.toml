@@ -53,6 +53,12 @@ exclude_lines = [
   "if TYPE_CHECKING:",
 ]
 
+
+[tool.mt5_risk_bot.coverage_floors]
+# Per-file floors. Set from measurement, not aspiration: see tests/conftest.py
+# for why a package-wide --cov-fail-under cannot go red for one file.
+"src/mt5_risk_bot/broker/mt4_live.py" = 97
+
 [tool.ruff]
 target-version = "py312"
 
