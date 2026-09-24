@@ -42,6 +42,40 @@ Do not put `CF_AIG_TOKEN` on `gateway.ai.cloudflare.com` as `Authorization`.
 The gateway forwards that header to xAI as a provider key.
 Unified Billing is skipped.
 
+## Tests
+
+```
+npm ci
+npm run typecheck
+npm test
+```
+
+The suite runs in workerd via `@cloudflare/vitest-pool-workers`, not in node, so
+the Worker, the `DeskAgent` Durable Object and its SQLite-backed workspace all
+execute for real. CI runs it as the `agent-test` job.
+
+The AI Gateway is the one hop the suite cannot call, so it is the one seam:
+`vitest.config.ts` supplies an `outboundService` that answers the gateway and
+returns 599 for anything else, which makes unexpected egress a failure rather
+than a silent pass. Nothing under `agent/src/` is replaced or stubbed. The fake
+gateway echoes back the headers and model it observed, which is how the outbound
+contract is asserted; it never echoes the credential value.
+
+Two properties of the runner are worth knowing before adding tests.
+
+- A Durable Object receives its bindings from the runtime, not from the `env`
+  object its caller holds. Overriding `CF_AIG_TOKEN` at the entry Worker does
+  nothing to `DeskAgent`. Use the `withDeskEnv` helper for DESK-side variables.
+- Storage is isolated per test FILE, not per test. `reset()` does not clear the
+  namespace listing. A test that needs "no Durable Object exists at all" belongs
+  in a file where nothing else authorizes a request; `test/auth-ordering.test.ts`
+  is that file, and it says so at the top.
+
+`agent/package.json` pins `overrides.miniflare` because the version the test pool
+depends on ships a workerd older than this Worker's `compatibility_date`. Without
+the override the runtime refuses to start. Raise the override, do not lower the
+compatibility date: the suite has to run the runtime that ships.
+
 ## Secrets (never in git)
 
 Agent secrets: `CF_AIG_TOKEN`, `ADVICE_TOKEN`.
