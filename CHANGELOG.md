@@ -4,6 +4,18 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.1.7
+
+- Tests and gates only. No runtime behaviour changes.
+- MT4 golden wire transcripts. `tests/test_mt4_wire.py` drives the adapter through `FileBridge`, a real mailbox on disk, and a stand-in Expert that answers with the byte-exact text `mt4/Experts/Mt4RiskBot.mq4` emits. Every op has a transcript. The existing suite drove the adapter through a stub that returned native Python dicts, so the pipe-separated decoding never ran through the broker at all.
+- The transcripts distinguish a MEASURED value from a DEFAULTED one. `Transcript.keys_sent()` answers whether the Expert put a field on the wire, and `value_sent()` gives the raw string it sent. A field the Expert never emits is absent, so the value reported for it is the adapter's own default.
+- Pinned, not changed: the Expert sends 11 of the 15 keys the symbol reader consumes. `trade_mode`, `currency_base`, `currency_profit` and `currency_margin` are never on the wire, so a symbol spec always reports trade mode 4 (full). Nothing in `src/` reads `SymbolSpec.trade_mode` yet, so the consequence is latent.
+- Pinned, not changed: a `tick_value` measured as zero is replaced by 1.0 and becomes indistinguishable from a genuine 1.0. The Expert emits four decimals, so any real value below 0.00005 arrives as zero.
+- Field order is now checked. The Expert's pipe-join order for positions, orders and bars is asserted against the adapter's field tuples. A dict-returning stub is indifferent to order, so reordering one field used to leave the suite green.
+- The reply-id match is now covered. A reply carrying a foreign id is not consumed, and the request is left in the mailbox after a timeout.
+- Per-file coverage floors, declared in `[tool.mt5_risk_bot.coverage_floors]` in `pyproject.toml`. `broker/mt4_live.py` has a floor of 97%. A package-wide `--cov-fail-under` cannot go red for one file.
+- `broker/mt4_live.py` coverage: 86.94% to 97.59%. Tests touching it: 18 to 114. Suite: 305 to 415.
+
 ## 1.1.5
 
 - Safety fix. A pre-trade check that never ran is no longer treated as a check that passed. MQL5 `order_check` reports a PASSED check as retcode `0`, and the MT5 adapter used to synthesize retcode `0` when the terminal call returned nothing, so the engine guard let the failure through and sent the order. A call that returns nothing now yields `RETCODE_UNKNOWN` (`-1`) and `OrderResult.measured` is false. The engine aborts before sending.
