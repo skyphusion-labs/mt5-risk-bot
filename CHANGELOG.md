@@ -92,21 +92,24 @@ Docs corrected to match current code (#14). No behaviour change.
 
 ## 1.4.1
 
-Two MT4 Expert reply defects (issue #31). They are separate defects that happened to live in the same file.
+Tests and findings only. The shipped product is unchanged: no file under `src/` has a behaviour edit in this release, and the version moves only so these findings have a place to be recorded.
 
-### The real broker error was destroyed on every failed send and modify
+- Every refusal reason `RiskManager` can name now has a test that asserts the NAMED reason. `allowed is False` cannot tell you a control has stopped testing anything. The roster is `tests/test_refusal_reasons.py`, and it measures its own denominator against `risk.py`, so a reason added to the module without a case fails the suite instead of quietly lowering the count.
+- The count was 20 reasons, not 15. Issue #11 reported 15 and 5 of them named; the measured figures are 20 reasons, 5 asserted by name, 11 refusal returns never executed (6 of those inside `evaluate`). After this change 19 of 20 are asserted by name and 1 refusal return is still unexecuted, for the reason below.
+- Each guard was mutated so its refusal could not fire, and each test was watched going red before being trusted. 19 of 20 went red. The 20th did not, which is the first finding.
 
-- `GetLastError()` CLEARS the error register as a side effect of reading it. `SendRetry` and `ModifyRetry` read it inside their retry loops and then returned only `-1` / `false`, so the caller's read for the reply returned `0`. Every failed send and modify reached the journal and the chat as a generic rejection with the MT4 error gone. An operator could not tell "not enough money" from "market closed" from "invalid stops" without cross-reading the terminal's own Journal tab.
-- Both helpers now take the error as an out-parameter and the reply carries THAT value. `CheckMarket`, `CheckWorking`, `ModifyPos` and `ModifyPend` no longer read the register while building a reply.
-- `ModifyRetry`'s `OrderSelect` exit recorded nothing at all, so the caller read whatever the register happened to hold: a wrong answer rather than a missing one. Both of its failing exits now record what they saw.
-- `retcode=0` on a failure now reports `RETCODE_UNKNOWN` instead of `REJECT`. Calling it a rejection asserted the broker refused the order, and nothing measured that. It reuses the COULD NOT MEASURE vocabulary from 1.1.5 rather than adding a second one.
+### Three pieces of `risk.py` cannot execute. Reported, not fixed.
 
-### Row payloads were written unsanitised
+None of these is a behaviour defect today and none is changed here. Each is pinned by a test that FAILS if it ever becomes reachable, so no test in this repo is left passing against a line that cannot run.
 
-- Python strips `|`, CR and LF from everything it writes (`_wire`). The Expert did not do the same for `OrderComment()`, `OrderSymbol()`, `AccountName()`, `AccountServer()` or `AccountCurrency()`, all of which are broker-controlled text.
-- A position row is 13 pipe-separated fields with the comment at index 10. A broker comment containing a pipe (brokers do append `[sl]` and `from #123`) shifted `swap` onto the comment tail and `time` onto `swap`, and `positions()` raised `ValueError` out of `float()`. The desk could not enumerate its own book, triggered by data the broker controls rather than by anything the desk did.
-- The Expert now has `Wire()` and applies it to every broker string it writes. A test asserts the Expert's rule and `_wire`'s rule are the same rule, and a golden transcript carries a comment with a pipe through the real mailbox and checks all 13 fields land in the right places.
-- `docs/MT4.md` stated the sanitation rule without saying which side owns it, and promised `retcode` was the MT4 error "when known", which was never true on the failing paths. Both corrected, including the one deliberate asymmetry: `_wire` forces ASCII and `Wire()` does not.
+- **`size_exceeds_risk` cannot fire.** The last-line size guard recomputes exactly what `lots_for_risk` already checked, from the same entry, stop and spec, but with a looser tolerance (`1e-6` against the inner `1e-9`). Anything that would trip it has already been turned into 0 lots by the tighter inner check and is reported as `size_zero`. Deleting the guard outright leaves the whole suite green, which is how this was confirmed rather than argued. The reason string is still live in the product, but only from `engine.py` on the `/replace` path, which keeps the volume the broker already accepted and never calls `lots_for_risk`. That is the refusal an operator can actually receive, and it now has a test naming the site.
+- **The `halted` fallback cannot fire.** `circuit_reason` reads `self._halt_reason or "halted"`. Every site that raises the halt flag sets a reason in the same block, so no public call can leave the flag up with an empty reason.
+- **The zero-equity branch of the margin gate cannot be taken.** `if account.equity > 0:` guards a division, so the interesting case is a wiped account, and no wiped account reaches that line: the daily-loss gate fires first for every one of them, because a fresh day sets `day_start_equity` to the account equity and `0 >= 0` is true. The gate fails CLOSED on a wiped account, which is correct; the branch under it is simply unreachable.
+
+- `circuit_reason`, the gate deciding whether the model may stage at all, had no test on four of its branches (`halted`, `trade_not_allowed`, `live_not_accepted`, `max_drawdown`). All four are now named. `circuit_reason` is also asserted NOT to latch a market verdict, which `circuit` does and it must not.
+- `no_signal` and `already_in_symbol` have no production caller that can reach them: the auto leg returns before both (`engine.py`), and the desk only ever builds BUY or SELL. `already_in_symbol` is reachable from the desk and is tested there; `no_signal` is a defensive guard on a public method and is tested at that method.
+- `outside_session` is reachable on the auto leg only. The desk passes `manual=True`, which bypasses the session window by design, so no operator command can produce it. Tested on the auto leg, off the bar clock.
+- Where a reason is reachable through the desk or the auto leg, the assertion is the structured `reject` record from 1.2.0 rather than the return value, because the record is what an operator and an auditor read after the fact.
 
 
 ## 1.4.0
