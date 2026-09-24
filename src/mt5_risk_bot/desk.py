@@ -736,6 +736,20 @@ class Desk:
     def _approve(self, args: str) -> str:
         token = args.strip().lower()
         if token in {"always", "on"}:
+            cfg = getattr(self.engine, "cfg", None)
+            tg_cfg = getattr(cfg, "telegram", None)
+            if not getattr(tg_cfg, "allow_approve_always", True):
+                self._journal_only(
+                    "reject",
+                    source="telegram",
+                    stage="approve",
+                    reason="approve_always_disabled",
+                    command="approve",
+                )
+                return (
+                    "approve always is disabled on this deployment. "
+                    "risk stays sizing-only; /confirm each order"
+                )
             if self._live_needs_flag():
                 self._reject(
                     "approve",
@@ -762,6 +776,19 @@ class Desk:
     def _auto(self, args: str) -> str:
         token = args.strip().lower()
         if token in {"on", "1", "true"}:
+            tg_cfg = getattr(self.engine.cfg, "telegram", None)
+            if not getattr(tg_cfg, "allow_auto", True):
+                self._journal_only(
+                    "reject",
+                    source="telegram",
+                    stage="auto",
+                    reason="auto_disabled",
+                    command="auto",
+                )
+                return (
+                    "auto is disabled on this deployment. "
+                    "enable telegram.allow_auto in config.toml to run unattended"
+                )
             self.engine.cfg.strategy.auto = True
             # Parity with /live and /approve, which both journal. Arming the
             # autonomous trader was the only one of the three left unaudited,

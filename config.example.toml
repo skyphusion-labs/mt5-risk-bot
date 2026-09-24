@@ -85,6 +85,12 @@ notify_events = ["start", "stop", "open", "close", "halt", "order_check_fail", "
 # Env: TELEGRAM_ALLOW_SENDERS (comma separated). Required when chat_id is negative.
 # allow_senders = [123456789]
 confirm_seconds = 120
+# Handover posture (#25). Both default true if left out: an unattended send
+# with no human keystroke stays available, same as today. Env overrides:
+# TELEGRAM_ALLOW_APPROVE_ALWAYS, TELEGRAM_ALLOW_AUTO. See config.handover.toml
+# for the posture shipped to a handed-over deployment (both false).
+# allow_approve_always = true
+# allow_auto = true
 
 [advice]
 provider = "grok"

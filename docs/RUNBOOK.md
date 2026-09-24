@@ -463,6 +463,36 @@ Then `/approve always` if you want sends without `/confirm`.
 It does not turn auto on.
 SL/TP hits and pending fills still alert in Telegram when auto is off.
 
+## Handover posture
+
+`/approve always` and `/auto on` are the two paths that reach the broker
+with no human keystroke: `/approve always` sends inside the same `handle()`
+call as the advice turn, and `/auto on` trades from the EMA signal with no
+confirm step at all.
+`telegram.allow_approve_always` and `telegram.allow_auto` in `config.toml`
+(env: `TELEGRAM_ALLOW_APPROVE_ALWAYS`, `TELEGRAM_ALLOW_AUTO`) gate them.
+Both default true, so an operator who never sets these keys sees no change.
+Set either to false and the matching command is refused with a named reason
+(`approve_always_disabled`, `auto_disabled`), journaled as `reject` with
+`source=telegram`, and never answered in chat.
+`/approve off` and `/auto off` are never refused; turning a capability off
+is always allowed.
+A value that is present but not a clean boolean is read as false, never as
+the default: a config typo or a bad env var can only remove the capability,
+never grant it.
+`config.handover.toml` ships with both set false. Copy it to `config.toml`
+for a handed-over desk. To re-enable on your own desk, set both to true, or
+remove the keys.
+
+The default stays true on purpose: flipping it would silently change every
+existing deployment, including one that has never heard of this key. That
+leaves a gap for a handover that forgets `config.handover.toml`, so the
+posture is observable instead of hidden in a config file. `doctor` and
+`run` print it on every invocation (`approve always: allowed|disabled`,
+`auto: allowed|disabled`), and every `start` journal record carries
+`approve_always_allowed` and `auto_allowed`, so `journal.jsonl` answers
+which posture a session actually ran under, after the fact.
+
 Paper is the default (`account.mode = "paper"`).
 Real accounts still need `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.
 

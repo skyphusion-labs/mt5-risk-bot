@@ -88,6 +88,50 @@ Docs corrected to match current code (#14). No behaviour change.
   straight to `api.x.ai` / `api.anthropic.com`, with none of the gateway's
   billing, caching, rate limiting, or observability. Both the intro and
   the Names table now say so.
+An MT4 market order can no longer be left open with no stop while the desk is told the send failed (issue #23).
+
+- An MT4 market send is two calls: `OrderSend` with no stop, then `OrderModify`. If the second call failed, the Expert attempted one unchecked `OrderClose` and reported a plain failure either way. If that close also failed, or if the Expert could not even SELECT the ticket, the position stayed open with no stop and the desk was told the send failed. Nothing on either side reconciled that state.
+- The rollback is now verified against the book rather than against a return value. The Expert re-reads the ticket and only reports a clean failure when `OrderCloseTime()` confirms it is gone. A failed `OrderSelect` now rolls back instead of abandoning the ticket.
+- When the rollback cannot be verified, the reply carries `survivor_ticket=<ticket>` and `error=sl_modify_failed_position_live`. `Fail()` had no ticket field at all, so the wire previously could not express this state even in principle.
+- `OrderResult.survivor_ticket`: `0` nothing survived, a positive ticket is live exposure the desk was told did not exist, `None` is COULD NOT MEASURE. Venues that attach the stop with the entry, including MT5, have no such window and report `0`.
+- An Expert older than 1.2.0 does not send the field. That reads as `None`, never as `0`. An unanswered question is not an all clear.
+- Two journal events: `unmanaged_position` and `survivor_unknown`. Both are also sent to Telegram in words, because a live unstopped position the desk does not know about is not a journal-only condition.
+- Working orders get the same treatment, with `OrderDelete` and `sl_modify_failed_order_live`.
+- `OnInit` scans the book at startup and prints every position that is open with no stop. New `ReconcileMagic` input filters the scan; `0` reports all. The Expert reports these and does not adopt them.
+- `docs/MT4.md` documented the two-step entry as an ECN feature and stated that the Expert closes the ticket on a modify failure. It did not close it reliably. The section now states the three outcomes and which one leaves money at risk.
+
+Ships the handover config gate (#25). `/approve always` and `/auto on` are the
+two paths to a real-money send with no human keystroke: `/approve always`
+sends inside the same Telegram `handle()` call as the advice turn, and
+`/auto on` trades from the EMA signal with no confirm step at all.
+
+- `telegram.allow_approve_always` and `telegram.allow_auto` in `config.toml`
+  (env: `TELEGRAM_ALLOW_APPROVE_ALWAYS`, `TELEGRAM_ALLOW_AUTO`). Both default
+  true, so an existing deployment that never sets these keys is unaffected.
+- Set either false and the matching command is refused with a named reason
+  (`approve_always_disabled`, `auto_disabled`), journaled as `reject`
+  (`source=telegram`, `stage=approve`/`auto`), and never answered in chat.
+  With no journal reachable the refusal still prints to stderr.
+  `/approve off` and `/auto off` are never refused.
+- A value that is present but not a clean boolean parses to false, never to
+  the default: a config typo or a string-valued env var (`bool("false")` is
+  `True` in Python) can only ever remove the capability, never grant it.
+- `config.handover.toml`, a new file, ships with both set false. Copy it to
+  `config.toml` for a handed-over desk.
+- The default stays true on purpose (flipping it would silently change every
+  existing deployment); the resulting gap is closed by observability, not a
+  stricter default. `doctor` and `run` print the posture
+  (`approve always: allowed|disabled`, `auto: allowed|disabled`), and every
+  `start` journal record carries `approve_always_allowed` / `auto_allowed`,
+  so a session's posture is readable both live and after the fact from
+  `journal.jsonl`.
+
+Version chosen, not assumed: `main` is 1.1.5, and PR #40 (1.1.6) and PR #49
+(1.2.0) are both open. This adds new config surface rather than fixing a
+defect in existing behaviour, so MINOR under the project rule; 1.3.0 avoids
+colliding with either open lane's claimed number. Whoever merges last still
+needs to renumber deliberately; a clean merge is not evidence the version is
+right (see #38's "version trap").
 
 
 ## 1.5.0
@@ -162,21 +206,6 @@ Sender-level authorization for Telegram commands (GHSA-9fg6-2x5f-3jvp).
 - A group, supergroup, or channel chat id is negative. On a negative chat id with an empty allow-list, `run` and `doctor` exit non-zero instead of starting.
 - An empty allow-list on a private chat id is unchanged behaviour. An existing single-operator deployment needs no config edit.
 - A refused command is journaled as `command_rejected` with the sender id, the chat id, and the command name. It is never answered in chat.
-
-
-## 1.2.0
-
-An MT4 market order can no longer be left open with no stop while the desk is told the send failed (issue #23).
-
-- An MT4 market send is two calls: `OrderSend` with no stop, then `OrderModify`. If the second call failed, the Expert attempted one unchecked `OrderClose` and reported a plain failure either way. If that close also failed, or if the Expert could not even SELECT the ticket, the position stayed open with no stop and the desk was told the send failed. Nothing on either side reconciled that state.
-- The rollback is now verified against the book rather than against a return value. The Expert re-reads the ticket and only reports a clean failure when `OrderCloseTime()` confirms it is gone. A failed `OrderSelect` now rolls back instead of abandoning the ticket.
-- When the rollback cannot be verified, the reply carries `survivor_ticket=<ticket>` and `error=sl_modify_failed_position_live`. `Fail()` had no ticket field at all, so the wire previously could not express this state even in principle.
-- `OrderResult.survivor_ticket`: `0` nothing survived, a positive ticket is live exposure the desk was told did not exist, `None` is COULD NOT MEASURE. Venues that attach the stop with the entry, including MT5, have no such window and report `0`.
-- An Expert older than 1.2.0 does not send the field. That reads as `None`, never as `0`. An unanswered question is not an all clear.
-- Two journal events: `unmanaged_position` and `survivor_unknown`. Both are also sent to Telegram in words, because a live unstopped position the desk does not know about is not a journal-only condition.
-- Working orders get the same treatment, with `OrderDelete` and `sl_modify_failed_order_live`.
-- `OnInit` scans the book at startup and prints every position that is open with no stop. New `ReconcileMagic` input filters the scan; `0` reports all. The Expert reports these and does not adopt them.
-- `docs/MT4.md` documented the two-step entry as an ECN feature and stated that the Expert closes the ticket on a modify failure. It did not close it reliably. The section now states the three outcomes and which one leaves money at risk.
 
 
 ## 1.1.5

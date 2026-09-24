@@ -150,6 +150,13 @@ class Engine:
             equity=acct.equity,
             server=acct.server,
             symbols=self.cfg.symbols,
+            # The handover posture (#25) is invisible from the config alone
+            # unless someone reads it. Put it in the one record every
+            # session already writes, so a journal reader can tell after
+            # the fact which posture a session ran under, and so it is
+            # never silently missing the way an unread config key would be.
+            approve_always_allowed=self.cfg.telegram.allow_approve_always,
+            auto_allowed=self.cfg.telegram.allow_auto,
         )
         self._seen_pos = {
             p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
@@ -1335,9 +1342,11 @@ class Engine:
 
 def _format_event(event: str, fields: dict[str, Any]) -> str:
     if event == "start":
+        approve = "allowed" if fields.get("approve_always_allowed", True) else "disabled"
+        auto = "allowed" if fields.get("auto_allowed", True) else "disabled"
         return (
             f"start mode={fields.get('mode')} equity={fields.get('equity')} "
-            f"symbols={fields.get('symbols')}"
+            f"symbols={fields.get('symbols')} approve_always={approve} auto={auto}"
         )
     if event == "stop":
         return "stop"

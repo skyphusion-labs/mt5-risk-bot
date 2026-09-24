@@ -45,6 +45,8 @@ Example: `python -m mt5_risk_bot --config config.toml run`.
    `pip install -e ".[dev]"`
 4. Copy the example config.
    `cp config.example.toml config.toml`
+   Handing this desk to someone else instead? Copy `config.handover.toml`;
+   it disables `/approve always` and `/auto on`. See docs/RUNBOOK.md.
 5. Set the Telegram token.
    `export TELEGRAM_BOT_TOKEN=...`
 6. Set the locked chat id.
