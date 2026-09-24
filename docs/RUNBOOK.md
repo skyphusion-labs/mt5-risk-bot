@@ -546,7 +546,26 @@ A pending fill writes `open` with `fill=true`.
 A vanished ticket writes `close` with `fill=true`.
 The venue holds the live book. It is not the fill log.
 
-JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `live_on`, `live_off`, `live_not_restored`, `risk_state_error`, `flatten`, `flatten_incomplete`, `close_failed`, `close_partial`, `cancel_failed`, `positions_read_failed`, `orders_read_failed`, `stop`.
+JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `auto_on`, `auto_off`, `live_on`, `live_off`, `live_not_restored`, `risk_state_error`, `advice_turn`, `advice_circuit_block`, `advice_stage_failed`, `flatten`, `flatten_incomplete`, `close_failed`, `close_partial`, `cancel_failed`, `positions_read_failed`, `orders_read_failed`, `stop`.
+`reject` is written by every gate that refuses, on every path, and it is the
+record to grep when the bot will not trade.
+It carries the NAMED `reason`, plus `source` (`auto`, `telegram`, or `advice`)
+and `stage` (`signal`, `stage`, `stage_close`, `confirm`, `reverse`,
+`confirm_reverse`, `reverse_after_close`, or `approve`).
+`symbol`, `kind`, `rr`, `ticket`, and `command` are present when the refused
+request had them.
+A refusal is journaled and is never sent back to the chat that triggered it.
+The chat gets its one-line reply, and nothing else.
+With no journal configured the refusal still prints to stderr, so a control
+that fired can never look unexercised.
+`advice_turn` closes one advice turn: `provider`, `session`, `action`,
+`symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, and `staged` (whether the
+desk tried to turn the suggestion into an order).
+The question and the model reply are never journaled.
+`advice_circuit_block` is the circuit refusing to let the model stage at all.
+`advice_stage_failed` carries `measured=false`: the order could not be built,
+so no rule said no. COULD NOT MEASURE is not REFUSED, and it is deliberately
+not a `reject`.
 `flatten` is one record per sweep.
 It carries `requested`, `confirmed_closed`, `closed_elsewhere`, `survivor_count`, and `measured`.
 `flatten_incomplete` is the same record, written again, when the sweep left risk open.

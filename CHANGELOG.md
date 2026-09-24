@@ -111,10 +111,15 @@ Two MT4 Expert reply defects (issue #31). They are separate defects that happene
 
 ## 1.4.0
 
-- Agent: the `/ask` `session` key is validated input. It must be present and a JSON string of 1 to 64 characters, from letters, digits, dot, underscore, and hyphen. A non-string is refused instead of being converted, and an absent or empty key is refused instead of falling back. A refused key gets `400 {"error":"invalid session"}`, and the agent builds no workspace for it (GHSA-q6m5-q538-8g32).
-- Agent: a non-POST `/ask` answers `405 {"error":"POST only"}` from the Worker. Same status and body as before; it is decided before any workspace is addressed.
-- Agent: optional `ADVICE_SESSIONS` pins the served keys to a comma-separated list. Unset by default. Set with no usable entry serves nobody.
-- The bot posts the Telegram chat id, which fits the rule, so the desk needs no change. A hand-made caller that sent a number, an empty key, or a key with spaces, separators or unicode must send a conforming one.
+- Every refusal on the desk and advice paths is now a structured journal record. Before this, `reject` was written on the auto/EMA leg only, so a refusal of anything a human or the model initiated left no machine-readable trace and could only be read as the English reply `refused: <reason>`. Asserting a gate on that string is asserting on prose.
+- One event name for every gate that says no, on every path: `reject`, carrying the NAMED `reason` plus `source` (`auto`, `telegram`, `advice`) and `stage` (`signal`, `stage`, `stage_close`, `confirm`, `reverse`, `confirm_reverse`, `reverse_after_close`, `approve`). `symbol`, `kind`, `rr`, `ticket`, and `command` ride along when the refused request had them. The auto leg now carries `source` and `stage` too, so the discriminator is total instead of being read from an absent field.
+- A refusal is journaled and is never echoed back into the chat that triggered it. It goes through `journal.write`, never `Engine._emit`, which is the chat broadcast path.
+- With no journal configured a refusal still prints to stderr. A control that goes silent because a file is missing cannot report that it was exercised.
+- The advice turn itself is now recorded: `advice_turn` with `provider`, `session`, `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, and `staged`. The question and the model reply are never journaled, so the redaction surface does not grow and `advice_history` stays free of prose.
+- `advice_circuit_block` records the circuit refusing to let the model stage at all. That gate decided whether the model could trade and wrote nothing.
+- `advice_stage_failed` carries `measured=false` for an advice action that could not be turned into an order at all. COULD NOT MEASURE is not REFUSED and is deliberately not a `reject`, so a refusal-reason count cannot absorb an unmeasured outcome.
+- `/auto on` and `/auto off` write `auto_on` and `auto_off`. `/live` and `/approve` were both audited and arming the autonomous trader was not.
+- No behaviour changes. Every refusal returns the same reply it did before; the records are additive.
 
 
 ## 1.3.2

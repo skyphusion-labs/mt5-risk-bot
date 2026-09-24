@@ -48,6 +48,10 @@ Auto EMA trading is off until `/auto on`.
 | File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.equity.json`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600 on Unix. The bot sets umask 077. Windows has no POSIX mode bits; the lock is still exclusive. |
 | Sender lock | `TELEGRAM_ALLOW_SENDERS` (or `telegram.allow_senders`) lists the sender ids that may command the desk. Every command is checked, read-only included. A sender that cannot be read is refused. A negative (shared) chat id with an empty list refuses to start. A refusal is journaled as `command_rejected` and is not answered. |
 | Sizer | `RiskManager.evaluate` is the only sizer. It is not optional. |
+| Refusal record | Every gate that refuses writes `reject` to `journal.jsonl` with the NAMED `reason`, plus `source` (`auto`, `telegram`, `advice`) and `stage` (which gate, on which leg). The auto, desk, and advice paths share that one event name. A refusal is journaled and is never broadcast to the chat that triggered it. With no journal configured it still prints to stderr. |
+| Advice record | An advice turn writes `advice_turn`: `provider`, `session`, `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `staged`. The question and the reply are never journaled. A suggestion the circuit refuses to stage writes `advice_circuit_block` with the circuit `reason`. |
+| Unmeasured is not refused | An advice action that could not be turned into an order at all writes `advice_stage_failed` with `measured=false`, never `reject`. COULD NOT MEASURE stays distinct from REFUSED. |
+| Auto arming | `/auto on` and `/auto off` write `auto_on` and `auto_off`, the audit trail `/live` and `/approve` already had. |
 
 ## Forbidden claims
 
@@ -94,7 +98,7 @@ Auto EMA trading is off until `/auto on`.
 | `/symbols list\|add\|remove [SYMBOL]` | Configured book (runtime). Bare `/symbols` lists. Cannot drop the last name, or a name with positions/orders. |
 | `/ask ...` or free text | Grok, Claude, or the agent. Local: last 40 turns in `journal.advice.json`. `AI_PROVIDER=computer`: Durable Object SQLite workspace (`/workspace/notes.md`, `log.md`, `snapshot.md`, `history.json` from `journal.tail`) plus Computer tools. Session is the Telegram chat id. JSON can stage. Default send is `/confirm`. `/approve always` sends after risk preview. Not Cloudflare D1. |
 | `/model grok\|claude\|computer` | Switch provider. |
-| `/auto on\|off` | Optional EMA regime. Fill alerts do not wait for this. |
+| `/auto on\|off` | Optional EMA regime. Fill alerts do not wait for this. Journaled as `auto_on` / `auto_off`. |
 | `/status` `/positions` `/halt` `/resume` | Account. `/halt` flattens, drops the confirm, and cancels working orders. |
 
 ## Confirm and send
