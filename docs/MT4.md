@@ -43,7 +43,32 @@ No nested JSON.
 Lists are `n=` plus `row0=`, `row1=`, ...
 Row fields are `|` separated.
 Comments are clipped to 31 characters (MT4 `OrderSend` limit).
-`|` and newlines in values become spaces or `/`.
+
+### Both ends sanitise, and neither trusts the other
+
+`|`, CR and LF are the only structure this protocol has, so no value may
+contain one. `|` becomes `/`; CR and LF each become a space.
+
+BOTH ends apply that rule to everything they write, because both ends handle
+text the other did not produce:
+
+- Python, outbound, in `_wire()`: order comments come from config and could
+  carry anything.
+- The Expert, inbound, in `Wire()`: `OrderComment()`, `OrderSymbol()`,
+  `AccountName()`, `AccountServer()` and `AccountCurrency()` are whatever the
+  BROKER put there. Brokers do append annotations to comments (`[sl]`,
+  `from #123`), so a pipe arriving from the terminal is ordinary, not exotic.
+
+Sanitising on only one side is not a half-measure, it is the whole defect. A
+position row is 13 pipe-separated fields with the comment at index 10, so one
+extra pipe moves `swap` onto the comment tail and `time` onto `swap`, and
+`positions()` raises out of `float()`. The desk then cannot enumerate its own
+book at all.
+
+One asymmetry, on purpose: `_wire()` also forces ASCII (non-ASCII becomes `?`),
+and `Wire()` does not, because MQL4 has no cheap equivalent. Non-ASCII broker
+text therefore reaches the adapter as the terminal's code page renders it. It
+cannot break framing, which is what the rule protects.
 
 Request:
 
@@ -80,8 +105,19 @@ error=invalid_stops
 ```
 
 `ok` is `1` or `0`.
-`retcode` on failure is the MT4 `GetLastError` when known.
+`retcode` on failure is the MT4 `GetLastError` for the call that failed, or a
+code the Expert chose for a check it performed itself (`130` for its own stops
+check, `131` for volume, `133` for trade-not-allowed, `4108` for a ticket it
+could not find).
 Python maps those onto `TRADE_RETCODE_*` so `OrderResult.ok` stays venue-neutral.
+
+`retcode=0` on a failure means the Expert did not report a reason. It is NOT a
+broker rejection, and the adapter does not present it as one: it reports
+`RETCODE_UNKNOWN`, `OrderResult.measured` is false, and the comment says the
+reason was not reported. An Expert older than 1.3.1 produces this on every
+failed send and modify, because `GetLastError()` clears the error register when
+it is read and the retry helpers read it first. Recompile and reattach
+`Mt4RiskBot.mq4` if you see it.
 
 ## Ops
 
