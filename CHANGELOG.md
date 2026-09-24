@@ -4,6 +4,111 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## Unreleased
+
+- Tests and gates only. No runtime behaviour changes, so this consumes no release number.
+- MT4 golden wire transcripts. `tests/test_mt4_wire.py` drives the adapter through `FileBridge`, a real mailbox on disk, and a stand-in Expert that answers with the byte-exact text `mt4/Experts/Mt4RiskBot.mq4` emits. Every op has a transcript. The existing suite drove the adapter through a stub that returned native Python dicts, so the pipe-separated decoding never ran through the broker at all.
+- The transcripts distinguish a MEASURED value from a DEFAULTED one. `Transcript.keys_sent()` answers whether the Expert put a field on the wire, and `value_sent()` gives the raw string it sent. A field the Expert never emits is absent, so the value reported for it is the adapter's own default.
+- Pinned, not changed: the Expert sends 11 of the 15 keys the symbol reader consumes. `trade_mode`, `currency_base`, `currency_profit` and `currency_margin` are never on the wire, so a symbol spec always reports trade mode 4 (full). Nothing in `src/` reads `SymbolSpec.trade_mode` yet, so the consequence is latent.
+- Pinned, not changed: a `tick_value` measured as zero is replaced by 1.0 and becomes indistinguishable from a genuine 1.0. The Expert emits four decimals, so any real value below 0.00005 arrives as zero.
+- Field order is now checked. The Expert's pipe-join order for positions, orders and bars is asserted against the adapter's field tuples. A dict-returning stub is indifferent to order, so reordering one field used to leave the suite green.
+- The reply-id match is now covered. A reply carrying a foreign id is not consumed, and the request is left in the mailbox after a timeout.
+- Per-file coverage floors, declared in `[tool.mt5_risk_bot.coverage_floors]` in `pyproject.toml`. `broker/mt4_live.py` has a floor of 97%. A package-wide `--cov-fail-under` cannot go red for one file.
+- `broker/mt4_live.py` coverage: 86.94% to 97.59%. Tests touching it: 18 to 114. Suite: 305 to 415.
+Smaller items batch (#15), in priority order. No version bump encoded here
+(several PRs open today already claim conflicting numbers); assigned at
+merge.
+
+- **Redaction gap, and it was an exfiltration path, not just a logging
+  gap.** `journal.redact_text` covered the BotFather token pattern only.
+  Advice turns persist to `journal.advice.json` and are replayed verbatim
+  into `Advisor._memory` on every subsequent provider call, so a
+  `sk-ant-...` or `xai-...` key pasted once into a chat question (or
+  echoed back in a model reply) was written to disk unredacted and
+  resent to the third-party provider on every following turn. Verified
+  the replay claim directly: the raw key showed up in the SECOND
+  outbound HTTP payload in a test before this fix. Widened the pattern
+  list; `_remember` (write) and `load` (read, so an already-persisted
+  legacy turn is cleaned on the next process start too) both already
+  routed through the one function, so one fix closes both the disk and
+  the replay side.
+- **`desk.py` vs `risk.py` mode-gate mismatch.** `Desk._live_needs_flag`
+  gated the "arm live first" warning on `mode != "mt5"`; `risk.py`'s real
+  send gate uses `mode in {"mt5", "mt4"}`. The desk side was wrong: on an
+  MT4 real account, `/approve always` armed with no warning at all. The
+  send was still refused downstream (`live_not_accepted`, risk.py's gate
+  is correct), so this was never a path to an unwarned send, but the desk
+  lied about the precondition until that refusal. Fixed to match risk.py's
+  set form.
+- **`/resume` message, and a sharper finding underneath it.** The issue
+  named `daily_loss`: `clear_operator_halt` trusted a single `_halt_reason`
+  slot that `circuit()` overwrites to `"halt_file"` on every call while the
+  operator HALT file exists, so a poll tick between `/halt` and `/resume`
+  made `/resume` claim "trading may resume" during a live `daily_loss`
+  halt. For `daily_loss` / `max_drawdown` this really was message-only:
+  every gate recomputes them fresh from the snapshot, so the next gate
+  call re-halts. It is NOT message-only for `state_unreadable` /
+  `state_unwritable`: neither is recomputed the same way (the state file
+  is read once, at start), so the same clobbering let `clear_operator_halt`
+  silently drop a COULD NOT MEASURE halt with nothing to re-derive it
+  from, and let `_persist_state`'s evidence-preservation guard reopen and
+  overwrite the corrupt file it exists to protect. Fixed with a dedicated,
+  never-clobbered slot for the state-integrity reason, and daily_loss /
+  max_drawdown re-derived from the snapshot instead of trusted from the
+  stale slot.
+- **Model pin.** `claude-sonnet-4-5` -> `claude-sonnet-5` in all 3 places
+  it appears (`config.py` dataclass default, `config.py` loader default,
+  `config.example.toml`). `grok_model` / `computer_model` checked and are
+  current; not touched. Nothing asserted on the old string.
+- **`ruff` and `mypy` in CI**, as a new `lint` job feeding the `ci`
+  aggregator's `needs:`. `ruff` selects `E4,E7,E9,F` deliberately (real
+  bugs: unused imports, undefined names, syntax-adjacent issues), not the
+  rest of `E`/`W`: this codebase's own idiom runs long, dense lines, and a
+  line-length gate would be a rewrite, not "a cheap win". `mypy` runs
+  against `src/mt5_risk_bot` with two narrow, documented per-module
+  overrides (`desk.py`'s deliberately `object`-typed `engine`; the MT5
+  binding's `Any | None` optional-import pattern in `mt5_live.py`), plus
+  four small `dict[str, object]` annotations and two `PaperBroker`
+  narrowing asserts in `__main__.py` that were genuine (if minor) type
+  gaps, not gate suppressions. Both tools verified clean against `src/` at
+  this commit before landing.
+
+Docs corrected to match current code (#14). No behaviour change.
+
+- `SECURITY.md` said real money is refused unless the bot started with
+  `--i-accept-risk`. That was never the only path: `/live on I-ACCEPT-RISK`
+  in the locked Telegram chat arms it too, and always has. The restart
+  half of the original defect (a journal-restored `/live on` re-arming a
+  fresh process) was already fixed by #17; this corrects the doc to name
+  both arming paths and their per-process, not-restart-restored behaviour,
+  instead of naming only one.
+- `README.md` named `the gateway` (Cloudflare AI Gateway) alongside `the
+  bot` / `the desk` / `the agent` with no scope. Only `AI_PROVIDER=computer`
+  (the agent) routes through it; the default `grok` and `claude` are BYOK
+  straight to `api.x.ai` / `api.anthropic.com`, with none of the gateway's
+  billing, caching, rate limiting, or observability. Both the intro and
+  the Names table now say so.
+
+
+## 1.4.1
+
+Two MT4 Expert reply defects (issue #31). They are separate defects that happened to live in the same file.
+
+### The real broker error was destroyed on every failed send and modify
+
+- `GetLastError()` CLEARS the error register as a side effect of reading it. `SendRetry` and `ModifyRetry` read it inside their retry loops and then returned only `-1` / `false`, so the caller's read for the reply returned `0`. Every failed send and modify reached the journal and the chat as a generic rejection with the MT4 error gone. An operator could not tell "not enough money" from "market closed" from "invalid stops" without cross-reading the terminal's own Journal tab.
+- Both helpers now take the error as an out-parameter and the reply carries THAT value. `CheckMarket`, `CheckWorking`, `ModifyPos` and `ModifyPend` no longer read the register while building a reply.
+- `ModifyRetry`'s `OrderSelect` exit recorded nothing at all, so the caller read whatever the register happened to hold: a wrong answer rather than a missing one. Both of its failing exits now record what they saw.
+- `retcode=0` on a failure now reports `RETCODE_UNKNOWN` instead of `REJECT`. Calling it a rejection asserted the broker refused the order, and nothing measured that. It reuses the COULD NOT MEASURE vocabulary from 1.1.5 rather than adding a second one.
+
+### Row payloads were written unsanitised
+
+- Python strips `|`, CR and LF from everything it writes (`_wire`). The Expert did not do the same for `OrderComment()`, `OrderSymbol()`, `AccountName()`, `AccountServer()` or `AccountCurrency()`, all of which are broker-controlled text.
+- A position row is 13 pipe-separated fields with the comment at index 10. A broker comment containing a pipe (brokers do append `[sl]` and `from #123`) shifted `swap` onto the comment tail and `time` onto `swap`, and `positions()` raised `ValueError` out of `float()`. The desk could not enumerate its own book, triggered by data the broker controls rather than by anything the desk did.
+- The Expert now has `Wire()` and applies it to every broker string it writes. A test asserts the Expert's rule and `_wire`'s rule are the same rule, and a golden transcript carries a comment with a pipe through the real mailbox and checks all 13 fields land in the right places.
+- `docs/MT4.md` stated the sanitation rule without saying which side owns it, and promised `retcode` was the MT4 error "when known", which was never true on the failing paths. Both corrected, including the one deliberate asymmetry: `_wire` forces ASCII and `Wire()` does not.
+
+
 ## 1.4.0
 
 - Every refusal on the desk and advice paths is now a structured journal record. Before this, `reject` was written on the auto/EMA leg only, so a refusal of anything a human or the model initiated left no machine-readable trace and could only be read as the English reply `refused: <reason>`. Asserting a gate on that string is asserting on prose.
@@ -15,6 +120,20 @@ See README.md and docs/CONTRACT.md.
 - `advice_stage_failed` carries `measured=false` for an advice action that could not be turned into an order at all. COULD NOT MEASURE is not REFUSED and is deliberately not a `reject`, so a refusal-reason count cannot absorb an unmeasured outcome.
 - `/auto on` and `/auto off` write `auto_on` and `auto_off`. `/live` and `/approve` were both audited and arming the autonomous trader was not.
 - No behaviour changes. Every refusal returns the same reply it did before; the records are additive.
+
+
+## 1.3.2
+
+The MT4 symbol reader no longer fabricates values it never measured (issue #30, superseding #12).
+
+- All 15 reads in `Mt4Broker.symbol` used `d.get(key, DEFAULT) or DEFAULT`. `or` fires on a legitimate ZERO as well as on absence, so a broker-reported zero became a EURUSD-shaped default that nothing downstream could tell from a measurement. Two real producers of zero: `MarketInfo` answers 0 for a symbol that is not in Market Watch, and the Expert truncated `tick_value` to four decimals so any real value below 0.00005 arrived as zero.
+- `SymbolSpec.unmeasured` records the fields that were not measured. An unmeasured field is left at a value that cannot be mistaken for usable, never at a plausible default.
+- The risk gate refuses with `spec_not_measured:<fields>` BEFORE any gate reads the spec. Previously an unusable `volume_step` produced `size_zero`, which says the budget was too small: a different fact. The last-line guard could not catch the tick-value case at all, because `risk.py` recomputes `money_per_lot_at_stop` from the same corrupt spec.
+- `1.0` was not a conservative default. Below 1.0 it undersizes, which is safe; above 1.0 it oversizes by exactly the ratio, so a 2.5 tick value spends 2.5x the intended budget. MQL4 has ONE tick-value identifier, `MODE_TICKVALUE`, with no loss-leg variant, so the MT5 remedy does not transfer and the honest fix is to refuse.
+- The 4 fields the Expert cannot send (`trade_mode`, `currency_base`, `currency_profit`, `currency_margin`) are marked unmeasured instead of invented. `trade_mode` no longer defaults to 4 (full trading), which had meant a close-only symbol presented as fully tradable. That was LATENT rather than live: nothing in `src/` reads `SymbolSpec.trade_mode`, only `Account.trade_mode` is consumed. Closed so it cannot become live later.
+- Zero remains a real reading where zero is real: `digits` on an instrument quoted in whole points, and `stops_level`, `freeze_level` and `spread`. Only fields where zero is impossible are treated as failed measurements.
+- The Expert now serialises `volume_min`, `volume_max`, `volume_step` and `tick_value` with 8 decimals instead of 2 and 4. A 0.001 lot step used to arrive as `0.00` and refuse every order with no explanation. This removes TRUNCATION as a producer of zero; it does not remove zero itself, and that one is still a refusal.
+- `docs/MT4.md` now states field by field what MT4 can and cannot supply, and says outright that MT4 has one tick value by design, so the loss-leg field is not re-proposed.
 
 
 ## 1.3.0

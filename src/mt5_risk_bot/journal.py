@@ -21,6 +21,13 @@ _SECRET_KEYS = frozenset({"token", "password", "api_key", "grok_key", "claude_ke
 _REDACTED = "[REDACTED]"
 # BotFather tokens: <id>:<secret> with 8-12 digit id and 30+ url-safe chars.
 _TG_TOKEN_RE = re.compile(r"\d{8,12}:[A-Za-z0-9_-]{30,}")
+# Anthropic keys: sk-ant-<...>. xAI keys: xai-<...>. Both providers are BYOK
+# straight from the operator's chat (advice turns persist to journal.advice.json
+# and are replayed into every following provider call via Advisor._memory), so
+# a pasted key with no named field to redact by must be caught by pattern.
+_ANTHROPIC_KEY_RE = re.compile(r"sk-ant-[A-Za-z0-9_-]{16,}")
+_XAI_KEY_RE = re.compile(r"xai-[A-Za-z0-9_-]{16,}")
+_SECRET_PATTERNS = (_TG_TOKEN_RE, _ANTHROPIC_KEY_RE, _XAI_KEY_RE)
 _ROTATE_BYTES = 10 * 1024 * 1024
 
 
@@ -145,8 +152,12 @@ class InstanceLock:
 
 
 def redact_text(s: str) -> str:
-    """Replace BotFather tokens in free text (stderr, Telegram echoes)."""
-    return _TG_TOKEN_RE.sub(_REDACTED, s)
+    """Replace BotFather tokens and provider API keys in free text
+    (stderr, Telegram echoes, and advice turns before they are persisted
+    or replayed to the provider on the next call)."""
+    for pattern in _SECRET_PATTERNS:
+        s = pattern.sub(_REDACTED, s)
+    return s
 
 
 def redact(v: Any) -> Any:

@@ -1,5 +1,6 @@
 import { DeskAgent } from "./desk-agent";
 import type { Env } from "./env";
+import { checkSession } from "./session";
 
 export { DeskAgent };
 
@@ -19,17 +20,30 @@ export default {
         headers: { "content-type": "application/json" },
       });
     }
-    let session = "default";
-    if (request.method === "POST") {
-      const copy = request.clone();
-      try {
-        const body = (await copy.json()) as { session?: string };
-        if (body.session) session = String(body.session);
-      } catch {
-        session = "default";
-      }
+    // The session key names the Durable Object, so everything below runs BEFORE
+    // the namespace is addressed. An addressed Durable Object is one the caller
+    // has made the platform create, so a request that will not be served must
+    // not reach that far. The method check and the refusals the Durable Object
+    // used to answer therefore live here now; the status codes and bodies are
+    // unchanged.
+    if (request.method !== "POST") {
+      return json({ error: "POST only" }, 405);
     }
-    const id = env.DESK.idFromName(session);
+    let parsed: unknown;
+    try {
+      parsed = await request.clone().json();
+    } catch {
+      return json({ error: "invalid json" }, 400);
+    }
+    const supplied =
+      typeof parsed === "object" && parsed !== null
+        ? (parsed as { session?: unknown }).session
+        : undefined;
+    const checked = checkSession(supplied, env.ADVICE_SESSIONS);
+    if (!checked.ok) {
+      return json({ error: "invalid session" }, 400);
+    }
+    const id = env.DESK.idFromName(checked.session);
     return env.DESK.get(id).fetch(request);
   },
 };
@@ -48,4 +62,11 @@ function timingSafeEq(a: string, b: string): boolean {
     return false;
   }
   return crypto.subtle.timingSafeEqual(aa, bb);
+}
+
+function json(body: unknown, status: number): Response {
+  return new Response(JSON.stringify(body), {
+    status,
+    headers: { "content-type": "application/json" },
+  });
 }
