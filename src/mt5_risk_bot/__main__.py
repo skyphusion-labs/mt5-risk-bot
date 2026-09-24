@@ -34,6 +34,14 @@ def _cfg(args: argparse.Namespace) -> BotConfig:
     return cfg
 
 
+def _posture_line(cfg: BotConfig) -> str:
+    """Operator-visible handover posture (#25): is either unattended-send
+    path available on THIS config, without reading config.toml by hand."""
+    approve = "allowed" if cfg.telegram.allow_approve_always else "disabled"
+    auto = "allowed" if cfg.telegram.allow_auto else "disabled"
+    return f"approve always: {approve}\nauto: {auto}"
+
+
 def telegram_ping(cfg: BotConfig, *, transport=None) -> str:
     tg = TelegramClient.from_config(
         cfg.telegram,
@@ -104,6 +112,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     cfg = load_config(args.config) if args.config else load_config()
     if args.config:
         print(f"config: mode={cfg.mode} symbols={cfg.symbols} risk_pct={cfg.risk.risk_pct}")
+    print(_posture_line(cfg))
     print("terminal: official MetaTrader5 package is Windows-only.")
     print("macOS: install MetaTrader 5.app from metatrader5.com, then pip install mt5-mac.")
     print("MT4: attach mt4/Experts/Mt4RiskBot.mq4. files_dir is Common Files.")
@@ -220,6 +229,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     if args.mode:
         cfg.mode = args.mode
+    print(_posture_line(cfg))
     try:
         lock = InstanceLock(cfg.journal_path)
         lock.acquire()

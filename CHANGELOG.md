@@ -24,6 +24,13 @@ sends inside the same Telegram `handle()` call as the advice turn, and
   `True` in Python) can only ever remove the capability, never grant it.
 - `config.handover.toml`, a new file, ships with both set false. Copy it to
   `config.toml` for a handed-over desk.
+- The default stays true on purpose (flipping it would silently change every
+  existing deployment); the resulting gap is closed by observability, not a
+  stricter default. `doctor` and `run` print the posture
+  (`approve always: allowed|disabled`, `auto: allowed|disabled`), and every
+  `start` journal record carries `approve_always_allowed` / `auto_allowed`,
+  so a session's posture is readable both live and after the fact from
+  `journal.jsonl`.
 
 Version chosen, not assumed: `main` is 1.1.5, and PR #40 (1.1.6) and PR #49
 (1.2.0) are both open. This adds new config surface rather than fixing a

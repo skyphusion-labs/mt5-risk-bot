@@ -22,6 +22,7 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from mt5_risk_bot.__main__ import main
 from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.config import BotConfig, TelegramConfig, load_config
 from mt5_risk_bot.desk import Desk
@@ -284,3 +285,79 @@ def test_handover_template_disables_both() -> None:
     cfg = load_config(root / "config.handover.toml")
     assert cfg.telegram.allow_approve_always is False
     assert cfg.telegram.allow_auto is False
+
+
+# --- 7. the posture is observable at startup, not just in config.toml ------
+#
+# Coordinator follow-up: default True closes the config gate but leaves it
+# invisible. A handover that forgets config.handover.toml hands out both
+# keystroke-free paths with nothing telling anyone. The fix is NOT a default
+# flip (that was the rejected option -- see module docstring); it is making
+# the posture observable: printed on `doctor` and `run`, and journaled in
+# the `start` record every session already writes. Assert on the structured
+# record, not the prose, per the coordinator's instruction.
+
+
+def test_start_journals_the_posture_when_allowed(tmp_path) -> None:
+    engine = _engine(tmp_path)
+    engine.start()
+    rec = engine.journal.last_event("start")
+    assert rec is not None
+    assert rec["approve_always_allowed"] is True
+    assert rec["auto_allowed"] is True
+    engine.stop()
+
+
+def test_start_journals_the_posture_when_disabled(tmp_path) -> None:
+    engine = _engine(tmp_path, allow_approve_always=False, allow_auto=False)
+    engine.start()
+    rec = engine.journal.last_event("start")
+    assert rec is not None
+    assert rec["approve_always_allowed"] is False
+    assert rec["auto_allowed"] is False
+    engine.stop()
+
+
+def test_doctor_prints_the_posture_allowed(capsys, tmp_path) -> None:
+    # doctor's rc reflects the telegram ping / paper round-trip, not the
+    # posture; assert on the posture line only, not the exit code.
+    path = _write_cfg(tmp_path, "[telegram]\ntoken = \"t\"\nchat_id = \"1\"\n")
+    main(["--config", str(path), "doctor"])
+    out = capsys.readouterr().out
+    assert "approve always: allowed" in out
+    assert "auto: allowed" in out
+
+
+def test_doctor_prints_the_posture_disabled(capsys, tmp_path) -> None:
+    path = _write_cfg(
+        tmp_path,
+        "[telegram]\ntoken = \"t\"\nchat_id = \"1\"\n"
+        "allow_approve_always = false\nallow_auto = false\n",
+    )
+    main(["--config", str(path), "doctor"])
+    out = capsys.readouterr().out
+    assert "approve always: disabled" in out
+    assert "auto: disabled" in out
+
+
+def test_doctor_prints_the_handover_template_posture(capsys) -> None:
+    import pathlib as _pathlib
+
+    root = _pathlib.Path(__file__).resolve().parents[1]
+    assert main(["--config", str(root / "config.handover.toml"), "doctor"]) == 0
+    out = capsys.readouterr().out
+    assert "approve always: disabled" in out
+    assert "auto: disabled" in out
+
+
+def test_run_prints_the_posture_before_the_telegram_gate(capsys, tmp_path, monkeypatch) -> None:
+    """Printed even on the path that then refuses to start for an unrelated
+    reason (no Telegram configured): the operator sees the posture on every
+    `run`, not only on a successful one."""
+    monkeypatch.chdir(tmp_path)
+    monkeypatch.delenv("TELEGRAM_BOT_TOKEN", raising=False)
+    monkeypatch.delenv("TELEGRAM_CHAT_ID", raising=False)
+    assert main(["run", "--mode", "paper"]) == 2
+    out = capsys.readouterr().out
+    assert "approve always: allowed" in out
+    assert "auto: allowed" in out

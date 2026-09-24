@@ -443,6 +443,15 @@ never grant it.
 for a handed-over desk. To re-enable on your own desk, set both to true, or
 remove the keys.
 
+The default stays true on purpose: flipping it would silently change every
+existing deployment, including one that has never heard of this key. That
+leaves a gap for a handover that forgets `config.handover.toml`, so the
+posture is observable instead of hidden in a config file. `doctor` and
+`run` print it on every invocation (`approve always: allowed|disabled`,
+`auto: allowed|disabled`), and every `start` journal record carries
+`approve_always_allowed` and `auto_allowed`, so `journal.jsonl` answers
+which posture a session actually ran under, after the fact.
+
 Paper is the default (`account.mode = "paper"`).
 Real accounts still need `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.
 
