@@ -146,6 +146,16 @@ class RiskManager:
         )
         self._halted = False
         self._halt_reason = ""
+        # Set once, by _restore_state / _persist_state, and never overwritten by
+        # circuit()'s halt_file check (#15 item 4). _halt_reason IS overwritten
+        # by that check on every call while the operator HALT file exists, which
+        # clobbers whatever reason was there before it. daily_loss and
+        # max_drawdown recover from that because every gate recomputes them
+        # fresh from the snapshot; state_unreadable and state_unwritable do not
+        # self-heal that way (the file is read once, at start), so without a
+        # separate slot, clear_operator_halt() could silently drop a COULD NOT
+        # MEASURE halt with nothing left to prove it should not have.
+        self._state_integrity_reason = ""
         self._restore_state()
 
     def _restore_state(self) -> None:
@@ -158,18 +168,20 @@ class RiskManager:
             self.state_error = str(exc)
             self._halted = True
             self._halt_reason = "state_unreadable"
+            self._state_integrity_reason = "state_unreadable"
             return
         if restored is not None:
             self.snapshot = restored
 
     def _persist_state(self) -> None:
         """Write the snapshot. A write failure halts; it is a measurement loss."""
-        if self._halt_reason == "state_unreadable":
+        if self._state_integrity_reason == "state_unreadable":
             return  # the unreadable file is evidence; do not clobber it
         try:
             save_snapshot(self.state_path, self.snapshot)
         except StateUnwritable as exc:
             self.state_error = str(exc)
+            self._state_integrity_reason = "state_unwritable"
             if not self._halted:
                 self._halted = True
                 self._halt_reason = "state_unwritable"
@@ -192,19 +204,50 @@ class RiskManager:
         os.chmod(path, 0o600)
         return path
 
-    def clear_operator_halt(self) -> str:
-        """Clear HALT file. Leaves daily_loss / max_drawdown in place.
+    def _equity_halt_reason(self) -> str:
+        """daily_loss / max_drawdown, recomputed fresh from the snapshot.
 
-        Returns remaining halt reason, or empty string if the bot may resume.
+        Same condition circuit() checks, extracted so clear_operator_halt()
+        can ask "is this independently still true" without trusting
+        _halt_reason, which circuit() overwrites to "halt_file" on every call
+        while the operator HALT file exists (#15 item 4).
+        """
+        s = self.snapshot
+        r = self.cfg.risk
+        daily_loss = s.day_start_equity - s.equity
+        if daily_loss >= s.day_start_equity * r.daily_loss_pct:
+            return "daily_loss"
+        dd = s.peak_equity - s.equity
+        if s.peak_equity > 0 and dd >= s.peak_equity * r.max_drawdown_pct:
+            return "max_drawdown"
+        return ""
+
+    def clear_operator_halt(self) -> str:
+        """Clear the HALT file. Leaves any independently-true halt in place.
+
+        Returns the remaining halt reason, or empty string if the bot may
+        resume. _halt_reason alone cannot answer this (see
+        _equity_halt_reason and _state_integrity_reason): it is a single
+        slot that circuit() overwrites to "halt_file" on every call while
+        the operator HALT file exists, discarding whatever reason was
+        there before. daily_loss / max_drawdown are re-derived from the
+        snapshot; a state-integrity halt is re-asserted from the
+        dedicated, never-overwritten slot.
         """
         path = self.halt_path()
         if path.exists():
             path.unlink()
-        if self._halt_reason == "halt_file":
-            self._halted = False
-            self._halt_reason = ""
-        if self._halted:
-            return self._halt_reason
+        if self._state_integrity_reason:
+            self._halted = True
+            self._halt_reason = self._state_integrity_reason
+            return self._state_integrity_reason
+        sticky = self._equity_halt_reason()
+        if sticky:
+            self._halted = True
+            self._halt_reason = sticky
+            return sticky
+        self._halted = False
+        self._halt_reason = ""
         return ""
 
     def _durable(self) -> tuple[str, float, float]:

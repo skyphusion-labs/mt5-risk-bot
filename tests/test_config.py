@@ -2,7 +2,31 @@ from pathlib import Path
 
 import pytest
 
-from mt5_risk_bot.config import BotConfig, load_config
+from mt5_risk_bot.config import AdviceConfig, BotConfig, load_config
+
+
+# --- model pin is current generation (#15 item 5) ---------------------------
+#
+# Denominator: 3 places in src/ + config.example.toml name a Claude model.
+# One is stale. grok_model ("grok-4") and computer_model ("xai/grok-4.6")
+# were checked too and are current; not touched.
+
+
+def test_advice_config_default_claude_pin_is_current() -> None:
+    assert AdviceConfig().claude_model == "claude-sonnet-5"
+
+
+def test_load_config_default_claude_pin_is_current(tmp_path) -> None:
+    path = tmp_path / "config.toml"
+    path.write_text("[telegram]\ntoken = \"t\"\nchat_id = \"1\"\n", encoding="utf-8")
+    cfg = load_config(path)
+    assert cfg.advice.claude_model == "claude-sonnet-5"
+
+
+def test_example_config_claude_pin_is_current() -> None:
+    root = Path(__file__).resolve().parents[1]
+    cfg = load_config(root / "config.example.toml")
+    assert cfg.advice.claude_model == "claude-sonnet-5"
 
 
 def test_example_config_loads() -> None:
