@@ -4,6 +4,27 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.2.1
+
+Tests and findings only. The shipped product is unchanged: no file under `src/` has a behaviour edit in this release, and the version moves only so these findings have a place to be recorded.
+
+- Every refusal reason `RiskManager` can name now has a test that asserts the NAMED reason. `allowed is False` cannot tell you a control has stopped testing anything. The roster is `tests/test_refusal_reasons.py`, and it measures its own denominator against `risk.py`, so a reason added to the module without a case fails the suite instead of quietly lowering the count.
+- The count was 20 reasons, not 15. Issue #11 reported 15 and 5 of them named; the measured figures are 20 reasons, 5 asserted by name, 11 refusal returns never executed (6 of those inside `evaluate`). After this change 19 of 20 are asserted by name and 1 refusal return is still unexecuted, for the reason below.
+- Each guard was mutated so its refusal could not fire, and each test was watched going red before being trusted. 19 of 20 went red. The 20th did not, which is the first finding.
+
+### Three pieces of `risk.py` cannot execute. Reported, not fixed.
+
+None of these is a behaviour defect today and none is changed here. Each is pinned by a test that FAILS if it ever becomes reachable, so no test in this repo is left passing against a line that cannot run.
+
+- **`size_exceeds_risk` cannot fire.** The last-line size guard recomputes exactly what `lots_for_risk` already checked, from the same entry, stop and spec, but with a looser tolerance (`1e-6` against the inner `1e-9`). Anything that would trip it has already been turned into 0 lots by the tighter inner check and is reported as `size_zero`. Deleting the guard outright leaves the whole suite green, which is how this was confirmed rather than argued. The reason string is still live in the product, but only from `engine.py` on the `/replace` path, which keeps the volume the broker already accepted and never calls `lots_for_risk`. That is the refusal an operator can actually receive, and it now has a test naming the site.
+- **The `halted` fallback cannot fire.** `circuit_reason` reads `self._halt_reason or "halted"`. Every site that raises the halt flag sets a reason in the same block, so no public call can leave the flag up with an empty reason.
+- **The zero-equity branch of the margin gate cannot be taken.** `if account.equity > 0:` guards a division, so the interesting case is a wiped account, and no wiped account reaches that line: the daily-loss gate fires first for every one of them, because a fresh day sets `day_start_equity` to the account equity and `0 >= 0` is true. The gate fails CLOSED on a wiped account, which is correct; the branch under it is simply unreachable.
+
+- `circuit_reason`, the gate deciding whether the model may stage at all, had no test on four of its branches (`halted`, `trade_not_allowed`, `live_not_accepted`, `max_drawdown`). All four are now named. `circuit_reason` is also asserted NOT to latch a market verdict, which `circuit` does and it must not.
+- `no_signal` and `already_in_symbol` have no production caller that can reach them: the auto leg returns before both (`engine.py`), and the desk only ever builds BUY or SELL. `already_in_symbol` is reachable from the desk and is tested there; `no_signal` is a defensive guard on a public method and is tested at that method.
+- `outside_session` is reachable on the auto leg only. The desk passes `manual=True`, which bypasses the session window by design, so no operator command can produce it. Tested on the auto leg, off the bar clock.
+- Where a reason is reachable through the desk or the auto leg, the assertion is the structured `reject` record from 1.2.0 rather than the return value, because the record is what an operator and an auditor read after the fact.
+
 ## 1.2.0
 
 - Every refusal on the desk and advice paths is now a structured journal record. Before this, `reject` was written on the auto/EMA leg only, so a refusal of anything a human or the model initiated left no machine-readable trace and could only be read as the English reply `refused: <reason>`. Asserting a gate on that string is asserting on prose.
