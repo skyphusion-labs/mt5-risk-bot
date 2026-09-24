@@ -365,8 +365,11 @@ class Mt5Broker:
 
     def _result(self, raw: Any, request: dict) -> OrderResult:
         if raw is None:
+            # No result at all. MQL5 uses retcode 0 for a PASSED order_check,
+            # so synthesizing 0 here made an unrun check indistinguishable
+            # from a passed one and the engine sent the order (issue #8).
             err = self._mt5.last_error() if self._mt5 else "none"
-            return OrderResult(retcode=0, comment=f"no result: {err}", request=request)
+            return OrderResult.unknown(f"no result: {err}", request)
         d = _asdict(raw)
         return OrderResult(
             retcode=int(d.get("retcode", 0)),
