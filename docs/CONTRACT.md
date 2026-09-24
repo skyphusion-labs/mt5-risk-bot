@@ -232,5 +232,9 @@ Put `--config` before the subcommand.
 ## Gate
 
 `pytest` with `--cov-fail-under=80`.
-CI jobs are named `ci` and `coverage`.
+CI jobs are named `ci`, `coverage`, `agent-typecheck` and `agent-test`.
 `tests/` must stay green.
+`agent/` must stay green: `npm run typecheck` and `npm test` in `agent/`.
+`agent/` tests run in workerd via `@cloudflare/vitest-pool-workers`, not node.
+The AI Gateway is the only hop the `agent/` suite replaces; it does so at the
+outbound-request boundary, so nothing in `agent/src/` is stubbed.
