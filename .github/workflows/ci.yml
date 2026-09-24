@@ -32,6 +32,20 @@ jobs:
       - run: pytest -q -rs --override-ini addopts=
       - run: python -m mt5_risk_bot doctor
 
+  lint:
+    name: lint
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v7
+      - uses: actions/setup-python@v7
+        with:
+          python-version: "3.12"
+          cache: pip
+      - run: pip install -e ".[dev]"
+      - run: ruff check src/
+      - run: mypy src/mt5_risk_bot
+
   # The org ruleset (aviation-grade-main-org, 18677665) requires status
   # checks literally named `ci`, `coverage`, `CodeQL` -- nothing else is at
   # the merge gate. A matrix job reports as `ci-matrix (os, python-version)`,
@@ -44,17 +58,19 @@ jobs:
   # is not the red this check exists to produce.
   ci:
     name: ci
-    needs: [ci-matrix, agent, agent-test]
+    needs: [ci-matrix, lint, agent, agent-test]
     if: always()
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
-      - name: require ci-matrix, agent-typecheck and agent-test to have succeeded
+      - name: require ci-matrix, lint, agent-typecheck and agent-test to have succeeded
         run: |
           echo "ci-matrix result: ${{ needs.ci-matrix.result }}"
+          echo "lint result: ${{ needs.lint.result }}"
           echo "agent-typecheck result: ${{ needs.agent.result }}"
           echo "agent-test result: ${{ needs.agent-test.result }}"
           if [ "${{ needs.ci-matrix.result }}" != "success" ] || \
+             [ "${{ needs.lint.result }}" != "success" ] || \
              [ "${{ needs.agent.result }}" != "success" ] || \
              [ "${{ needs.agent-test.result }}" != "success" ]; then
             echo "an upstream job did not succeed; failing the required ci check"
@@ -67,7 +83,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm
@@ -83,7 +99,7 @@ jobs:
     timeout-minutes: 10
     steps:
       - uses: actions/checkout@v7
-      - uses: actions/setup-node@v5
+      - uses: actions/setup-node@v7
         with:
           node-version: "22"
           cache: npm

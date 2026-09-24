@@ -18,6 +18,7 @@ from tempfile import TemporaryDirectory
 
 from mt5_risk_bot import __version__
 from mt5_risk_bot.broker import broker_for
+from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.config import BotConfig, load_config
 from mt5_risk_bot.engine import Engine, run_backtest
 from mt5_risk_bot.journal import InstanceLock, InstanceLockError, redact_text
@@ -59,6 +60,10 @@ def paper_round_trip() -> str:
         cfg.journal_path = str(Path(tmp) / "j.jsonl")
         cfg.symbols = ["EURUSD"]
         broker = broker_for(cfg)
+        # mode is hardcoded "paper" a few lines up; make that guarantee
+        # explicit rather than relying on Broker's abstract interface to
+        # happen to have seed_bars (it does not -- PaperBroker-only).
+        assert isinstance(broker, PaperBroker)
         broker.seed_bars("EURUSD", generate_bars(120, drift=0.0004, vol=0.0002, seed=3))
         engine = Engine(
             cfg,
@@ -249,6 +254,9 @@ def _cmd_run_locked(args: argparse.Namespace, cfg: BotConfig) -> int:
         elif args.feed_mt5:
             live = broker_for(replace(cfg, mode="mt5"))
             live.connect()
+            # This whole branch is under `if cfg.mode == "paper":` above, so
+            # broker is the PaperBroker constructed a few lines earlier.
+            assert isinstance(broker, PaperBroker)
             for name in cfg.symbols:
                 live.select_symbol(name)
                 rates = live.rates(name, cfg.strategy.timeframe, 400)
