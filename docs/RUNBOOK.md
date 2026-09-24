@@ -292,7 +292,9 @@ The TTL must not have expired.
 After expiry, `/confirm` replies `nothing to confirm`.
 Restage with `/buy` `/sell` `/reverse` or advice.
 `start` restores `/approve always` from the last of `approve_always` / `approve_off`.
-`start` restores `live_accepted` from the last of `live_on` / `live_off`.
+`start` does NOT restore `live_accepted`. Arming is per process.
+A `live_on` record in the journal makes `start` write `live_not_restored`.
+`/live` then says arming was not restored. Re-arm with `/live on I-ACCEPT-RISK`.
 
 MT5 positions and working orders stay in the terminal.
 Paper positions and paper working orders die with the bot.
@@ -486,13 +488,22 @@ A pending fill writes `open` with `fill=true`.
 A vanished ticket writes `close` with `fill=true`.
 The venue holds the live book. It is not the fill log.
 
-JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `live_on`, `live_off`, `stop`.
+JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `live_on`, `live_off`, `live_not_restored`, `risk_state_error`, `stop`.
 Grep `reject` if it never trades.
 `outside_session` and `no_regime` are the usual reasons.
 `reconnect` is an MT5 IPC drop then `initialize`.
 `loop_error` is a tick that raised.
 The bot kept running.
 `journal.tg_offset` is the Telegram `getUpdates` cursor (not JSONL).
+`journal.equity.json` is the risk state: `day_key`, `day_start_equity`, `peak_equity`.
+It is written whenever one of those three moves, not only at a halt.
+The write is atomic: a temp file, then a rename. A kill mid-write cannot truncate it.
+`start` reads it back, so a restart does not hand out a new loss budget on the same UTC day.
+A new UTC day still resets `day_start_equity`. The peak is not daily.
+To reset the peak, stop the bot and delete the file.
+A corrupt or truncated file halts with reason `state_unreadable`. The bot does not change the file.
+A file that cannot be written halts with reason `state_unwritable`.
+Both mean the bot could not measure. Neither is treated as a clean start.
 `journal.lock` is an exclusive lock so two loops cannot share the journal or offset.
 Unix: flock. Windows: msvcrt.locking.
 `journal.heartbeat` is an ISO timestamp rewritten each successful `step_all`.
@@ -500,4 +511,4 @@ Before a write that would exceed 10 MiB, the live file is renamed to `journal.js
 That is one generation.
 The previous `.1` is replaced.
 `tail` and confirm restore read only the live file.
-`journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.lock`, and `journal.heartbeat` are owner-only (chmod 0600).
+`journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.equity.json`, `journal.lock`, and `journal.heartbeat` are owner-only (chmod 0600).

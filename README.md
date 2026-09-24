@@ -83,6 +83,8 @@ See `agent/README.md` and `docs/RUNBOOK.md`.
 The example config sets `poll_seconds = 1`.
 If the key is omitted, load uses 15.
 The Telegram offset is `journal.tg_offset` next to the journal.
+The risk state is `journal.equity.json` next to the journal.
+It keeps the daily loss budget and the equity peak across a restart.
 One failed tick is journaled as `reconnect` or `loop_error`.
 The bot stays up.
 Two `run --loop` processes cannot share one journal.

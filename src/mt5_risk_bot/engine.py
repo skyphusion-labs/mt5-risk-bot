@@ -25,6 +25,7 @@ from mt5_risk_bot.models import (
 )
 from mt5_risk_bot.risk import RiskDecision, RiskManager, day_key
 from mt5_risk_bot.sizing import money_per_lot_at_stop, normalize_volume
+from mt5_risk_bot.state import snapshot_path_for
 from mt5_risk_bot.strategy import TrendStrategy
 from mt5_risk_bot.telegram import TelegramClient, TgCommand
 
@@ -56,7 +57,13 @@ class Engine:
         self.cfg = cfg
         self.broker = broker
         self.journal = journal or Journal(cfg.journal_path)
-        self.risk = RiskManager(cfg, halt_dir=halt_dir)
+        # The snapshot follows the journal that is actually in use, not
+        # cfg.journal_path: run_backtest() passes a Journal of its own.
+        self.risk = RiskManager(
+            cfg,
+            halt_dir=halt_dir,
+            state_path=snapshot_path_for(self.journal.path),
+        )
         self.strategy = TrendStrategy(cfg.strategy)
         self.now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self.last_bar_time: dict[str, int] = {}
@@ -89,6 +96,15 @@ class Engine:
         for name in self.cfg.symbols:
             self.broker.select_symbol(name)
         acct = self.broker.account()
+        if self.risk.state_error:
+            # COULD NOT MEASURE, and the gate is already closed. Say so at start
+            # rather than at the first refusal, so the journal shows the cause.
+            self._emit(
+                "risk_state_error",
+                reason=self.risk.halt_reason,
+                error=self.risk.state_error,
+                path=str(self.risk.state_path),
+            )
         self.risk.observe(acct, self.now_fn())
         self._emit(
             "start",
@@ -896,6 +912,11 @@ class Engine:
             f"drawdown={dd:.2f}/{dd_cap:.2f}\n"
             f"equity={acct.equity:.2f} peak={snap.peak_equity:.2f} "
             f"day_start={snap.day_start_equity:.2f}"
+            + (
+                f"\nrisk state {self.risk.halt_reason}: {self.risk.state_error}"
+                if self.risk.state_error
+                else ""
+            )
         )
 
     def history_text(self, n: int = 15) -> str:

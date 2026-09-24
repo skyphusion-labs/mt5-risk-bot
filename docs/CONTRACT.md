@@ -25,12 +25,15 @@ Auto EMA trading is off until `/auto on`.
 | Advice send | Default: advice is staged. `/confirm` sends. `/approve always`: after risk preview, send. Risk can still refuse. |
 | Confirm | A staged suggestion waits for `/confirm` (default 120s). `/approve always` skips that wait after a successful risk preview. |
 | Approve | `/approve always` sends after risk preview. No `/confirm`. Default off. `/approve off` restores staging. Circuit and `risk_pct` still refuse. Halt still refuses. Paper and demo accept `/approve always` at any time. On `trade_mode=2` without live armed, `/approve always` is refused until `/live on I-ACCEPT-RISK`. Last of `approve_always` / `approve_off` in `journal.jsonl` restores on start. |
-| Live from chat | Real-money sends need `live_accepted`. Set it with `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat. The phrase is required. `/live on` without it is usage. `/live off` clears it. Last of `live_on` / `live_off` restores on start. Same fuse as `--i-accept-risk`. Risk still sizes and can refuse. |
+| Live from chat | Real-money sends need `live_accepted`. Set it with `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat. The phrase is required. `/live on` without it is usage. `/live off` clears it. Arming is PER PROCESS and is never restored from the journal: a restart always starts disarmed, and a `live_on` record writes `live_not_restored` instead. Same fuse as `--i-accept-risk`. Risk still sizes and can refuse. |
 | Size | Every new order is sized so a full stop-out loses at most `risk_pct` of equity (default 0.5%). |
 | Min lot | If the broker minimum lot would exceed that, the trade is skipped. |
-| Daily loss | Daily loss of `daily_loss_pct` (default 2%) of start-of-UTC-day equity flattens positions for the bot's magic and halts until the next UTC day. |
-| Drawdown | Drawdown of `max_drawdown_pct` (default 10%) from peak equity flattens and stays halted until an operator inspects and restarts. |
+| Daily loss | Daily loss of `daily_loss_pct` (default 2%) of start-of-UTC-day equity flattens positions for the bot's magic and halts until the next UTC day. A restart does not clear it. `day_start_equity` is restored from `journal.equity.json` when the UTC day is the same. |
+| Drawdown | Drawdown of `max_drawdown_pct` (default 10%) from peak equity flattens and stays halted. `peak_equity` is restored from `journal.equity.json`, so a restart does not clear it. To reset the peak, stop the bot and delete that file. |
 | Halt | `HALT` or `/halt` flattens immediately (positions and working orders). |
+| Risk state | `journal.equity.json` holds `day_key`, `day_start_equity`, and `peak_equity` next to the journal. It is the INPUT the gates recompute from, never a stored verdict. The write is atomic (temp file, then rename). |
+| State unreadable | A snapshot that is corrupt, truncated, or from a newer version halts with reason `state_unreadable`. The file is not changed. This is COULD NOT MEASURE, not a clean start. Inspect it, then delete it to start clean; that also resets the peak. |
+| State unwritable | A snapshot that cannot be written halts with reason `state_unwritable`. The next restart would lose the loss budget, so the bot refuses to trade. |
 | Real money | Real-money accounts (`trade_mode = 2`) refuse orders unless `--i-accept-risk` was passed at start or `/live on I-ACCEPT-RISK` was sent in the locked chat. |
 | Fills SSOT | `journal.jsonl` is the source of truth for fills the bot observed. Pending fills write `open` with `fill=true`. Vanished tickets write `close` with `fill=true`. The venue holds the live book. It is not the fill log. |
 | Paper default | Paper is the default mode. |
@@ -40,7 +43,7 @@ Auto EMA trading is off until `/auto on`.
 | Secrets | Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `AI_PROVIDER`, `ADVICE_URL`, `ADVICE_TOKEN`. |
 | Agent billing | `AI_PROVIDER=computer` posts to the agent. The agent bills through the gateway (`CF_AIG_TOKEN`), not a provider key. |
 | Redact | Journal writes, `loop_error` stderr, and Telegram `send` redact BotFather tokens. Named secret keys in the journal become `[REDACTED]`. |
-| File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600 on Unix. The bot sets umask 077. Windows has no POSIX mode bits; the lock is still exclusive. |
+| File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.equity.json`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600 on Unix. The bot sets umask 077. Windows has no POSIX mode bits; the lock is still exclusive. |
 | Sizer | `RiskManager.evaluate` is the only sizer. It is not optional. |
 
 ## Forbidden claims
@@ -206,7 +209,8 @@ A staged `/confirm` is journaled (`confirm_stage`).
 `start` restores it if the last of `confirm_stage` / `confirm_cancel` / `confirm_sent` is still `confirm_stage`.
 The TTL must not have expired.
 `start` restores `/approve always` if the last of `approve_always` / `approve_off` is `approve_always`.
-`start` restores `live_accepted` if the last of `live_on` / `live_off` is `live_on`.
+`start` does NOT restore `live_accepted`. Arming is per process. A `live_on` record makes `start` write `live_not_restored`, and `/live` says so. Re-arm with `/live on I-ACCEPT-RISK`.
+`start` restores `day_key`, `day_start_equity`, and `peak_equity` from `journal.equity.json`.
 
 ## Doctor
 

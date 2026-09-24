@@ -201,14 +201,23 @@ def test_live_arm_from_chat(tmp_path) -> None:
     engine.stop()
 
 
-def test_live_arm_survives_restart(tmp_path) -> None:
+def test_live_arm_does_not_survive_restart(tmp_path) -> None:
+    """Arming is PER PROCESS (issue #7). A journal replay must not arm money.
+
+    This test asserted the opposite until 1.1.3. That assertion was the defect:
+    a crash loop kept real money armed from a /live on typed weeks earlier.
+    """
     first = _engine(tmp_path)
     first.start()
     first.handle_command(TgCommand("1", 1, "/live on I-ACCEPT-RISK", 1))
     first.stop()
     second = _engine(tmp_path)
     second.start()
-    assert second.cfg.live_accepted
+    assert second.cfg.live_accepted is False
+    assert second.desk.live_expired is True
+    status = second.handle_command(TgCommand("1", 1, "/live", 1))
+    assert "live=off" in status
+    assert "per process" in status
     second.stop()
 
 
