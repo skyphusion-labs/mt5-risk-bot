@@ -339,6 +339,21 @@ Updates from any other chat are ignored.
 The bot still consumes those updates.
 Replies and notifies go only to that chat.
 
+## Sender lock
+
+`TELEGRAM_ALLOW_SENDERS` lists the Telegram sender ids that may command the desk.
+Use a comma between ids.
+`telegram.allow_senders` in `config.toml` is the same list.
+Every command is checked against the list.
+Read-only commands are checked too.
+An update whose sender cannot be read is refused.
+Leave the list empty for a private chat id. That operator needs no config edit.
+A group, supergroup, or channel chat id is negative.
+On a negative chat id with an empty list, `run` and `doctor` exit non-zero.
+To read a sender id, have that person send any message to the bot,
+then read `from.id` from the `getUpdates` response.
+A refused command is journaled as `command_rejected` and gets no reply.
+
 ## macOS
 
 Homebrew has Python, not MetaTrader.

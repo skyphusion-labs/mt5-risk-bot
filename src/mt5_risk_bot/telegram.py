@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import json
 import os
+import sys
 import time
 import urllib.error
 import urllib.request
@@ -15,7 +16,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from mt5_risk_bot.config import TelegramConfig
+from mt5_risk_bot.config import TelegramConfig, is_shared_chat_id
 from mt5_risk_bot.journal import redact_text
 
 API_ROOT = "https://api.telegram.org"
@@ -267,6 +268,8 @@ class TelegramClient:
         )
     )
     transport: Transport = field(default_factory=UrlLibTransport)
+    allow_senders: frozenset[int] = frozenset()
+    audit_fn: Any = None
     offset: int = 0
     offset_path: str | None = None
     sleep_fn: Any = field(default=time.sleep)
@@ -293,6 +296,12 @@ class TelegramClient:
             "chat_id": str(cfg.chat_id),
             "notify_events": frozenset(cfg.notify_events),
         }
+        if is_shared_chat_id(cfg.chat_id) and not cfg.allow_senders:
+            raise ValueError(
+                "telegram.chat_id is a shared chat: set telegram.allow_senders "
+                "(or TELEGRAM_ALLOW_SENDERS) to the operator sender ids"
+            )
+        kwargs["allow_senders"] = frozenset(cfg.allow_senders)
         if transport is not None:
             kwargs["transport"] = transport
         if offset_path is not None:
@@ -361,6 +370,41 @@ class TelegramClient:
             ok = ok and bool(data.get("ok"))
         return ok
 
+    def reject_reason(self, cmd: TgCommand) -> str | None:
+        """None when the command may run; otherwise why it may not.
+
+        A sender that cannot be determined is refused: an unmeasured
+        identity is not an authorized one. With no allow_senders the chat
+        id must be private, which start-up enforces, and a private chat id
+        equals the one sender that can post in it.
+        """
+        if cmd.chat_id != str(self.chat_id):
+            return "chat"
+        if cmd.user_id <= 0:
+            return "sender_unknown"
+        if self.allow_senders and cmd.user_id not in self.allow_senders:
+            return "sender"
+        return None
+
+    def authorized(self, cmd: TgCommand) -> bool:
+        return self.reject_reason(cmd) is None
+
+    def _audit_rejected(self, cmd: TgCommand, reason: str) -> None:
+        fields = {
+            "reason": reason,
+            "user_id": cmd.user_id,
+            "chat_id": cmd.chat_id,
+            "command": cmd.name,
+            "update_id": cmd.update_id,
+        }
+        if self.audit_fn is None:
+            print(f"command_rejected {fields}", file=sys.stderr)
+            return
+        try:
+            self.audit_fn("command_rejected", fields)
+        except (ValueError, RuntimeError, OSError):
+            return
+
     def poll_commands(self, *, timeout: int = 0) -> list[TgCommand]:
         if not self.enabled:
             return []
@@ -384,7 +428,12 @@ class TelegramClient:
             if nxt > self.offset:
                 self.offset = nxt
             cmd = parse_command(upd)
-            if cmd is None or cmd.chat_id != str(self.chat_id):
+            if cmd is None:
+                self.ack(uid)
+                continue
+            reason = self.reject_reason(cmd)
+            if reason is not None:
+                self._audit_rejected(cmd, reason)
                 self.ack(uid)
                 continue
             out.append(cmd)
