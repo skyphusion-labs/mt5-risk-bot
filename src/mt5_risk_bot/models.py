@@ -180,6 +180,13 @@ class OrderResult:
     bid: float = 0.0
     ask: float = 0.0
     request: dict[str, Any] = field(default_factory=dict)
+    # Exposure left behind by a send that reported failure.
+    #   0    the venue checked and nothing survived
+    #   N    ticket N is still on the book and the desk was told otherwise
+    #   None the venue did not answer, which is COULD NOT MEASURE
+    # Venues that attach the stop in the same call as the entry have no
+    # such window and leave this at 0.
+    survivor_ticket: int | None = 0
 
     @property
     def ok(self) -> bool:

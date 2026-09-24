@@ -3,13 +3,47 @@
 #property description "File mailbox for mt5-risk-bot MT4 adapter. FILE_COMMON."
 
 input int Slippage = 30;
+input int ReconcileMagic = 0;   // 0 = report every position that has no stop
 
 bool gBusy = false;
+
+// Report every position that is open with no stop loss. A position that
+// predates this session is NOT adopted: this Expert only reports it, so a
+// human decides. Silence here is how an orphan from a previous session
+// becomes permanent.
+void ReportUnmanaged()
+{
+   int total = OrdersTotal();
+   int found = 0;
+   for(int i=0; i<total; i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderType() > OP_SELL)
+         continue;
+      if(ReconcileMagic != 0 && OrderMagicNumber() != ReconcileMagic)
+         continue;
+      if(OrderStopLoss() != 0)
+         continue;
+      found++;
+      Print("mt4riskbot UNMANAGED ticket=", OrderTicket(),
+            " symbol=", OrderSymbol(),
+            " type=", OrderType(),
+            " lots=", DoubleToString(OrderLots(), 2),
+            " magic=", OrderMagicNumber(),
+            " opened=", TimeToString(OrderOpenTime()),
+            " -- open with NO STOP, not adopted by this session");
+   }
+   if(found > 0)
+      Print("mt4riskbot ", found,
+            " position(s) open with NO STOP at startup. Close or protect them in the terminal.");
+}
 
 int OnInit()
 {
    if(!EventSetMillisecondTimer(100))
       EventSetTimer(1);
+   ReportUnmanaged();
    return(INIT_SUCCEEDED);
 }
 
@@ -88,6 +122,16 @@ string Ok(string id)
 string Fail(string id, int err, string msg)
 {
    return "id=" + id + "\nok=0\nretcode=" + IntegerToString(err) + "\nerror=" + msg + "\n";
+}
+
+// Every failure from a trade handler states what it left behind.
+// survivor=0 means the book was checked and nothing survived. A positive
+// value is a live ticket the desk must deal with. The field is always
+// present, so an adapter can tell an Expert that answered 0 from an
+// Expert too old to answer at all.
+string FailTrade(string id, int err, string msg, int survivor)
+{
+   return Fail(id, err, msg) + "survivor_ticket=" + IntegerToString(survivor) + "\n";
 }
 
 int Tf(string name)
@@ -228,6 +272,60 @@ bool ModifyRetry(int ticket, double price, double sl, double tp)
       Sleep(50);
    }
    return false;
+}
+
+// 1 = still on the book, 0 = confirmed gone, -1 = cannot tell.
+// Leaves the ticket selected when it returns 1.
+int TicketState(int ticket)
+{
+   if(!OrderSelect(ticket, SELECT_BY_TICKET))
+      return -1;
+   if(OrderCloseTime() != 0)
+      return 0;
+   return 1;
+}
+
+// Close a position this Expert has just opened but could not protect.
+// Returns true ONLY when the book confirms the position is gone. OrderClose's
+// own return value is recorded and logged, never treated as proof: it is a
+// claim about the book, and the book is the artifact.
+bool RollbackPosition(int ticket, string sym, int slip)
+{
+   for(int i=0; i<6; i++)
+   {
+      int state = TicketState(ticket);
+      if(state == 0)
+         return true;
+      if(state == 1)
+      {
+         RefreshRates();
+         double px = (OrderType() == OP_BUY) ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK);
+         bool sent = OrderClose(ticket, OrderLots(), px, slip, clrNONE);
+         if(!sent)
+            Print("mt4riskbot rollback close failed ticket=", ticket, " err=", GetLastError());
+      }
+      Sleep(50);
+   }
+   return TicketState(ticket) == 0;
+}
+
+// Same contract for a pending order that was placed but could not be protected.
+bool RollbackPending(int ticket)
+{
+   for(int i=0; i<6; i++)
+   {
+      int state = TicketState(ticket);
+      if(state == 0)
+         return true;
+      if(state == 1)
+      {
+         bool sent = OrderDelete(ticket);
+         if(!sent)
+            Print("mt4riskbot rollback delete failed ticket=", ticket, " err=", GetLastError());
+      }
+      Sleep(50);
+   }
+   return TicketState(ticket) == 0;
 }
 
 string Handle(string body)
@@ -425,32 +523,34 @@ string CheckMarket(string id, string body, bool send)
    int slip = (int)StringToInteger(KV(body, "deviation"));
    if(slip <= 0) slip = Slippage;
    if(sym == "" || (side != "buy" && side != "sell"))
-      return Fail(id, 1, "symbol");
+      return FailTrade(id, 1, "symbol", 0);
    if(!IsTradeAllowed() || !IsExpertEnabled())
-      return Fail(id, 133, "trade_disabled");
+      return FailTrade(id, 133, "trade_disabled", 0);
    SymbolSelect(sym, true);
    if(!VolumeOk(sym, vol))
-      return Fail(id, 131, "invalid_volume");
+      return FailTrade(id, 131, "invalid_volume", 0);
    int typ = (side == "buy") ? OP_BUY : OP_SELL;
    RefreshRates();
    double price = (typ == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
    if(!StopsOk(sym, typ, price, sl, tp))
-      return Fail(id, 130, "invalid_stops");
+      return FailTrade(id, 130, "invalid_stops", 0);
    if(!send)
       return Ok(id) + "ticket=0\nprice=" + DoubleToString(price, (int)MarketInfo(sym, MODE_DIGITS)) + "\n";
    int ticket = SendRetry(sym, typ, vol, price, slip, ClipComment(KV(body, "comment")), magic);
    if(ticket < 0)
-      return Fail(id, GetLastError(), "OrderSend");
+      return FailTrade(id, GetLastError(), "OrderSend", 0);
    if(sl > 0 || tp > 0)
    {
-      if(!OrderSelect(ticket, SELECT_BY_TICKET))
-         return Fail(id, GetLastError(), "select");
-      if(!ModifyRetry(ticket, OrderOpenPrice(), sl, tp))
+      // A position exists from here on. Failing to select it is not a reason
+      // to abandon it; it is a reason to roll it back.
+      double openPrice = 0;
+      if(OrderSelect(ticket, SELECT_BY_TICKET))
+         openPrice = OrderOpenPrice();
+      if(openPrice <= 0 || !ModifyRetry(ticket, openPrice, sl, tp))
       {
-         RefreshRates();
-         double px = (OrderType() == OP_BUY) ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK);
-         OrderClose(ticket, OrderLots(), px, slip, clrNONE);
-         return Fail(id, 130, "sl_modify_failed");
+         if(!RollbackPosition(ticket, sym, slip))
+            return FailTrade(id, 130, "sl_modify_failed_position_live", ticket);
+         return FailTrade(id, 130, "sl_modify_failed", 0);
       }
    }
    if(!OrderSelect(ticket, SELECT_BY_TICKET))
@@ -473,26 +573,27 @@ string CheckWorking(string id, string body, bool send)
    double tp = StringToDouble(KV(body, "tp"));
    int magic = (int)StringToInteger(KV(body, "magic"));
    if(sym == "" || (side != "buy" && side != "sell") || (kind != "limit" && kind != "stop"))
-      return Fail(id, 1, "symbol");
+      return FailTrade(id, 1, "symbol", 0);
    if(!IsTradeAllowed() || !IsExpertEnabled())
-      return Fail(id, 133, "trade_disabled");
+      return FailTrade(id, 133, "trade_disabled", 0);
    SymbolSelect(sym, true);
    if(!VolumeOk(sym, vol))
-      return Fail(id, 131, "invalid_volume");
+      return FailTrade(id, 131, "invalid_volume", 0);
    int typ = PendingType(side, kind);
    if(!StopsOk(sym, typ, price, sl, tp))
-      return Fail(id, 130, "invalid_stops");
+      return FailTrade(id, 130, "invalid_stops", 0);
    if(!send)
       return Ok(id) + "ticket=0\n";
    int ticket = SendRetry(sym, typ, vol, price, Slippage, ClipComment(KV(body, "comment")), magic);
    if(ticket < 0)
-      return Fail(id, GetLastError(), "OrderSend");
+      return FailTrade(id, GetLastError(), "OrderSend", 0);
    if(sl > 0 || tp > 0)
    {
       if(!ModifyRetry(ticket, price, sl, tp))
       {
-         OrderDelete(ticket);
-         return Fail(id, 130, "sl_modify_failed");
+         if(!RollbackPending(ticket))
+            return FailTrade(id, 130, "sl_modify_failed_order_live", ticket);
+         return FailTrade(id, 130, "sl_modify_failed", 0);
       }
    }
    return Ok(id) + "ticket=" + IntegerToString(ticket) + "\nprice=" + DoubleToString(price, (int)MarketInfo(sym, MODE_DIGITS)) + "\n";
