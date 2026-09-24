@@ -13,13 +13,14 @@ concurrency:
   cancel-in-progress: true
 
 jobs:
-  ci:
-    name: ci
-    runs-on: ubuntu-latest
+  ci-matrix:
+    name: ci-matrix
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 15
     strategy:
       fail-fast: false
       matrix:
+        os: [ubuntu-latest, windows-latest]
         python-version: ["3.12", "3.13"]
     steps:
       - uses: actions/checkout@v7
@@ -28,8 +29,37 @@ jobs:
           python-version: ${{ matrix.python-version }}
           cache: pip
       - run: pip install -e ".[dev]"
-      - run: pytest -q --override-ini addopts=
+      - run: pytest -q -rs --override-ini addopts=
       - run: python -m mt5_risk_bot doctor
+
+  # The org ruleset (aviation-grade-main-org, 18677665) requires status
+  # checks literally named `ci`, `coverage`, `CodeQL` -- nothing else is at
+  # the merge gate. A matrix job reports as `ci-matrix (os, python-version)`,
+  # never the bare name, and agent-typecheck / agent-test are not in the
+  # ruleset at all, so without this job a Worker test failure cannot block a
+  # merge. This aggregator owns the stable `ci` context and needs every
+  # ci-matrix leg plus both agent jobs, failing if any of them did not
+  # succeed. Runs with if: always() because a needs-only job is SKIPPED, not
+  # failed, when an upstream job fails or is itself skipped -- and skipped
+  # is not the red this check exists to produce.
+  ci:
+    name: ci
+    needs: [ci-matrix, agent, agent-test]
+    if: always()
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: require ci-matrix, agent-typecheck and agent-test to have succeeded
+        run: |
+          echo "ci-matrix result: ${{ needs.ci-matrix.result }}"
+          echo "agent-typecheck result: ${{ needs.agent.result }}"
+          echo "agent-test result: ${{ needs.agent-test.result }}"
+          if [ "${{ needs.ci-matrix.result }}" != "success" ] || \
+             [ "${{ needs.agent.result }}" != "success" ] || \
+             [ "${{ needs.agent-test.result }}" != "success" ]; then
+            echo "an upstream job did not succeed; failing the required ci check"
+            exit 1
+          fi
 
   agent:
     name: agent-typecheck
