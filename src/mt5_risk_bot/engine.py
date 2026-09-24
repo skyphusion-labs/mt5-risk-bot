@@ -88,6 +88,32 @@ class Engine:
         self._closed_this_step: set[int] = set()
         self._scale_outs: dict[int, tuple[float, float]] = {}
 
+    def _report_survivor(self, symbol: str, result: OrderResult) -> None:
+        """A send that failed may still have left something on the book.
+
+        This is the one case where a failure report is not the whole truth:
+        the desk is told the send failed while a position is live and has no
+        stop. Nothing else in the system reconciles that state, so it is
+        named here rather than left to a human noticing the terminal.
+        """
+        survivor = result.survivor_ticket
+        if survivor is None:
+            self._emit(
+                "survivor_unknown",
+                symbol=symbol,
+                retcode=result.retcode,
+                comment=result.comment,
+            )
+            return
+        if survivor:
+            self._emit(
+                "unmanaged_position",
+                symbol=symbol,
+                ticket=int(survivor),
+                retcode=result.retcode,
+                comment=result.comment,
+            )
+
     def _emit(self, event: str, **fields: Any) -> None:
         self.journal.write(event, **fields)
         if self.telegram is None:
@@ -400,6 +426,8 @@ class Engine:
             ticket = int(result.order or result.deal or 0)
             if ticket:
                 self._opened_this_step.add(ticket)
+        else:
+            self._report_survivor(signal.symbol, result)
         self._emit(
             "open",
             symbol=signal.symbol,
@@ -648,6 +676,8 @@ class Engine:
         if not self._pretrade_ok(check, signal.symbol):
             return check
         result = self.broker.working(order)
+        if not result.ok:
+            self._report_survivor(signal.symbol, result)
         self._emit(
             "pending",
             symbol=signal.symbol,
@@ -1373,6 +1403,18 @@ def _format_event(event: str, fields: dict[str, Any]) -> str:
         )
         tail = str(fields.get("tail") or "")
         return f"{head}\n{tail}".strip()
+    if event == "unmanaged_position":
+        return (
+            f"UNMANAGED POSITION #{fields.get('ticket')} {fields.get('symbol')}: the send "
+            f"reported FAILED (retcode={fields.get('retcode')}) but this ticket is still "
+            f"open and has NO STOP. Close or protect it in the terminal now."
+        )
+    if event == "survivor_unknown":
+        return (
+            f"COULD NOT MEASURE {fields.get('symbol')}: a send failed "
+            f"(retcode={fields.get('retcode')}) and the Expert did not say whether it left "
+            f"a position open. Update Mt4RiskBot.mq4, then check the terminal."
+        )
     return ""
 
 
