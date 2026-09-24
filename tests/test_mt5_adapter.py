@@ -6,6 +6,7 @@ from mt5_risk_bot.constants import (
     ORDER_FILLING_IOC,
     ORDER_TYPE_BUY_LIMIT,
     ORDER_TYPE_SELL_LIMIT,
+    RETCODE_UNKNOWN,
     TRADE_ACTION_CLOSE_BY,
     TRADE_ACTION_MODIFY,
     TRADE_ACTION_REMOVE,
@@ -859,9 +860,13 @@ def test_order_check_and_none_result() -> None:
     broker.connect()
     ok = broker.order_check({"action": 1, "volume": 0.01})
     assert ok.comment == "Done"
+    assert ok.measured
     fake.order_check = lambda request: None
     missing = broker.order_check({"action": 1})
-    assert missing.retcode == 0
+    # Must NOT be 0: order_check uses 0 for PASSED (issue #8).
+    assert missing.retcode == RETCODE_UNKNOWN
+    assert not missing.measured
+    assert not missing.ok
     assert "no result" in missing.comment
 
 

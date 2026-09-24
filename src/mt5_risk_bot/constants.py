@@ -134,6 +134,14 @@ TRADE_RETCODE_HEDGE_PROHIBITED = 10046
 
 RETCODE_OK = {TRADE_RETCODE_DONE, TRADE_RETCODE_DONE_PARTIAL, TRADE_RETCODE_PLACED}
 
+# Not an MQL5 code, and deliberately outside the MQL5 space. Synthesized
+# locally when a terminal call produced no result at all, so "could not
+# measure" can never be read as "measured and passed". MQL5 uses retcode 0
+# for a PASSED order_check, which is why a null result must never wear 0.
+# Kept out of RETCODE_NAME and RETCODE_OK: that map mirrors the broker's
+# vocabulary, and this code never comes from a broker.
+RETCODE_UNKNOWN = -1
+
 RETCODE_NAME = {
     10004: "REQUOTE",
     10006: "REJECT",

@@ -196,6 +196,38 @@ class Engine:
         )
         return result
 
+    def _pretrade_ok(self, check: OrderResult, symbol: str) -> bool:
+        """Whether a pre-trade check clears the order to send.
+
+        One gate for every send path. Three outcomes, not two: PASSED,
+        the broker REFUSED, and COULD NOT MEASURE. The last one used to be
+        indistinguishable from PASSED and the order went out (issue #8).
+        """
+        if not check.measured:
+            # Nothing was checked, so there is no verdict to trust. Abort.
+            self._emit(
+                "order_check_fail",
+                reason="not_measured",
+                measured=False,
+                symbol=symbol,
+                retcode=check.retcode,
+                comment=check.comment,
+            )
+            return False
+        # order_check reports a passed check as retcode 0, so 0 is a pass here.
+        # Never widen this whitelist to cover a locally synthesized code.
+        if check.retcode != 0 and not check.ok:
+            self._emit(
+                "order_check_fail",
+                reason="broker_refused",
+                measured=True,
+                symbol=symbol,
+                retcode=check.retcode,
+                comment=check.comment,
+            )
+            return False
+        return True
+
     def _open(self, signal: Signal, volume: float) -> OrderResult:
         side = signal.side
         assert side is not None
@@ -210,13 +242,7 @@ class Engine:
             deviation=self.cfg.risk.deviation_points,
         )
         check = self.broker.check_market(order)
-        if check.retcode not in (0,) and not check.ok:
-            self._emit(
-                "order_check_fail",
-                symbol=signal.symbol,
-                retcode=check.retcode,
-                comment=check.comment,
-            )
+        if not self._pretrade_ok(check, signal.symbol):
             return check
         result = self.broker.market(order)
         if result.ok:
@@ -468,13 +494,7 @@ class Engine:
             magic=self.cfg.risk.magic,
         )
         check = self.broker.check_working(order)
-        if check.retcode not in (0,) and not check.ok:
-            self._emit(
-                "order_check_fail",
-                symbol=signal.symbol,
-                retcode=check.retcode,
-                comment=check.comment,
-            )
+        if not self._pretrade_ok(check, signal.symbol):
             return check
         result = self.broker.working(order)
         self._emit(
@@ -1145,7 +1165,15 @@ def _format_event(event: str, fields: dict[str, Any]) -> str:
     if event == "halt":
         return f"HALT {fields.get('reason')} equity={fields.get('equity')}"
     if event == "order_check_fail":
-        return f"order_check_fail {fields.get('symbol')} retcode={fields.get('retcode')}"
+        if fields.get("reason") == "not_measured":
+            return (
+                f"order_check NOT MEASURED {fields.get('symbol')} "
+                f"no pre-trade answer, order NOT sent ({fields.get('comment')})"
+            )
+        return (
+            f"order_check_fail {fields.get('symbol')} "
+            f"broker refused retcode={fields.get('retcode')}"
+        )
     if event == "pending":
         return (
             f"PENDING {fields.get('kind')} {fields.get('side')} {fields.get('symbol')} "

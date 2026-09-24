@@ -452,6 +452,12 @@ class Mt4Broker:
         return d
 
     def _result(self, d: dict[str, Any], *, placed: bool = False) -> OrderResult:
+        if not isinstance(d, dict) or ("ok" not in d and "retcode" not in d):
+            # The EA answered with no verdict at all, so nothing was measured.
+            # This used to fall through to REJECT, which told the operator the
+            # broker said no when the broker had in fact said nothing.
+            err = d.get("error") if isinstance(d, dict) else None
+            return OrderResult.unknown(f"no result: {err or 'empty mt4 response'}")
         ok = _truthy(d.get("ok"))
         raw = int(d.get("retcode", 0) or 0)
         if ok:

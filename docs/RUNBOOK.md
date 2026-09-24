@@ -489,6 +489,10 @@ A vanished ticket writes `close` with `fill=true`.
 The venue holds the live book. It is not the fill log.
 
 JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `live_on`, `live_off`, `live_not_restored`, `risk_state_error`, `stop`.
+`order_check_fail` carries `reason`: `broker_refused` means the venue rejected
+the pre-trade check, `not_measured` means the venue returned nothing, so the
+check never ran and the order was NOT sent. `not_measured` with `retcode=-1` is
+an IPC or bridge fault, not a trading decision; check the terminal link.
 Grep `reject` if it never trades.
 `outside_session` and `no_regime` are the usual reasons.
 `reconnect` is an MT5 IPC drop then `initialize`.

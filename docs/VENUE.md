@@ -37,6 +37,19 @@ Only `OrderResult.ok` is a send.
 Engine uses `OrderResult.unchanged` and `OrderResult.invalid_stops`.
 It does not import MT5 retcode integers.
 
+`OrderResult.measured` is false when the venue call produced no result at all.
+An adapter that gets nothing back MUST return `OrderResult.unknown(...)`, which
+carries `RETCODE_UNKNOWN` (`-1`). It must never synthesize a venue code, and in
+particular never `0`: MQL5 `order_check` reports a PASSED check as retcode `0`,
+so a synthesized `0` made an unrun check indistinguishable from a passed one and
+the engine sent the order (issue #8).
+
+COULD NOT MEASURE is not a verdict. When `measured` is false, neither `ok` nor
+`retcode` means anything, so a caller gating on a pre-trade check aborts. The
+engine journals that as `order_check_fail` with `reason="not_measured"`, kept
+distinct from `reason="broker_refused"`, so an operator can tell "the broker
+said no" from "we never asked".
+
 ## Methods
 
 | Method | Meaning |
