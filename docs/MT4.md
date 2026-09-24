@@ -165,9 +165,30 @@ The wire uses names: `M1`, `M5`, `M15`, `M30`, `H1`, `H4`, `D1`, `W1`, `MN1`.
 The Expert maps those onto `PERIOD_*`.
 Do not send MT5 timeframe integers (`16385` is not `PERIOD_H1`).
 
+## Wire contract
+
+`tests/test_mt4_wire.py` holds a golden transcript for every op, and
+`tests/mt4_transcripts.py` derives each one from the Expert's own emitters with
+line citations. Those two files are the executable copy of this document. Change
+the Expert's reply format and they go red.
+
+Two checks in there are worth knowing about before editing either side:
+
+- The pipe-join order of the position, order and bar rows is asserted against
+  the adapter's field tuples. Reorder one field on either side and the suite
+  fails by name.
+- A field the Expert does not send is recorded as absent, not as zero, so the
+  tests can tell a measured value from a defaulted one.
+
+`broker/mt4_live.py` carries a per-file coverage floor declared in
+`pyproject.toml` under `[tool.mt5_risk_bot.coverage_floors]`.
+
 ## Attach
 
-1. Compile `Mt4RiskBot.mq4` in MetaEditor.
+1. Compile `Mt4RiskBot.mq4` in MetaEditor. The Toolbox Errors tab must read
+   `0 error(s), 0 warning(s)`. Record that line in the handover checklist. CI
+   cannot do this step: there is no MQL4 compiler on any runner, so a green CI
+   run says nothing about whether the Expert builds.
 2. Attach it to one chart.
 3. Enable AutoTrading. Allow live trading on the Expert.
 4. Set `account.mode = "mt4"` and `mt4.files_dir`.
