@@ -415,3 +415,8 @@ class EquitySnapshot:
     peak_equity: float
     day_start_equity: float
     day_key: str
+    #: Opening sends and advice turns already spent inside `day_key`. Durable
+    #: for the same reason the loss budget is: a cap a restart clears is not a
+    #: cap, and a crash loop would hand out a fresh allowance every time.
+    trades_today: int = 0
+    advice_turns_today: int = 0

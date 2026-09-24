@@ -48,7 +48,7 @@ import pytest
 from mt5_risk_bot.broker.paper import PaperBroker, default_spec
 from mt5_risk_bot.config import BotConfig
 from mt5_risk_bot.models import Account, Position, Side, Signal, SignalKind, Tick
-from mt5_risk_bot.risk import RiskManager
+from mt5_risk_bot.risk import RiskManager, day_key
 from mt5_risk_bot.sizing import lots_for_risk
 from mt5_risk_bot.state import snapshot_path_for
 from mt5_risk_bot.synthetic import generate_bars
@@ -84,6 +84,7 @@ REASONS = (
     "margin_buffer",
     "size_zero",
     "size_exceeds_risk",
+    "max_trades_per_day",
 )
 
 # Not reachable through any public RiskManager call. See the module docstring.
@@ -162,7 +163,14 @@ def test_roster_covers_every_reason_in_the_module() -> None:
     assert not missing, "risk.py names refusal reasons with no case here: " + repr(sorted(missing))
     stale = set(REASONS) - found
     assert not stale, "roster names reasons risk.py no longer has: " + repr(sorted(stale))
-    assert len(REASONS) == len(set(REASONS)) == 20
+    # No hardcoded total. The count is DERIVED from what risk.py actually
+    # names, so adding a reason to the module cannot be satisfied by editing a
+    # number here. A literal count is a fact about the day it was written, and
+    # this roster exists precisely to stop the denominator drifting.
+    assert len(REASONS) == len(set(REASONS)) == len(found), (
+        "roster size must equal the reasons risk.py names: "
+        f"roster={len(REASONS)} module={len(found)}"
+    )
     assert set(UNREACHABLE) <= set(REASONS), "UNREACHABLE names a reason the roster does not"
 
 
@@ -340,6 +348,25 @@ def test_max_positions_counts_only_our_magic(tmp_path: Path) -> None:
         for _ in range(5)
     ]
     assert _gate(rm, positions=theirs).reason == "ok"
+
+
+def test_max_trades_per_day_names_the_reason(tmp_path: Path) -> None:
+    """The daily send cap refuses with its own name, not `size_zero`.
+
+    Added when #58 landed the cap. The roster is the denominator, so a reason
+    in the module with no case here fails the suite rather than quietly
+    lowering the count -- which is exactly how this test came to be written.
+    """
+    cfg = _cfg(tmp_path)
+    cfg.risk.max_trades_per_day = 1
+    rm = RiskManager(cfg, halt_dir=tmp_path)
+    # Seed the counter under the key for the timestamp `_gate` actually passes,
+    # not wall-clock today. A mismatched key makes the first evaluate roll the
+    # day and zero the count -- correct behaviour, and it would have made this
+    # assertion fail for a reason that has nothing to do with the cap.
+    rm.snapshot.day_key = day_key(WED_NOON)
+    rm.snapshot.trades_today = 1
+    assert _gate(rm).reason == "max_trades_per_day"
 
 
 def test_already_in_symbol_names_the_reason(tmp_path: Path) -> None:

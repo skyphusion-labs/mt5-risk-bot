@@ -26,6 +26,12 @@ class RiskConfig:
     halt_file: str = "HALT"
     max_risk_multiple: float = 1.0
     deviation_points: int = 20
+    #: Opening sends allowed per UTC day, across auto, telegram and advice.
+    #: 0 disables the cap. Counts OPENS only: a close must never be capped,
+    #: because a control that can stop you reducing exposure is not a risk
+    #: control. `daily_loss_pct` only fires after the money is gone; this is
+    #: the one that bounds churn before it.
+    max_trades_per_day: int = 0
 
 
 @dataclass
@@ -210,6 +216,11 @@ class TelegramConfig:
 @dataclass
 class AdviceConfig:
     provider: str = "grok"  # grok | claude | computer
+    #: Advice turns allowed per UTC day. 0 disables the cap.
+    #: This is a COST control, not only a risk one: hosted inference is billed
+    #: per turn and a turn costs money whether or not it ends in an order, so
+    #: the send cap above cannot see this spend at all.
+    max_turns_per_day: int = 0
     grok_model: str = "grok-4"
     claude_model: str = "claude-sonnet-5"
     grok_key: str = ""
@@ -234,6 +245,19 @@ class BotConfig:
     mode: str = "paper"  # paper | mt5 | mt4
     initial_balance: float = 10_000.0
     symbols: list[str] = field(default_factory=lambda: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"])
+    #: What the MODEL is allowed to open, which is not the same question as
+    #: what the desk scans. `symbols` is a SCAN list: it drives /quote and the
+    #: auto scan, and an operator who scans three pairs may still want to act
+    #: on a fourth BY HAND. So a human command is not constrained by this, and
+    #: an advice-staged symbol is.
+    #: EMPTY means "use `symbols`". It never means "allow anything": an empty
+    #: whitelist that permits everything is the defect, not the default.
+    advice_symbols: list[str] = field(default_factory=list)
+
+    def advice_allows(self, symbol: str) -> bool:
+        """Whether the model may OPEN this symbol. Closes are never gated."""
+        allowed = self.advice_symbols or self.symbols
+        return symbol.upper() in {s.upper() for s in allowed}
     risk: RiskConfig = field(default_factory=RiskConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
@@ -258,6 +282,10 @@ class BotConfig:
             raise ValueError("max_drawdown_pct must be in (0, 0.50]")
         if r.max_positions < 1:
             raise ValueError("max_positions must be >= 1")
+        if r.max_trades_per_day < 0:
+            raise ValueError("max_trades_per_day must be >= 0 (0 disables)")
+        if self.advice.max_turns_per_day < 0:
+            raise ValueError("advice.max_turns_per_day must be >= 0 (0 disables)")
         s = self.strategy
         if s.fast_ema >= s.slow_ema:
             raise ValueError("fast_ema must be < slow_ema")
@@ -318,6 +346,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     advice_s = _section(data, "advice")
     engine_s = _section(data, "engine")
     symbols_s = data.get("symbols", {})
+    advice_names = list(data.get("advice", {}).get("symbols", []) or [])
 
     names = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
     if isinstance(symbols_s, dict) and "names" in symbols_s:
@@ -356,6 +385,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
         mode=os.environ.get("ACCOUNT_MODE", str(account.get("mode", "paper"))),
         initial_balance=float(account.get("initial_balance", 10_000.0)),
         symbols=names,
+        advice_symbols=[str(x).upper() for x in advice_names],
         poll_seconds=int(os.environ.get("POLL_SECONDS", engine_s.get("poll_seconds", 15))),
         comment=str(engine_s.get("comment", "mt5-risk-bot")),
         journal_path=resolve_state_path(
@@ -376,6 +406,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             ),
             max_risk_multiple=float(risk_s.get("max_risk_multiple", 1.0)),
             deviation_points=int(risk_s.get("deviation_points", 20)),
+            max_trades_per_day=int(risk_s.get("max_trades_per_day", 0)),
         ),
         strategy=StrategyConfig(
             auto=bool(strat_s.get("auto", False)),
@@ -422,6 +453,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
         ),
         advice=AdviceConfig(
             provider=provider if provider in {"grok", "claude", "computer"} else "grok",
+            max_turns_per_day=int(advice_s.get("max_turns_per_day", 0)),
             grok_model=str(advice_s.get("grok_model", "grok-4")),
             claude_model=str(advice_s.get("claude_model", "claude-sonnet-5")),
             grok_key=grok_key,

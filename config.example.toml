@@ -26,6 +26,7 @@ risk_pct = 0.005            # 0.5% of equity per trade
 daily_loss_pct = 0.02       # flatten + halt for the UTC day
 max_drawdown_pct = 0.10     # flatten + halt until restart after you inspect
 max_positions = 3
+max_trades_per_day = 0      # opening sends per UTC day, 0 = no cap. Closes are never capped.
 max_currency_exposure = 2   # net |count| per currency across open trades
 min_rr = 1.5
 max_spread_atr_frac = 0.15
@@ -50,6 +51,8 @@ trail_r = 1.5
 trail_atr_mult = 1.2
 
 [symbols]
+# The SCAN list: it drives /quote and the auto scan. It is not an allow list
+# for what you may trade by hand.
 names = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
 
 [session]
@@ -94,6 +97,11 @@ confirm_seconds = 120
 
 [advice]
 provider = "grok"
+max_turns_per_day = 0       # advice turns per UTC day, 0 = no cap. A COST control:
+                            # a turn is billed whether or not it ends in an order.
+# What the MODEL may OPEN. Empty means "use [symbols].names". It never means
+# "anything". A human /buy is NOT restricted by this; the model's own pick is.
+symbols = []
 grok_model = "grok-4"
 claude_model = "claude-sonnet-5"
 computer_model = "xai/grok-4.6"

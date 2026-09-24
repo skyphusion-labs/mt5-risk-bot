@@ -259,10 +259,21 @@ class RiskManager:
         self._halt_reason = ""
         return ""
 
-    def _durable(self) -> tuple[str, float, float]:
-        """The three fields a restart must not lose."""
+    def _durable(self) -> tuple[str, float, float, int, int]:
+        """The fields a restart must not lose.
+
+        The two counters are here for the same reason the loss budget is: if a
+        send did not move this tuple, it would not be persisted, and a restart
+        would hand out a fresh daily allowance.
+        """
         s = self.snapshot
-        return (s.day_key, s.day_start_equity, s.peak_equity)
+        return (
+            s.day_key,
+            s.day_start_equity,
+            s.peak_equity,
+            s.trades_today,
+            s.advice_turns_today,
+        )
 
     def observe(self, account: Account, now: datetime) -> None:
         before = self._durable()
@@ -270,6 +281,9 @@ class RiskManager:
         if self.snapshot.day_key != key:
             self.snapshot.day_start_equity = account.equity
             self.snapshot.day_key = key
+            # A new UTC day is the only thing that clears the allowances.
+            self.snapshot.trades_today = 0
+            self.snapshot.advice_turns_today = 0
             if self._halt_reason == "daily_loss":
                 self._halted = False
                 self._halt_reason = ""
@@ -283,6 +297,26 @@ class RiskManager:
             # halt: a file written only at the halt has already lost the peak the
             # drawdown gate needs.
             self._persist_state()
+
+    def record_trade(self) -> None:
+        """One opening send actually reached the broker.
+
+        Counted at the send, never at the decision: a preview, a refused
+        confirm and an expired stage all call evaluate() and none of them is a
+        trade. Persisted immediately, because the process can be killed between
+        the send and the next observe().
+        """
+        self.snapshot.trades_today += 1
+        self._persist_state()
+
+    def record_advice_turn(self) -> None:
+        """One advice turn was billed. Same reasoning, different budget."""
+        self.snapshot.advice_turns_today += 1
+        self._persist_state()
+
+    def advice_turns_exhausted(self) -> bool:
+        cap = int(getattr(self.cfg.advice, "max_turns_per_day", 0) or 0)
+        return bool(cap) and self.snapshot.advice_turns_today >= cap
 
     def _halt(self, reason: str, flatten: bool = True) -> RiskDecision:
         self._halted = True
@@ -382,6 +416,12 @@ class RiskManager:
         ours = [p for p in positions if p.magic == r.magic]
         if len(ours) >= r.max_positions:
             return RiskDecision(allowed=False, reason="max_positions")
+        # Before sizing and before the spec gates: this is a budget on ACTIONS,
+        # not on the market, so nothing about the instrument can change it.
+        # `daily_loss_pct` only fires once the money is gone; this bounds the
+        # churn that gets there.
+        if r.max_trades_per_day and self.snapshot.trades_today >= r.max_trades_per_day:
+            return RiskDecision(allowed=False, reason="max_trades_per_day")
         if any(p.symbol == signal.symbol for p in ours):
             return RiskDecision(allowed=False, reason="already_in_symbol")
 

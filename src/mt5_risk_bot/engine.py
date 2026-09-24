@@ -436,6 +436,7 @@ class Engine:
             return check
         result = self.broker.market(order)
         if result.ok:
+            self.risk.record_trade()
             ticket = int(result.order or result.deal or 0)
             if ticket:
                 self._opened_this_step.add(ticket)
@@ -694,7 +695,9 @@ class Engine:
         if not self._pretrade_ok(check, signal.symbol):
             return check
         result = self.broker.working(order)
-        if not result.ok:
+        if result.ok:
+            self.risk.record_trade()
+        else:
             self._report_survivor(signal.symbol, result)
         self._emit(
             "pending",

@@ -32,7 +32,14 @@ from typing import Any
 
 from mt5_risk_bot.models import EquitySnapshot
 
-SNAPSHOT_VERSION = 1
+SNAPSHOT_VERSION = 2
+
+#: Versions this build can still restore. A reader that rejected the version it
+#: wrote yesterday would fail CLOSED on every existing install, which is a
+#: self-inflicted outage rather than a safety property. Version 1 predates the
+#: daily counters, so they restore as 0: an install upgrading mid-day gets its
+#: full allowance once, which is the safe direction to be wrong in.
+READABLE_VERSIONS = frozenset({1, 2})
 
 _WRITE_FLAGS = os.O_WRONLY
 _WRITE_FLAGS |= os.O_CREAT
@@ -77,9 +84,9 @@ def load_snapshot(path: str | Path) -> EquitySnapshot | None:
     version = data.get("version")
     if isinstance(version, bool) or not isinstance(version, int):
         raise StateUnreadable(f"{p} has no integer version")
-    if version != SNAPSHOT_VERSION:
+    if version not in READABLE_VERSIONS:
         raise StateUnreadable(
-            f"{p} version {version}, this build reads {SNAPSHOT_VERSION}"
+            f"{p} version {version}, this build reads {sorted(READABLE_VERSIONS)}"
         )
     day = data.get("day_key")
     if not isinstance(day, str):
@@ -91,7 +98,26 @@ def load_snapshot(path: str | Path) -> EquitySnapshot | None:
         peak_equity=_req_float(p, data, "peak_equity", non_negative=True),
         day_start_equity=_req_float(p, data, "day_start_equity", non_negative=True),
         day_key=day,
+        trades_today=_count(p, data, "trades_today"),
+        advice_turns_today=_count(p, data, "advice_turns_today"),
     )
+
+
+def _count(p: Path, data: dict[str, Any], key: str) -> int:
+    """A daily counter. Absent means 0, which is how a version 1 file reads.
+
+    A present value still has to be a real non-negative int: a NaN or a
+    negative would make the cap comparison silently false forever, the same
+    failure `peak_equity` is already guarded against.
+    """
+    if key not in data:
+        return 0
+    v = data.get(key)
+    if isinstance(v, bool) or not isinstance(v, int):
+        raise StateUnreadable(f"{p} {key} is not an integer")
+    if v < 0:
+        raise StateUnreadable(f"{p} {key} is negative")
+    return v
 
 
 def save_snapshot(path: str | Path, snap: EquitySnapshot) -> Path:
@@ -107,6 +133,8 @@ def save_snapshot(path: str | Path, snap: EquitySnapshot) -> Path:
         "peak_equity": float(snap.peak_equity),
         "day_start_equity": float(snap.day_start_equity),
         "day_key": str(snap.day_key),
+        "trades_today": int(snap.trades_today),
+        "advice_turns_today": int(snap.advice_turns_today),
     }
     try:
         p.parent.mkdir(parents=True, exist_ok=True)

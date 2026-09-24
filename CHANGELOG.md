@@ -6,6 +6,67 @@ See README.md and docs/CONTRACT.md.
 
 ## Unreleased
 
+Advice-staged symbols are whitelisted, and there are daily caps on sends and on advice turns (issue #13).
+
+### The model no longer picks the instrument unchecked
+
+- `cfg.symbols` is a SCAN list: it drives `/quote` and the auto scan. `market_signal` accepts anything the broker knows, so with `/approve always` the model chose the instrument and no gate checked it.
+- A symbol the MODEL picked is now checked against `advice.symbols`, falling back to `symbols.names` when that is empty. Empty never means "allow anything". A miss is `reject` with reason `symbol_not_allowed`.
+- The whitelist is a separate knob from the scan list on purpose: an operator who scans three pairs may still want to act on a fourth BY HAND. A human `/buy` is therefore NOT gated by it. The control exists because the model chose the symbol, not because the symbol is unusual.
+- It gates OPENS only. An advice `close` on an unlisted symbol is still allowed: a control that can stop you reducing exposure is not a risk control.
+- Precedence is explicit: the whitelist runs before the order is built, so an unlisted symbol reports `symbol_not_allowed` rather than `advice_stage_failed`. A rule genuinely did say no, and it avoids spending broker calls on an order that was never permitted.
+
+### Two daily caps, because they bound two different things
+
+- `risk.max_trades_per_day` counts OPENING sends across auto, telegram and advice, and refuses with `max_trades_per_day`. Churn was previously bounded only by `max_positions` plus `daily_loss_pct`, and `daily_loss_pct` fires after the money is gone. Counted at the send, never at the decision: a preview, a refused confirm and an expired stage all call `evaluate()` and none of them is a trade. Closes never count and are never capped.
+- `advice.max_turns_per_day` counts advice turns and refuses BEFORE the provider is called. This is a COST control as much as a risk one: hosted inference is billed per turn, and a turn costs money whether or not it ends in an order, so the send cap cannot see that spend at all. A check placed after the call would cost exactly what it is meant to save.
+- Both counters are durable beside the journal, in the same snapshot as the loss budget, for the same reason: a cap a crash loop can clear is not a cap. They reset only on a new UTC day.
+- Both default to `0`, which disables them, so no existing config changes behaviour.
+
+### Snapshot schema
+
+- `journal.equity.json` is version 2, carrying `trades_today` and `advice_turns_today`. Version 1 still loads, with the counters restored as 0: a reader that rejected the version it wrote yesterday would fail closed on every existing install, which is a self-inflicted outage rather than a safety property. An unknown version is still refused.
+
+
+## 1.5.0
+
+The last-line size guard can fire (issue #55). It was dead. It recomputed the cap `lots_for_risk` had already applied, from the same entry, stop, spec and equity, with a LOOSER tolerance (`1e-6` against the sizer `1e-9`), so every input that would have tripped it had already been turned into 0 lots and reported as `size_zero`. A 497,664-case sweep reached the line 114,840 times and tripped it zero times.
+
+- The guard now takes TWO caps and refuses on the tighter of them. The first is the old per-trade cap, kept as the backstop for a future change that loosens the sizer, with its tolerance brought into line with the sizer own (`1e-9`, not `1e-6`). The second is `RiskManager.loss_room`: what the account may still lose before the daily-loss or max-drawdown halt trips. That figure is derived from the persisted `EquitySnapshot` (`day_start_equity`, `peak_equity`), which `lots_for_risk` is never given, so the gate can DISAGREE with the sizer instead of recomputing it. A second layer that reads the first layer inputs is not a second layer.
+- **Behaviour change an operator will see.** A trade whose full stop-out would carry the account through the daily-loss or drawdown halt is now refused as `size_exceeds_risk` instead of being sent. The halt used to fire after the loss; it now also refuses the size that would cause it. A configuration where one trade risks more than the whole daily loss budget (`risk_pct` times `max_risk_multiple` above `daily_loss_pct`) refuses every entry rather than sending trades the daily loss limit cannot absorb.
+- The same 497,664-case sweep now reaches the line 114,840 times and trips it 54,111 times. A smaller sweep of the same shape ships as a test (2,880 cases, 1,080 reached, 444 refused, 636 allowed) and asserts BOTH counts: a guard that refuses everything is as useless as one that refuses nothing. The shipped grid is a quarter of the measured one because each case rewrites the persisted snapshot, which took the Windows CI leg from 65s to 4m37s at 11,520 cases; a sweep nobody tolerates in CI gets deleted.
+- Independence is asserted as an experiment, not as an argument. Every input `lots_for_risk` receives is held exactly constant, only the persisted snapshot moves, and the verdict flips from `ok` to `size_exceeds_risk`.
+- The per-trade half still cannot fire against the current sizer, by construction. It is exercised by a test that loosens the sizer by 1.5x on purpose and watches the refusal, so the term is a backstop and not decoration.
+- `size_zero` and `size_exceeds_risk` stay two different words for two different situations, asserted on one manager and one account with only the stop distance changing.
+- **The pin that held this line dead did NOT fail when the line became reachable, and that is the second finding.** `test_size_exceeds_risk_is_dominated_by_size_zero` said it would FAIL the day the guard could fire. It re-implemented the guard old arithmetic from `lots_for_risk` instead of calling `evaluate`, so what it measured was the SIZER, which this change does not touch, and it stayed green through the whole of it. It is deleted on purpose, named in the PR that deletes it, and replaced by a case that exercises the reason. A pin on a dead line has to call the line.
+- Not fixed here, and still open: `size_zero` remains one word for two situations (a degenerate input, and a broker minimum lot that would risk more than the budget). Splitting it is a separate change to the reason vocabulary.
+
+
+## 1.4.1
+
+Tests and findings only. The shipped product is unchanged: no file under `src/` has a behaviour edit in this release, and the version moves only so these findings have a place to be recorded.
+
+- Every refusal reason `RiskManager` can name now has a test that asserts the NAMED reason. `allowed is False` cannot tell you a control has stopped testing anything. The roster is `tests/test_refusal_reasons.py`, and it measures its own denominator against `risk.py`, so a reason added to the module without a case fails the suite instead of quietly lowering the count.
+- The count was 20 reasons, not 15. Issue #11 reported 15 and 5 of them named; the measured figures are 20 reasons, 5 asserted by name, 11 refusal returns never executed (6 of those inside `evaluate`). After this change 19 of 20 are asserted by name and 1 refusal return is still unexecuted, for the reason below.
+- Each guard was mutated so its refusal could not fire, and each test was watched going red before being trusted. 19 of 20 went red. The 20th did not, which is the first finding.
+
+### Three pieces of `risk.py` cannot execute. Reported, not fixed.
+
+None of these is a behaviour defect today and none is changed here. Each is pinned by a test that FAILS if it ever becomes reachable, so no test in this repo is left passing against a line that cannot run.
+
+- **`size_exceeds_risk` cannot fire.** The last-line size guard recomputes exactly what `lots_for_risk` already checked, from the same entry, stop and spec, but with a looser tolerance (`1e-6` against the inner `1e-9`). Anything that would trip it has already been turned into 0 lots by the tighter inner check and is reported as `size_zero`. Deleting the guard outright leaves the whole suite green, which is how this was confirmed rather than argued. The reason string is still live in the product, but only from `engine.py` on the `/replace` path, which keeps the volume the broker already accepted and never calls `lots_for_risk`. That is the refusal an operator can actually receive, and it now has a test naming the site.
+- **The `halted` fallback cannot fire.** `circuit_reason` reads `self._halt_reason or "halted"`. Every site that raises the halt flag sets a reason in the same block, so no public call can leave the flag up with an empty reason.
+- **The zero-equity branch of the margin gate cannot be taken.** `if account.equity > 0:` guards a division, so the interesting case is a wiped account, and no wiped account reaches that line: the daily-loss gate fires first for every one of them, because a fresh day sets `day_start_equity` to the account equity and `0 >= 0` is true. The gate fails CLOSED on a wiped account, which is correct; the branch under it is simply unreachable.
+
+- `circuit_reason`, the gate deciding whether the model may stage at all, had no test on four of its branches (`halted`, `trade_not_allowed`, `live_not_accepted`, `max_drawdown`). All four are now named. `circuit_reason` is also asserted NOT to latch a market verdict, which `circuit` does and it must not.
+- `no_signal` and `already_in_symbol` have no production caller that can reach them: the auto leg returns before both (`engine.py`), and the desk only ever builds BUY or SELL. `already_in_symbol` is reachable from the desk and is tested there; `no_signal` is a defensive guard on a public method and is tested at that method.
+- `outside_session` is reachable on the auto leg only. The desk passes `manual=True`, which bypasses the session window by design, so no operator command can produce it. Tested on the auto leg, off the bar clock.
+- Where a reason is reachable through the desk or the auto leg, the assertion is the structured `reject` record from 1.2.0 rather than the return value, because the record is what an operator and an auditor read after the fact.
+
+
+## 1.4.0
+
+
 - Tests and gates only. No runtime behaviour changes, so this consumes no release number.
 - MT4 golden wire transcripts. `tests/test_mt4_wire.py` drives the adapter through `FileBridge`, a real mailbox on disk, and a stand-in Expert that answers with the byte-exact text `mt4/Experts/Mt4RiskBot.mq4` emits. Every op has a transcript. The existing suite drove the adapter through a stub that returned native Python dicts, so the pipe-separated decoding never ran through the broker at all.
 - The transcripts distinguish a MEASURED value from a DEFAULTED one. `Transcript.keys_sent()` answers whether the Expert put a field on the wire, and `value_sent()` gives the raw string it sent. A field the Expert never emits is absent, so the value reported for it is the adapter's own default.
@@ -132,55 +193,6 @@ defect in existing behaviour, so MINOR under the project rule; 1.3.0 avoids
 colliding with either open lane's claimed number. Whoever merges last still
 needs to renumber deliberately; a clean merge is not evidence the version is
 right (see #38's "version trap").
-
-
-## 1.5.0
-
-The last-line size guard can fire (issue #55). It was dead. It recomputed the cap `lots_for_risk` had already applied, from the same entry, stop, spec and equity, with a LOOSER tolerance (`1e-6` against the sizer `1e-9`), so every input that would have tripped it had already been turned into 0 lots and reported as `size_zero`. A 497,664-case sweep reached the line 114,840 times and tripped it zero times.
-
-- The guard now takes TWO caps and refuses on the tighter of them. The first is the old per-trade cap, kept as the backstop for a future change that loosens the sizer, with its tolerance brought into line with the sizer own (`1e-9`, not `1e-6`). The second is `RiskManager.loss_room`: what the account may still lose before the daily-loss or max-drawdown halt trips. That figure is derived from the persisted `EquitySnapshot` (`day_start_equity`, `peak_equity`), which `lots_for_risk` is never given, so the gate can DISAGREE with the sizer instead of recomputing it. A second layer that reads the first layer inputs is not a second layer.
-- **Behaviour change an operator will see.** A trade whose full stop-out would carry the account through the daily-loss or drawdown halt is now refused as `size_exceeds_risk` instead of being sent. The halt used to fire after the loss; it now also refuses the size that would cause it. A configuration where one trade risks more than the whole daily loss budget (`risk_pct` times `max_risk_multiple` above `daily_loss_pct`) refuses every entry rather than sending trades the daily loss limit cannot absorb.
-- The same 497,664-case sweep now reaches the line 114,840 times and trips it 54,111 times. A smaller sweep of the same shape ships as a test (2,880 cases, 1,080 reached, 444 refused, 636 allowed) and asserts BOTH counts: a guard that refuses everything is as useless as one that refuses nothing. The shipped grid is a quarter of the measured one because each case rewrites the persisted snapshot, which took the Windows CI leg from 65s to 4m37s at 11,520 cases; a sweep nobody tolerates in CI gets deleted.
-- Independence is asserted as an experiment, not as an argument. Every input `lots_for_risk` receives is held exactly constant, only the persisted snapshot moves, and the verdict flips from `ok` to `size_exceeds_risk`.
-- The per-trade half still cannot fire against the current sizer, by construction. It is exercised by a test that loosens the sizer by 1.5x on purpose and watches the refusal, so the term is a backstop and not decoration.
-- `size_zero` and `size_exceeds_risk` stay two different words for two different situations, asserted on one manager and one account with only the stop distance changing.
-- **The pin that held this line dead did NOT fail when the line became reachable, and that is the second finding.** `test_size_exceeds_risk_is_dominated_by_size_zero` said it would FAIL the day the guard could fire. It re-implemented the guard old arithmetic from `lots_for_risk` instead of calling `evaluate`, so what it measured was the SIZER, which this change does not touch, and it stayed green through the whole of it. It is deleted on purpose, named in the PR that deletes it, and replaced by a case that exercises the reason. A pin on a dead line has to call the line.
-- Not fixed here, and still open: `size_zero` remains one word for two situations (a degenerate input, and a broker minimum lot that would risk more than the budget). Splitting it is a separate change to the reason vocabulary.
-
-
-## 1.4.1
-
-Tests and findings only. The shipped product is unchanged: no file under `src/` has a behaviour edit in this release, and the version moves only so these findings have a place to be recorded.
-
-- Every refusal reason `RiskManager` can name now has a test that asserts the NAMED reason. `allowed is False` cannot tell you a control has stopped testing anything. The roster is `tests/test_refusal_reasons.py`, and it measures its own denominator against `risk.py`, so a reason added to the module without a case fails the suite instead of quietly lowering the count.
-- The count was 20 reasons, not 15. Issue #11 reported 15 and 5 of them named; the measured figures are 20 reasons, 5 asserted by name, 11 refusal returns never executed (6 of those inside `evaluate`). After this change 19 of 20 are asserted by name and 1 refusal return is still unexecuted, for the reason below.
-- Each guard was mutated so its refusal could not fire, and each test was watched going red before being trusted. 19 of 20 went red. The 20th did not, which is the first finding.
-
-### Three pieces of `risk.py` cannot execute. Reported, not fixed.
-
-None of these is a behaviour defect today and none is changed here. Each is pinned by a test that FAILS if it ever becomes reachable, so no test in this repo is left passing against a line that cannot run.
-
-- **`size_exceeds_risk` cannot fire.** The last-line size guard recomputes exactly what `lots_for_risk` already checked, from the same entry, stop and spec, but with a looser tolerance (`1e-6` against the inner `1e-9`). Anything that would trip it has already been turned into 0 lots by the tighter inner check and is reported as `size_zero`. Deleting the guard outright leaves the whole suite green, which is how this was confirmed rather than argued. The reason string is still live in the product, but only from `engine.py` on the `/replace` path, which keeps the volume the broker already accepted and never calls `lots_for_risk`. That is the refusal an operator can actually receive, and it now has a test naming the site.
-- **The `halted` fallback cannot fire.** `circuit_reason` reads `self._halt_reason or "halted"`. Every site that raises the halt flag sets a reason in the same block, so no public call can leave the flag up with an empty reason.
-- **The zero-equity branch of the margin gate cannot be taken.** `if account.equity > 0:` guards a division, so the interesting case is a wiped account, and no wiped account reaches that line: the daily-loss gate fires first for every one of them, because a fresh day sets `day_start_equity` to the account equity and `0 >= 0` is true. The gate fails CLOSED on a wiped account, which is correct; the branch under it is simply unreachable.
-
-- `circuit_reason`, the gate deciding whether the model may stage at all, had no test on four of its branches (`halted`, `trade_not_allowed`, `live_not_accepted`, `max_drawdown`). All four are now named. `circuit_reason` is also asserted NOT to latch a market verdict, which `circuit` does and it must not.
-- `no_signal` and `already_in_symbol` have no production caller that can reach them: the auto leg returns before both (`engine.py`), and the desk only ever builds BUY or SELL. `already_in_symbol` is reachable from the desk and is tested there; `no_signal` is a defensive guard on a public method and is tested at that method.
-- `outside_session` is reachable on the auto leg only. The desk passes `manual=True`, which bypasses the session window by design, so no operator command can produce it. Tested on the auto leg, off the bar clock.
-- Where a reason is reachable through the desk or the auto leg, the assertion is the structured `reject` record from 1.2.0 rather than the return value, because the record is what an operator and an auditor read after the fact.
-
-
-## 1.4.0
-
-- Every refusal on the desk and advice paths is now a structured journal record. Before this, `reject` was written on the auto/EMA leg only, so a refusal of anything a human or the model initiated left no machine-readable trace and could only be read as the English reply `refused: <reason>`. Asserting a gate on that string is asserting on prose.
-- One event name for every gate that says no, on every path: `reject`, carrying the NAMED `reason` plus `source` (`auto`, `telegram`, `advice`) and `stage` (`signal`, `stage`, `stage_close`, `confirm`, `reverse`, `confirm_reverse`, `reverse_after_close`, `approve`). `symbol`, `kind`, `rr`, `ticket`, and `command` ride along when the refused request had them. The auto leg now carries `source` and `stage` too, so the discriminator is total instead of being read from an absent field.
-- A refusal is journaled and is never echoed back into the chat that triggered it. It goes through `journal.write`, never `Engine._emit`, which is the chat broadcast path.
-- With no journal configured a refusal still prints to stderr. A control that goes silent because a file is missing cannot report that it was exercised.
-- The advice turn itself is now recorded: `advice_turn` with `provider`, `session`, `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, and `staged`. The question and the model reply are never journaled, so the redaction surface does not grow and `advice_history` stays free of prose.
-- `advice_circuit_block` records the circuit refusing to let the model stage at all. That gate decided whether the model could trade and wrote nothing.
-- `advice_stage_failed` carries `measured=false` for an advice action that could not be turned into an order at all. COULD NOT MEASURE is not REFUSED and is deliberately not a `reject`, so a refusal-reason count cannot absorb an unmeasured outcome.
-- `/auto on` and `/auto off` write `auto_on` and `auto_off`. `/live` and `/approve` were both audited and arming the autonomous trader was not.
-- No behaviour changes. Every refusal returns the same reply it did before; the records are additive.
 
 
 ## 1.3.2

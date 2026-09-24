@@ -29,6 +29,7 @@ from mt5_risk_bot.journal import Journal
 from mt5_risk_bot.models import Account, EquitySnapshot, Signal, SignalKind, Tick
 from mt5_risk_bot.risk import RiskManager
 from mt5_risk_bot.state import (
+    SNAPSHOT_VERSION,
     StateUnreadable,
     StateUnwritable,
     load_snapshot,
@@ -234,7 +235,10 @@ def test_restored_state_is_recomputed_not_a_cached_verdict(tmp_path: Path) -> No
         "[]",
         '"a string"',
         '{"day_key": "2024-01-03"}',
-        '{"version": 2, "time": 0, "balance": 1, "equity": 1, "peak_equity": 1,'
+        # Was version 2, which this build now WRITES (#13 added the daily
+        # counters). An unknown version still has to be refused, so the case
+        # moved to one no build has ever written rather than being deleted.
+        '{"version": 99, "time": 0, "balance": 1, "equity": 1, "peak_equity": 1,'
         ' "day_start_equity": 1, "day_key": "2024-01-03"}',
         '{"version": 1, "time": 0, "balance": 1, "equity": 1, "peak_equity": NaN,'
         ' "day_start_equity": 1, "day_key": "2024-01-03"}',
@@ -337,7 +341,7 @@ def test_snapshot_written_on_a_peak_move_not_only_on_a_halt(tmp_path: Path) -> N
     on_disk = json.loads(path.read_text(encoding="utf-8"))
     assert on_disk["peak_equity"] == 12_500
     assert on_disk["day_key"] == "2024-01-03"
-    assert on_disk["version"] == 1
+    assert on_disk["version"] == SNAPSHOT_VERSION
     assert "written_at" in on_disk
 
 
