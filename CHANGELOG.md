@@ -4,6 +4,24 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## Unreleased
+
+Docs corrected to match current code (#14). No behaviour change.
+
+- `SECURITY.md` said real money is refused unless the bot started with
+  `--i-accept-risk`. That was never the only path: `/live on I-ACCEPT-RISK`
+  in the locked Telegram chat arms it too, and always has. The restart
+  half of the original defect (a journal-restored `/live on` re-arming a
+  fresh process) was already fixed by #17; this corrects the doc to name
+  both arming paths and their per-process, not-restart-restored behaviour,
+  instead of naming only one.
+- `README.md` named `the gateway` (Cloudflare AI Gateway) alongside `the
+  bot` / `the desk` / `the agent` with no scope. Only `AI_PROVIDER=computer`
+  (the agent) routes through it; the default `grok` and `claude` are BYOK
+  straight to `api.x.ai` / `api.anthropic.com`, with none of the gateway's
+  billing, caching, rate limiting, or observability. Both the intro and
+  the Names table now say so.
+
 ## 1.3.0
 
 Sender-level authorization for Telegram commands (GHSA-9fg6-2x5f-3jvp).
