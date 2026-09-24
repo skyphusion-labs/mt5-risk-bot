@@ -88,14 +88,16 @@ describe("routing: /ask is gated, and the gate comes before the method check", (
       new Request("https://agent.test/ask?x=1", {
         method: "POST",
         headers: { ...AUTH, "content-type": "application/json" },
-        body: JSON.stringify({ question: "q" }),
+        body: JSON.stringify({ session: "route-query", question: "q" }),
       }),
     );
     expect(auth.status).toBe(200);
   });
 
   it("serves an authorized POST /ask", async () => {
-    const res = await call(askRequest({ question: "q" }, { token: `Bearer ${GOOD_TOKEN}` }));
+    const res = await call(
+      askRequest({ session: "route-post", question: "q" }, { token: `Bearer ${GOOD_TOKEN}` }),
+    );
     expect(res.status).toBe(200);
   });
 });

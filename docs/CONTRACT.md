@@ -28,6 +28,7 @@ Auto EMA trading is off until `/auto on`.
 | Live from chat | Real-money sends need `live_accepted`. Set it with `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat. The phrase is required. `/live on` without it is usage. `/live off` clears it. Arming is PER PROCESS and is never restored from the journal: a restart always starts disarmed, and a `live_on` record writes `live_not_restored` instead. Same fuse as `--i-accept-risk`. Risk still sizes and can refuse. |
 | Size | Every new order is sized so a full stop-out loses at most `risk_pct` of equity (default 0.5%). |
 | Min lot | If the broker minimum lot would exceed that, the trade is skipped. |
+| Halt room | A sized order is also measured against what the account may still lose before the daily-loss or drawdown halt. A volume whose full stop-out would carry the account through either halt is refused as `size_exceeds_risk`, before the halt trips. Those budgets come from `journal.equity.json`, which the sizer never reads, so this gate can refuse a size the sizer was content with. A per-trade risk above `daily_loss_pct` refuses every entry. |
 | Daily loss | Daily loss of `daily_loss_pct` (default 2%) of start-of-UTC-day equity flattens positions for the bot's magic and halts until the next UTC day. A restart does not clear it. `day_start_equity` is restored from `journal.equity.json` when the UTC day is the same. |
 | Drawdown | Drawdown of `max_drawdown_pct` (default 10%) from peak equity flattens and stays halted. `peak_equity` is restored from `journal.equity.json`, so a restart does not clear it. To reset the peak, stop the bot and delete that file. |
 | Halt | `HALT` or `/halt` flattens immediately (positions and working orders). |
@@ -50,6 +51,10 @@ Auto EMA trading is off until `/auto on`.
 | Sizer | `RiskManager.evaluate` is the only sizer. It is not optional. |
 | Handover posture | `telegram.allow_approve_always` and `telegram.allow_auto` (env: `TELEGRAM_ALLOW_APPROVE_ALWAYS`, `TELEGRAM_ALLOW_AUTO`) gate `/approve always` and `/auto on`. Both default true: unset, behaviour is unchanged. Set false, the command is refused with a named reason (`approve_always_disabled`, `auto_disabled`), journaled as `reject` (`source=telegram`), and never answered in chat. A value that is present but not a clean boolean is read as false, never as the default: a bad env var or a config typo can only remove the capability, never grant it. `/approve off` and `/auto off` are never refused. `config.handover.toml` sets both false. The default stays true on purpose (flipping it would silently change every existing deployment); the gap that leaves is closed by observability, not by a stricter default: `doctor` and `run` print the posture, and every `start` journal record carries `approve_always_allowed` / `auto_allowed`, so a session's posture is readable both live and after the fact. |
 | Refusal event naming | `command_rejected` (PR #40) answers WHO: a sender that is not on the allow-list. `reject` (PR #49, and the handover posture above) answers WHAT: a specific command that this deployment's policy or risk state does not permit, regardless of who sent it. Do not merge the two event names or re-litigate this split per issue; a refusal is either an identity question or a policy question, never both at once. |
+| Refusal record | Every gate that refuses writes `reject` to `journal.jsonl` with the NAMED `reason`, plus `source` (`auto`, `telegram`, `advice`) and `stage` (which gate, on which leg). The auto, desk, and advice paths share that one event name. A refusal is journaled and is never broadcast to the chat that triggered it. With no journal configured it still prints to stderr. |
+| Advice record | An advice turn writes `advice_turn`: `provider`, `session`, `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, `staged`. The question and the reply are never journaled. A suggestion the circuit refuses to stage writes `advice_circuit_block` with the circuit `reason`. |
+| Unmeasured is not refused | An advice action that could not be turned into an order at all writes `advice_stage_failed` with `measured=false`, never `reject`. COULD NOT MEASURE stays distinct from REFUSED. |
+| Auto arming | `/auto on` and `/auto off` write `auto_on` and `auto_off`, the audit trail `/live` and `/approve` already had. |
 
 ## Forbidden claims
 
@@ -96,7 +101,7 @@ Auto EMA trading is off until `/auto on`.
 | `/symbols list\|add\|remove [SYMBOL]` | Configured book (runtime). Bare `/symbols` lists. Cannot drop the last name, or a name with positions/orders. |
 | `/ask ...` or free text | Grok, Claude, or the agent. Local: last 40 turns in `journal.advice.json`. `AI_PROVIDER=computer`: Durable Object SQLite workspace (`/workspace/notes.md`, `log.md`, `snapshot.md`, `history.json` from `journal.tail`) plus Computer tools. Session is the Telegram chat id. JSON can stage. Default send is `/confirm`. `/approve always` sends after risk preview. Not Cloudflare D1. |
 | `/model grok\|claude\|computer` | Switch provider. |
-| `/auto on\|off` | Optional EMA regime. Fill alerts do not wait for this. |
+| `/auto on\|off` | Optional EMA regime. Fill alerts do not wait for this. Journaled as `auto_on` / `auto_off`. |
 | `/status` `/positions` `/halt` `/resume` | Account. `/halt` flattens, drops the confirm, and cancels working orders. |
 
 ## Confirm and send

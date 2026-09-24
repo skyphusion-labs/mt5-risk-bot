@@ -20,6 +20,15 @@ because a money gate that cannot measure must not trade:
   it is a deliberate act that also resets the peak.
 - `state_unwritable`: the snapshot could not be written, so the next restart
   would lose it.
+
+The last-line size guard in `evaluate` takes two caps. One re-derives what
+`sizing.lots_for_risk` already applied and cannot fire against the current
+sizer; it is the backstop for a future change that loosens it, and a test
+breaks the sizer deliberately so it is seen firing. The other is the room left
+before the daily-loss and drawdown halts, computed from the persisted
+`EquitySnapshot` the sizer never sees, so it can DISAGREE with the sizer
+instead of recomputing it. Before issue #55 only the first cap existed, with a
+tolerance LOOSER than the sizer's own, which is why nothing could reach it.
 """
 
 from __future__ import annotations
@@ -146,6 +155,16 @@ class RiskManager:
         )
         self._halted = False
         self._halt_reason = ""
+        # Set once, by _restore_state / _persist_state, and never overwritten by
+        # circuit()'s halt_file check (#15 item 4). _halt_reason IS overwritten
+        # by that check on every call while the operator HALT file exists, which
+        # clobbers whatever reason was there before it. daily_loss and
+        # max_drawdown recover from that because every gate recomputes them
+        # fresh from the snapshot; state_unreadable and state_unwritable do not
+        # self-heal that way (the file is read once, at start), so without a
+        # separate slot, clear_operator_halt() could silently drop a COULD NOT
+        # MEASURE halt with nothing left to prove it should not have.
+        self._state_integrity_reason = ""
         self._restore_state()
 
     def _restore_state(self) -> None:
@@ -158,18 +177,20 @@ class RiskManager:
             self.state_error = str(exc)
             self._halted = True
             self._halt_reason = "state_unreadable"
+            self._state_integrity_reason = "state_unreadable"
             return
         if restored is not None:
             self.snapshot = restored
 
     def _persist_state(self) -> None:
         """Write the snapshot. A write failure halts; it is a measurement loss."""
-        if self._halt_reason == "state_unreadable":
+        if self._state_integrity_reason == "state_unreadable":
             return  # the unreadable file is evidence; do not clobber it
         try:
             save_snapshot(self.state_path, self.snapshot)
         except StateUnwritable as exc:
             self.state_error = str(exc)
+            self._state_integrity_reason = "state_unwritable"
             if not self._halted:
                 self._halted = True
                 self._halt_reason = "state_unwritable"
@@ -192,19 +213,50 @@ class RiskManager:
         os.chmod(path, 0o600)
         return path
 
-    def clear_operator_halt(self) -> str:
-        """Clear HALT file. Leaves daily_loss / max_drawdown in place.
+    def _equity_halt_reason(self) -> str:
+        """daily_loss / max_drawdown, recomputed fresh from the snapshot.
 
-        Returns remaining halt reason, or empty string if the bot may resume.
+        Same condition circuit() checks, extracted so clear_operator_halt()
+        can ask "is this independently still true" without trusting
+        _halt_reason, which circuit() overwrites to "halt_file" on every call
+        while the operator HALT file exists (#15 item 4).
+        """
+        s = self.snapshot
+        r = self.cfg.risk
+        daily_loss = s.day_start_equity - s.equity
+        if daily_loss >= s.day_start_equity * r.daily_loss_pct:
+            return "daily_loss"
+        dd = s.peak_equity - s.equity
+        if s.peak_equity > 0 and dd >= s.peak_equity * r.max_drawdown_pct:
+            return "max_drawdown"
+        return ""
+
+    def clear_operator_halt(self) -> str:
+        """Clear the HALT file. Leaves any independently-true halt in place.
+
+        Returns the remaining halt reason, or empty string if the bot may
+        resume. _halt_reason alone cannot answer this (see
+        _equity_halt_reason and _state_integrity_reason): it is a single
+        slot that circuit() overwrites to "halt_file" on every call while
+        the operator HALT file exists, discarding whatever reason was
+        there before. daily_loss / max_drawdown are re-derived from the
+        snapshot; a state-integrity halt is re-asserted from the
+        dedicated, never-overwritten slot.
         """
         path = self.halt_path()
         if path.exists():
             path.unlink()
-        if self._halt_reason == "halt_file":
-            self._halted = False
-            self._halt_reason = ""
-        if self._halted:
-            return self._halt_reason
+        if self._state_integrity_reason:
+            self._halted = True
+            self._halt_reason = self._state_integrity_reason
+            return self._state_integrity_reason
+        sticky = self._equity_halt_reason()
+        if sticky:
+            self._halted = True
+            self._halt_reason = sticky
+            return sticky
+        self._halted = False
+        self._halt_reason = ""
         return ""
 
     def _durable(self) -> tuple[str, float, float]:
@@ -282,6 +334,29 @@ class RiskManager:
             return self._halt("max_drawdown")
         return RiskDecision(allowed=True, reason="ok")
 
+    def loss_room(self, account: Account) -> float:
+        """Money this account may still lose before a halt gate would trip.
+
+        The daily-loss and drawdown budgets are computed from the persisted
+        EquitySnapshot: day_start_equity is set once per UTC day and survives
+        a restart, and peak_equity outlives the process. The sizer is handed
+        neither, so a gate built on them can DISAGREE with the sizer. A gate
+        that recomputes what the sizer already computed, from the inputs the
+        sizer was already given, is not a second layer; it is a slower copy,
+        and it cannot report anything the first layer did not.
+
+        Positive whenever the circuit is clear: both halt gates fire at or
+        before zero room, so evaluate reads this only after circuit passed.
+        Call it after observe, so the snapshot is the current one.
+        """
+        r = self.cfg.risk
+        s = self.snapshot
+        room = s.day_start_equity * r.daily_loss_pct - (s.day_start_equity - account.equity)
+        if s.peak_equity > 0:
+            dd_room = s.peak_equity * r.max_drawdown_pct - (s.peak_equity - account.equity)
+            room = min(room, dd_room)
+        return room
+
     def evaluate(
         self,
         *,
@@ -319,6 +394,18 @@ class RiskManager:
         if signal.rr + 1e-9 < r.min_rr:
             return RiskDecision(allowed=False, reason="rr_below_min")
 
+        # Before any gate reads the spec. `min_stop_distance()` is
+        # stops_level * point, so an unmeasured point makes the next check pass
+        # trivially, and `lots_for_risk` would refuse as `size_zero`, which
+        # says the budget was too small. Nothing measured is a different fact
+        # and it gets its own name.
+        not_measured = spec.unmeasured_for_sizing()
+        if not_measured:
+            return RiskDecision(
+                allowed=False,
+                reason="spec_not_measured:" + ",".join(sorted(not_measured)),
+            )
+
         min_dist = spec.min_stop_distance()
         if signal.risk_distance < min_dist:
             return RiskDecision(allowed=False, reason="stops_level")
@@ -342,8 +429,24 @@ class RiskManager:
         if lots <= 0:
             return RiskDecision(allowed=False, reason="size_zero")
 
+        # Last line, and two caps that are here for different reasons.
+        #
+        # per_trade re-derives the cap `lots_for_risk` already applied. It
+        # cannot fire against today's sizer, which enforces the same
+        # inequality with the same tolerance before it returns. It is kept as
+        # the backstop for a future change that loosens the sizer, and a test
+        # breaks the sizer on purpose so that half is watched firing: a term
+        # that can only fire after a regression is a backstop, but only if
+        # something can make it fire.
+        #
+        # loss_room is the live half, and the reason this is a second layer
+        # rather than a slower copy of the first. It is derived from the
+        # persisted snapshot, which the sizer is never given, so it can
+        # DISAGREE: a full stop-out on this volume must not carry the account
+        # through a halt it has not tripped yet.
         worst = money_per_lot_at_stop(signal.entry, signal.sl, spec) * lots
-        if worst > account.equity * r.risk_pct * r.max_risk_multiple + 1e-6:
+        per_trade = account.equity * r.risk_pct * r.max_risk_multiple
+        if worst > min(per_trade, self.loss_room(account)) + 1e-9:
             return RiskDecision(allowed=False, reason="size_exceeds_risk")
 
         return RiskDecision(allowed=True, reason="ok", volume=lots)

@@ -32,10 +32,10 @@ function echoed(text: string) {
 
 describe("ask: request validation", () => {
   it.each([
-    ["no question field", {}],
-    ["an empty question", { question: "" }],
-    ["a whitespace-only question", { question: "   \n\t " }],
-    ["a null question", { question: null }],
+    ["no question field", { session: "validate" }],
+    ["an empty question", { session: "validate", question: "" }],
+    ["a whitespace-only question", { session: "validate", question: "   \n\t " }],
+    ["a null question", { session: "validate", question: null }],
   ])("returns 400 for %s", async (_label, body) => {
     const res = await call(goodAsk(body as Record<string, unknown>));
     expect(res.status).toBe(400);
@@ -43,18 +43,18 @@ describe("ask: request validation", () => {
   });
 
   it.each([
-    ["malformed json", "{not json"],
-    ["an empty body", ""],
-    ["a bare string", '"just a string"'],
-  ])("returns 400 for %s", async (_label, raw) => {
+    ["malformed json", "{not json", "invalid json"],
+    ["an empty body", "", "invalid json"],
+    ["a bare string", '"just a string"', "invalid session"],
+  ])("returns 400 for %s", async (_label, raw, error) => {
     const res = await call(askRequest(null, { token: AUTH, rawBody: raw }));
     expect(res.status).toBe(400);
     const body = (await res.json()) as { error: string };
-    expect(["invalid json", "question required"]).toContain(body.error);
+    expect(body.error).toBe(error);
   });
 
   it("returns json, not prose, on every refusal", async () => {
-    const res = await call(goodAsk({}));
+    const res = await call(goodAsk({ session: "validate" }));
     expect(res.headers.get("content-type")).toBe("application/json");
   });
 });

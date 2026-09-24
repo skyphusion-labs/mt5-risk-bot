@@ -151,12 +151,15 @@ class Desk:
     def _journal_only(self, event: str, **fields: object) -> None:
         """Write a control decision to the journal and NOT to the chat.
 
-        A refusal is never echoed back into the chat that asked for it. PR
-        #40 set that precedent for command_rejected by going to
-        journal.write rather than Engine._emit; this follows the same
-        route and the same silence guard: with no journal reachable the
-        control still reports that it fired, on stderr, so a control that
-        goes quiet because a file is missing cannot look unexercised.
+        A refusal is never echoed back into the chat that asked for it. PR #40
+        set that precedent for command_rejected by going to journal.write
+        rather than Engine._emit, and a risk refusal has the same shape: the
+        chat already has its one-line answer, so broadcasting the decision as
+        an event turns one refusal into two messages.
+
+        With no journal reachable the control still reports that it fired, on
+        stderr. A control that goes silent because a file is missing cannot
+        tell anyone it was exercised.
         """
         journal = getattr(self.engine, "journal", None)
         write = getattr(journal, "write", None)
@@ -166,7 +169,47 @@ class Desk:
                 return
             except (OSError, ValueError, RuntimeError, TypeError):
                 pass
-        print(redact_text(f"{event} {fields}"), file=sys.stderr)
+        print(redact_text(str(event) + " " + str(fields)), file=sys.stderr)
+
+    def _reject(
+        self,
+        stage: str,
+        reason: str,
+        *,
+        source: str,
+        signal: Signal | None = None,
+        symbol: str = "",
+        ticket: int | None = None,
+        command: str = "",
+    ) -> None:
+        """One event name for every gate that said no, on every path.
+
+        The auto leg already wrote reject; the desk and advice legs wrote
+        nothing at all. Same event now, discriminated by source (auto,
+        telegram, advice) and by stage (which gate, on which leg). reason is
+        the NAMED reason, and it is the field a test asserts on, never the
+        prose the chat gets back.
+
+        This event means REFUSED. A decision that could not be taken because
+        nothing could be measured gets its own event name, so a reason count
+        can never treat an unmeasured outcome as a rule saying no.
+        """
+        fields: dict[str, object] = {
+            "source": source,
+            "stage": stage,
+            "reason": reason,
+        }
+        if signal is not None:
+            fields["symbol"] = signal.symbol
+            fields["kind"] = signal.kind.value
+            fields["rr"] = signal.rr
+        elif symbol:
+            fields["symbol"] = symbol
+        if ticket is not None:
+            fields["ticket"] = ticket
+        if command:
+            fields["command"] = command
+        self._journal_only("reject", **fields)
 
     def _set_pending(self, pending: Pending) -> None:
         self.pending = pending
@@ -246,9 +289,11 @@ class Desk:
     def _stage(self, sig: Signal, source: str) -> str:
         now = time.time()
         if self.pending is not None and now <= self.pending.expires_at:
+            self._reject("stage", "pending_exists", source=source, signal=sig)
             return f"pending {self.pending.label()}; /cancel first"
         decision = self.engine.preview(sig, manual=True)
         if not decision.allowed:
+            self._reject("stage", decision.reason, source=source, signal=sig)
             return f"refused: {decision.reason}"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
         self._set_pending(Pending(sig, decision.volume, source, now + ttl))
@@ -264,14 +309,34 @@ class Desk:
     def _stage_close(self, advice: Advice) -> str:
         now = time.time()
         if self.pending is not None and now <= self.pending.expires_at:
+            self._reject(
+                "stage_close",
+                "pending_exists",
+                source="advice",
+                symbol=advice.symbol or "",
+                ticket=advice.ticket,
+            )
             return f"pending {self.pending.label()}; /cancel first"
         ticket = advice.ticket
         if ticket is None:
+            self._reject(
+                "stage_close",
+                "close_needs_ticket",
+                source="advice",
+                symbol=advice.symbol or "",
+            )
             if advice.symbol:
                 return f"to flatten {advice.symbol}: /close {advice.symbol}"
             return "close needs ticket"
         pos = self.engine._pos(ticket)
         if pos is None:
+            self._reject(
+                "stage_close",
+                "no_such_ticket",
+                source="advice",
+                symbol=advice.symbol or "",
+                ticket=ticket,
+            )
             return "no such ticket"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
         self._set_pending(Pending(None, pos.volume, "advice", now + ttl, close_ticket=ticket))
@@ -290,6 +355,13 @@ class Desk:
             self._clear_pending("confirm_cancel")
             return "confirm expired"
         if getattr(self.engine, "halted", False):
+            self._reject(
+                "confirm",
+                "halted",
+                source=pending.source,
+                signal=pending.signal,
+                ticket=pending.close_ticket,
+            )
             self._clear_pending("confirm_cancel")
             return "refused: halted"
         if pending.close_ticket is not None and pending.signal is None:
@@ -313,6 +385,9 @@ class Desk:
             sig = sig.reprice(entry, spec)
         decision = self.engine.preview(sig, manual=True)
         if not decision.allowed:
+            self._reject(
+                "confirm", decision.reason, source=pending.source, signal=sig
+            )
             if decision.halt:
                 self._clear_pending("confirm_cancel")
             return f"refused: {decision.reason}"
@@ -349,10 +424,20 @@ class Desk:
         tp = _opt_float(kv.get("tp"))
         now = time.time()
         if self.pending is not None and now <= self.pending.expires_at:
+            self._reject(
+                "reverse", "pending_exists", source="telegram", ticket=ticket
+            )
             return f"pending {self.pending.label()}; /cancel first"
         sig = self.engine.reverse_signal(ticket, sl=sl, tp=tp)
         decision = self.engine.preview(sig, manual=True, exclude_ticket=ticket)
         if not decision.allowed:
+            self._reject(
+                "reverse",
+                decision.reason,
+                source="telegram",
+                signal=sig,
+                ticket=ticket,
+            )
             return f"refused: {decision.reason}"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
         self._set_pending(Pending(sig, decision.volume, "telegram", now + ttl, close_ticket=ticket))
@@ -372,6 +457,13 @@ class Desk:
             return "nothing to confirm"
         pos = self.engine._pos(ticket)
         if pos is None:
+            self._reject(
+                "confirm_reverse",
+                "no_such_ticket",
+                source=pending.source,
+                signal=sig,
+                ticket=ticket,
+            )
             self._clear_pending("confirm_cancel")
             return "no such ticket"
         spec = self.engine.broker.symbol(sig.symbol)
@@ -380,6 +472,13 @@ class Desk:
         sig = sig.reprice(entry, spec)
         decision = self.engine.preview(sig, manual=True, exclude_ticket=ticket)
         if not decision.allowed:
+            self._reject(
+                "confirm_reverse",
+                decision.reason,
+                source=pending.source,
+                signal=sig,
+                ticket=ticket,
+            )
             if decision.halt:
                 self._clear_pending("confirm_cancel")
             return f"refused: {decision.reason}"
@@ -389,6 +488,16 @@ class Desk:
             return closed
         decision = self.engine.preview(sig, manual=True)
         if not decision.allowed:
+            # The old position IS closed and the replacement was refused, so
+            # the book changed. A distinct stage is what separates this from
+            # the pre-close refusal, where nothing moved.
+            self._reject(
+                "reverse_after_close",
+                decision.reason,
+                source=pending.source,
+                signal=sig,
+                ticket=ticket,
+            )
             self._clear_pending("confirm_cancel")
             return f"closed #{ticket}; reverse refused: {decision.reason}"
         result = self.engine.submit(sig, decision.volume)
@@ -503,13 +612,21 @@ class Desk:
         lines = [advice.text]
         if advice.summary:
             lines.append(advice.summary)
+        staged = False
         if advice.action in {"buy", "sell"} and advice.symbol:
             reason = self.engine.advice_circuit_reason()
             if reason:
+                self._journal_only(
+                    "advice_circuit_block",
+                    reason=reason,
+                    action=advice.action,
+                    symbol=advice.symbol,
+                )
                 lines.append(
                     f"not staging {advice.action}: circuit {reason}; hold or close only"
                 )
             else:
+                staged = True
                 kind = SignalKind.BUY if advice.action == "buy" else SignalKind.SELL
                 try:
                     sig = self.engine.market_signal(
@@ -522,9 +639,36 @@ class Desk:
                     )
                     lines.append(self._stage(sig, "advice"))
                 except (ValueError, RuntimeError) as exc:
+                    # COULD NOT MEASURE, not REFUSED. No rule said no; the
+                    # order could not be built at all, so it gets its own
+                    # event name and a reason count cannot absorb it.
+                    self._journal_only(
+                        "advice_stage_failed",
+                        measured=False,
+                        action=advice.action,
+                        symbol=advice.symbol,
+                        error=redact_text(str(exc))[:200],
+                    )
                     lines.append(f"could not stage trade: {redact_text(str(exc))}")
         elif advice.action == "close":
+            staged = True
             lines.append(self._stage_close(advice))
+        # Closes the turn: what the model decided, never what either side said.
+        # The question and the reply stay out of the journal on purpose, so the
+        # redaction surface does not grow and advice_history stays prose-free.
+        self._journal_only(
+            "advice_turn",
+            provider=getattr(self.advisor.cfg, "provider", ""),
+            session=session,
+            action=advice.action,
+            symbol=advice.symbol,
+            sl=advice.sl,
+            tp=advice.tp,
+            limit=advice.limit,
+            stop=advice.stop,
+            ticket=advice.ticket,
+            staged=staged,
+        )
         return "\n".join(x for x in lines if x)
 
     def _model(self, args: str) -> str:
@@ -542,7 +686,12 @@ class Desk:
 
     def _live_needs_flag(self) -> bool:
         cfg = getattr(self.engine, "cfg", None)
-        if cfg is None or getattr(cfg, "mode", "paper") != "mt5":
+        # risk.py's send gate (:255, :275) is {"mt5", "mt4"}; this warning
+        # gate was != "mt5" only, so an MT4 real account skipped straight to
+        # "approve always" with no live-arm warning at all (#15 item 2). The
+        # send was always still refused downstream (live_not_accepted), but
+        # the desk lied about the precondition until that refusal.
+        if cfg is None or getattr(cfg, "mode", "paper") not in {"mt5", "mt4"}:
             return False
         if getattr(cfg, "live_accepted", False):
             return False
@@ -602,6 +751,12 @@ class Desk:
                     "risk stays sizing-only; /confirm each order"
                 )
             if self._live_needs_flag():
+                self._reject(
+                    "approve",
+                    "live_not_accepted",
+                    source="telegram",
+                    command="approve",
+                )
                 return (
                     "real-money: /live on I-ACCEPT-RISK in this chat, "
                     "then /approve always"
@@ -635,9 +790,14 @@ class Desk:
                     "enable telegram.allow_auto in config.toml to run unattended"
                 )
             self.engine.cfg.strategy.auto = True
+            # Parity with /live and /approve, which both journal. Arming the
+            # autonomous trader was the only one of the three left unaudited,
+            # and in a handed-over deployment it is the most consequential.
+            self._write_confirm("auto_on")
             return "auto on"
         if token in {"off", "0", "false"}:
             self.engine.cfg.strategy.auto = False
+            self._write_confirm("auto_off")
             return "auto off"
         return f"auto={'on' if self.engine.cfg.strategy.auto else 'off'}"
 

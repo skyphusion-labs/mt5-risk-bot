@@ -1,4 +1,5 @@
 import json
+import re
 import time
 from datetime import datetime, timezone
 
@@ -880,6 +881,47 @@ def test_computer_ask_posts_session(tmp_path) -> None:
     assert body["history"] == []
 
 
+# The agent validates `session` before it addresses a Durable Object: one string,
+# 1 to 64 characters, letters, digits, dot, underscore and hyphen only. That rule
+# lives in `agent/src/session.ts` and is enforced by `agent/test/session.test.ts`.
+# The two tests below are the CALLER half of the same contract. If what this
+# client posts ever stops matching the rule, the desk loses its advice path, and
+# it should fail here rather than at the agent.
+AGENT_SESSION_RULE = re.compile(r"^[A-Za-z0-9._-]{1,64}\Z")
+
+
+def _computer_advisor(tmp_path):
+    payload = {
+        "text": (
+            "Hold.\n"
+            '{"action":"hold","symbol":null,"sl":null,"tp":null,"summary":"x"}'
+        )
+    }
+    llm = FakeLlm(payload)
+    engine = _engine(tmp_path, llm=llm)
+    engine.advisor.cfg.provider = "computer"
+    engine.advisor.cfg.computer_url = "https://example.test/ask"
+    engine.advisor.cfg.computer_token = "tok"
+    return engine, llm
+
+
+def test_computer_session_matches_the_agent_rule(tmp_path) -> None:
+    engine, llm = _computer_advisor(tmp_path)
+    for chat_id in ("42", "-1001234567890", "0", "7" * 64):
+        engine.handle_command(TgCommand(chat_id, 7, "/ask remember copper", 1))
+        _url, body = llm.sent[-1]
+        assert body["session"] == chat_id
+        assert AGENT_SESSION_RULE.match(body["session"]), chat_id
+
+
+def test_computer_session_never_posts_an_empty_key(tmp_path) -> None:
+    engine, llm = _computer_advisor(tmp_path)
+    engine.advisor.ask("q", "ctx", session="", history=[])
+    _url, body = llm.sent[-1]
+    assert body["session"] == "default"
+    assert AGENT_SESSION_RULE.match(body["session"])
+
+
 def test_computer_ask_posts_journal_history(tmp_path) -> None:
     payload = {
         "text": (
@@ -902,7 +944,13 @@ def test_computer_ask_posts_journal_history(tmp_path) -> None:
     assert body["history"]
     events = [r.get("event") for r in body["history"] if isinstance(r, dict)]
     assert "open" in events
-    assert engine.advice_history() == body["history"]
+    # advice_turn closes the turn, so it is written AFTER the model call: the
+    # journal now holds exactly one record more than the history that was
+    # posted. Comparing the two as equal was only true while the advice path
+    # wrote nothing at all (#29).
+    after = engine.advice_history()
+    assert after[-1]["event"] == "advice_turn"
+    assert after[:-1] == body["history"]
     engine.stop()
 
 

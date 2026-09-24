@@ -4,6 +4,10 @@ The bot is the Python process on this computer.
 The desk is Telegram chat commands.
 The agent is the Cloudflare Computer worker.
 The gateway is Cloudflare AI Gateway `mt5-risk-bot`.
+Only `AI_PROVIDER=computer` (the agent) routes through the gateway. The
+default `AI_PROVIDER=grok` and `AI_PROVIDER=claude` are BYOK straight to
+`api.x.ai` and `api.anthropic.com`: no gateway billing, caching, rate
+limit, or observability on either.
 
 You send desk commands from one Telegram chat.
 The bot sizes every order.
@@ -24,7 +28,7 @@ Auto EMA trading is off until `/auto on`.
 | the bot | the Python process on this computer |
 | the desk | Telegram chat commands |
 | the agent | the Cloudflare Computer worker |
-| the gateway | Cloudflare AI Gateway `mt5-risk-bot` |
+| the gateway | Cloudflare AI Gateway `mt5-risk-bot`. Used only by `AI_PROVIDER=computer`; `grok` and `claude` are direct BYOK, not gatewayed |
 | the circuit | halt, daily-loss, and drawdown gates |
 
 ## Install and paper run
