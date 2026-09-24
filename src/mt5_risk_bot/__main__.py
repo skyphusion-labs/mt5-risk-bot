@@ -18,6 +18,7 @@ from tempfile import TemporaryDirectory
 
 from mt5_risk_bot import __version__
 from mt5_risk_bot.broker import broker_for
+from mt5_risk_bot.broker.paper import PaperBroker
 from mt5_risk_bot.config import BotConfig, load_config
 from mt5_risk_bot.engine import Engine, run_backtest
 from mt5_risk_bot.journal import InstanceLock, InstanceLockError, redact_text
@@ -32,6 +33,14 @@ def _cfg(args: argparse.Namespace) -> BotConfig:
         cfg.live_accepted = True
     cfg.validate()
     return cfg
+
+
+def _posture_line(cfg: BotConfig) -> str:
+    """Operator-visible handover posture (#25): is either unattended-send
+    path available on THIS config, without reading config.toml by hand."""
+    approve = "allowed" if cfg.telegram.allow_approve_always else "disabled"
+    auto = "allowed" if cfg.telegram.allow_auto else "disabled"
+    return f"approve always: {approve}\nauto: {auto}"
 
 
 def telegram_ping(cfg: BotConfig, *, transport=None) -> str:
@@ -59,6 +68,10 @@ def paper_round_trip() -> str:
         cfg.journal_path = str(Path(tmp) / "j.jsonl")
         cfg.symbols = ["EURUSD"]
         broker = broker_for(cfg)
+        # mode is hardcoded "paper" a few lines up; make that guarantee
+        # explicit rather than relying on Broker's abstract interface to
+        # happen to have seed_bars (it does not -- PaperBroker-only).
+        assert isinstance(broker, PaperBroker)
         broker.seed_bars("EURUSD", generate_bars(120, drift=0.0004, vol=0.0002, seed=3))
         engine = Engine(
             cfg,
@@ -104,6 +117,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     cfg = load_config(args.config) if args.config else load_config()
     if args.config:
         print(f"config: mode={cfg.mode} symbols={cfg.symbols} risk_pct={cfg.risk.risk_pct}")
+    print(_posture_line(cfg))
     print("terminal: official MetaTrader5 package is Windows-only.")
     print("macOS: install MetaTrader 5.app from metatrader5.com, then pip install mt5-mac.")
     print("MT4: attach mt4/Experts/Mt4RiskBot.mq4. files_dir is Common Files.")
@@ -220,6 +234,7 @@ def cmd_run(args: argparse.Namespace) -> int:
     cfg = _cfg(args)
     if args.mode:
         cfg.mode = args.mode
+    print(_posture_line(cfg))
     try:
         lock = InstanceLock(cfg.journal_path)
         lock.acquire()
@@ -249,6 +264,9 @@ def _cmd_run_locked(args: argparse.Namespace, cfg: BotConfig) -> int:
         elif args.feed_mt5:
             live = broker_for(replace(cfg, mode="mt5"))
             live.connect()
+            # This whole branch is under `if cfg.mode == "paper":` above, so
+            # broker is the PaperBroker constructed a few lines earlier.
+            assert isinstance(broker, PaperBroker)
             for name in cfg.symbols:
                 live.select_symbol(name)
                 rates = live.rates(name, cfg.strategy.timeframe, 400)

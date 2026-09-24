@@ -135,6 +135,29 @@ DEFAULT_TG_EVENTS = (
 )
 
 
+def _parse_bool_flag(raw: object, *, default: bool) -> bool:
+    """Fail-closed boolean for a capability switch.
+
+    An operator setting an env var is always handed a string, and Python's
+    bool("false") is True: the classic footgun that would silently re-arm a
+    capability an operator just tried to turn off. A value that is PRESENT
+    but not cleanly true/false is treated as False, never as `default`, so a
+    typo or a bad env var can only ever remove capability, never grant it.
+    A value that is fully absent (None) falls back to `default`, which is
+    what preserves an existing deployment's behaviour on upgrade: it has
+    never heard of this key, so nothing about it changes.
+    """
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return False
+
 def is_shared_chat_id(chat_id: str) -> bool:
     """True when the id is a Telegram group, supergroup or channel.
 
@@ -151,7 +174,7 @@ def parse_allow_senders(raw: object) -> tuple[int, ...]:
     """Normalise allow_senders from a TOML list or a comma-separated env var."""
     if raw is None:
         return ()
-    items = str(raw).split(",") if isinstance(raw, str) else list(raw)  # type: ignore[arg-type]
+    items = str(raw).split(",") if isinstance(raw, str) else list(raw)  # type: ignore[call-overload]
     out: list[int] = []
     for item in items:
         text = str(item).strip()
@@ -176,6 +199,13 @@ class TelegramConfig:
     chat_id: str = ""
     notify_events: tuple[str, ...] = DEFAULT_TG_EVENTS
     confirm_seconds: int = 120
+    # Handover posture (#25). Both default True: an operator who has never
+    # heard of this key gets today's behaviour unchanged. The shipped
+    # handover template sets both false. Fail-closed parsing lives in
+    # _parse_bool_flag, not here: a dataclass default cannot see a garbled
+    # config value, only the loader can.
+    allow_approve_always: bool = True
+    allow_auto: bool = True
     allow_senders: tuple[int, ...] = ()
 
     @property
@@ -192,7 +222,7 @@ class AdviceConfig:
     #: the send cap above cannot see this spend at all.
     max_turns_per_day: int = 0
     grok_model: str = "grok-4"
-    claude_model: str = "claude-sonnet-4-5"
+    claude_model: str = "claude-sonnet-5"
     grok_key: str = ""
     claude_key: str = ""
     grok_url: str = "https://api.x.ai/v1/chat/completions"
@@ -329,6 +359,14 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     server = os.environ.get("MT5_SERVER", str(mt5_s.get("server", "") or ""))
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", str(tg_s.get("token", "") or ""))
     tg_chat = os.environ.get("TELEGRAM_CHAT_ID", str(tg_s.get("chat_id", "") or ""))
+    tg_allow_approve_always = _parse_bool_flag(
+        os.environ.get("TELEGRAM_ALLOW_APPROVE_ALWAYS", tg_s.get("allow_approve_always")),
+        default=True,
+    )
+    tg_allow_auto = _parse_bool_flag(
+        os.environ.get("TELEGRAM_ALLOW_AUTO", tg_s.get("allow_auto")),
+        default=True,
+    )
     grok_key = os.environ.get("XAI_API_KEY", str(advice_s.get("grok_key", "") or ""))
     claude_key = os.environ.get("ANTHROPIC_API_KEY", str(advice_s.get("claude_key", "") or ""))
     computer_url = os.environ.get("ADVICE_URL", str(advice_s.get("computer_url", "") or ""))
@@ -409,13 +447,15 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             chat_id=tg_chat,
             notify_events=events or DEFAULT_TG_EVENTS,
             confirm_seconds=int(tg_s.get("confirm_seconds", 120)),
+            allow_approve_always=tg_allow_approve_always,
+            allow_auto=tg_allow_auto,
             allow_senders=tg_allow,
         ),
         advice=AdviceConfig(
             provider=provider if provider in {"grok", "claude", "computer"} else "grok",
             max_turns_per_day=int(advice_s.get("max_turns_per_day", 0)),
             grok_model=str(advice_s.get("grok_model", "grok-4")),
-            claude_model=str(advice_s.get("claude_model", "claude-sonnet-4-5")),
+            claude_model=str(advice_s.get("claude_model", "claude-sonnet-5")),
             grok_key=grok_key,
             claude_key=claude_key,
             grok_url=str(advice_s.get("grok_url", "https://api.x.ai/v1/chat/completions")),
