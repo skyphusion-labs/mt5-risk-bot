@@ -15,6 +15,7 @@ from mt5_risk_bot.journal import Journal, redact_text
 from mt5_risk_bot.llm import Advisor, advice_path_for
 from mt5_risk_bot.models import (
     Bar,
+    FlattenReport,
     MarketOrder,
     OrderResult,
     PendingOrder,
@@ -33,6 +34,10 @@ _ORDER_TYPE_NAME = {
     "limit": "LIMIT",
     "stop": "STOP",
 }
+
+# Lot volumes are broker-rounded to 8 places at most; this is a float-compare guard,
+# not a tolerance for a genuinely short fill.
+_VOLUME_EPS = 1e-9
 
 
 def _pending_label(order: PendingOrder) -> str:
@@ -124,7 +129,25 @@ class Engine:
         self._emit("stop")
         self.broker.disconnect()
 
-    def flatten(self, reason: str) -> None:
+    def flatten(self, reason: str) -> FlattenReport:
+        """Close everything, count what actually closed, and say so out loud.
+
+        Three rules this path exists to enforce:
+
+        1. Never raise. A circuit breaker that dies mid sweep leaves exposure open
+           and skips the halt. Every broker call here is contained, and the sweep
+           finishes even when one leg fails.
+        2. Never trust a flag. RETCODE_OK admits DONE_PARTIAL, so completeness is
+           decided by comparing filled volume against the volume requested, and then
+           cross-checked against a fresh post-sweep read. Two instruments; either one
+           can add a survivor, neither can remove one.
+        3. COULD NOT MEASURE is INCOMPLETE. An unreadable broker response on a
+           flatten is residual exposure until proven otherwise, never a clean sweep.
+
+        `halted` is set regardless of the outcome: a failed flatten must still stop
+        new entries. The bug this fixes was the silence, not the halt. Survivors are
+        never folded into `_seen_pos`, so `_detect_fills` alerts on them again.
+        """
         desk = getattr(self, "desk", None)
         if desk is not None:
             clearer = getattr(desk, "_clear_pending", None)
@@ -132,15 +155,143 @@ class Engine:
                 clearer("confirm_cancel")
             else:
                 desk.pending = None
-        for order in list(self.broker.orders(magic=self.cfg.risk.magic)):
-            self.broker.cancel(order.ticket)
-        for pos in list(self.broker.positions(magic=self.cfg.risk.magic)):
-            self._close(pos, reason)
+
+        magic = self.cfg.risk.magic
+
+        orders_before, orders_readable = self._read_working(magic)
+        requested_orders = [o.ticket for o in orders_before]
+        cancelled: set[int] = set()
+        for ticket in requested_orders:
+            try:
+                result = self.broker.cancel(ticket)
+            except (RuntimeError, OSError, ValueError) as exc:
+                self._emit("cancel_failed", ticket=ticket, reason=reason, error=str(exc))
+                continue
+            if result.ok:
+                cancelled.add(ticket)
+            else:
+                self._emit(
+                    "cancel_failed",
+                    ticket=ticket,
+                    reason=reason,
+                    retcode=result.retcode,
+                    comment=result.comment,
+                )
+
+        positions_before, positions_readable = self._read_open(magic)
+        requested = [p.ticket for p in positions_before]
+        confirmed: set[int] = set()
+        residual: set[int] = set()
+        for pos in positions_before:
+            # Snapshot the requested volume BEFORE the close. Position is a mutable
+            # dataclass and PaperBroker hands out live references, so a partial close
+            # rewrites pos.volume in place; comparing against it afterwards would make
+            # every partial look complete.
+            asked = pos.volume
+            try:
+                result = self._close(pos, reason)
+            except (RuntimeError, OSError, ValueError) as exc:
+                self._emit(
+                    "close_failed",
+                    ticket=pos.ticket,
+                    symbol=pos.symbol,
+                    reason=reason,
+                    error=str(exc),
+                )
+                continue
+            if not result.ok:
+                continue
+            if result.volume + _VOLUME_EPS >= asked:
+                confirmed.add(pos.ticket)
+            else:
+                # DONE_PARTIAL, or any ok result that filled short. Residual exposure.
+                residual.add(pos.ticket)
+                self._emit(
+                    "close_partial",
+                    ticket=pos.ticket,
+                    symbol=pos.symbol,
+                    reason=reason,
+                    requested=asked,
+                    filled=result.volume,
+                    retcode=result.retcode,
+                )
+
         self._scale_outs.clear()
+        # Set before the verification reads: the halt must survive a failing broker.
         self.halted = True
-        self._seen_pos = {
-            p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
+
+        open_after_list, open_readable = self._read_open(magic)
+        working_after_list, working_readable = self._read_working(magic)
+        open_after = {p.ticket for p in open_after_list}
+        working_after = {o.ticket for o in working_after_list}
+        measured = (
+            positions_readable and orders_readable and open_readable and working_readable
+        )
+
+        if measured:
+            survivors = open_after | residual
+            closed_elsewhere = set(requested) - confirmed - residual - open_after
+            order_survivors = working_after
+            orders_gone = set(requested_orders) - cancelled - working_after
+        else:
+            # COULD NOT MEASURE. The broker whose read just failed is the same broker
+            # that claimed those closes, so a volume confirmation from it is not
+            # evidence either. Every requested ticket is treated as still open; the
+            # count is an upper bound and the alert says so.
+            survivors = set(requested) | open_after
+            closed_elsewhere = set()
+            order_survivors = set(requested_orders) | working_after
+            orders_gone = set()
+
+        # A survivor is never marked already-seen; _detect_fills must re-announce it.
+        self._seen_pos = open_after - survivors
+
+        report = FlattenReport(
+            reason=reason,
+            positions_requested=len(requested),
+            positions_confirmed_closed=len(confirmed),
+            positions_closed_elsewhere=len(closed_elsewhere),
+            survivors=tuple(sorted(survivors)),
+            residual=tuple(sorted(residual)),
+            orders_requested=len(requested_orders),
+            orders_confirmed_cancelled=len(cancelled),
+            orders_gone_elsewhere=len(orders_gone),
+            order_survivors=tuple(sorted(order_survivors)),
+            measured=measured,
+        )
+        fields = {
+            "reason": reason,
+            "requested": report.positions_requested,
+            "confirmed_closed": report.positions_confirmed_closed,
+            "closed_elsewhere": report.positions_closed_elsewhere,
+            "survivor_count": report.survivor_count,
+            "survivors": list(report.survivors),
+            "residual": list(report.residual),
+            "orders_requested": report.orders_requested,
+            "orders_cancelled": report.orders_confirmed_cancelled,
+            "order_survivors": list(report.order_survivors),
+            "measured": report.measured,
+            "complete": report.complete,
         }
+        self._emit("flatten", **fields)
+        if not report.complete:
+            self._emit("flatten_incomplete", **fields)
+        return report
+
+    def _read_open(self, magic: int) -> tuple[list[Position], bool]:
+        """Positions, plus whether the read succeeded. Unreadable is not empty."""
+        try:
+            return list(self.broker.positions(magic=magic)), True
+        except (RuntimeError, OSError, ValueError) as exc:
+            self._emit("positions_read_failed", error=str(exc))
+            return [], False
+
+    def _read_working(self, magic: int) -> tuple[list[PendingOrder], bool]:
+        try:
+            return list(self.broker.orders(magic=magic)), True
+        except (RuntimeError, OSError, ValueError) as exc:
+            self._emit("orders_read_failed", error=str(exc))
+            return [], False
 
     def _apply_circuit(self, acct, now) -> bool:
         trip = self.risk.circuit(acct, now)
@@ -1144,6 +1295,39 @@ def _format_event(event: str, fields: dict[str, Any]) -> str:
         )
     if event == "halt":
         return f"HALT {fields.get('reason')} equity={fields.get('equity')}"
+    if event == "flatten":
+        # Journal-only: the denominator of a clean sweep needs a record, not a ping.
+        return ""
+    if event == "flatten_incomplete":
+        count = int(fields.get("survivor_count") or 0)
+        lines = [
+            f"FLATTEN INCOMPLETE: {count} still open (reason={fields.get('reason')})",
+            f"positions requested={fields.get('requested')} "
+            f"confirmed_closed={fields.get('confirmed_closed')} "
+            f"closed_elsewhere={fields.get('closed_elsewhere')}",
+        ]
+        survivors = list(fields.get("survivors") or [])
+        if survivors:
+            lines.append("still open: " + ", ".join(f"#{t}" for t in survivors))
+        residual = list(fields.get("residual") or [])
+        if residual:
+            lines.append(
+                "partial fill left residual volume on "
+                + ", ".join(f"#{t}" for t in residual)
+            )
+        orders = list(fields.get("order_survivors") or [])
+        if orders:
+            lines.append(
+                f"{len(orders)} working order(s) not cancelled: "
+                + ", ".join(f"#{t}" for t in orders)
+            )
+        if not fields.get("measured", True):
+            lines.append(
+                "COULD NOT MEASURE the post-sweep state; every requested ticket is "
+                "counted as still open (upper bound)"
+            )
+        lines.append("HALTED; no new entries. Check the terminal.")
+        return "\n".join(lines)
     if event == "order_check_fail":
         return f"order_check_fail {fields.get('symbol')} retcode={fields.get('retcode')}"
     if event == "pending":
