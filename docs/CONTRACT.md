@@ -234,5 +234,13 @@ Put `--config` before the subcommand.
 ## Gate
 
 `pytest` with `--cov-fail-under=80`.
-CI jobs are named `ci` and `coverage`.
+Required check names are `ci`, `coverage`, `CodeQL`. `ci` is an aggregator:
+it needs the python matrix (`ci-matrix`, ubuntu-latest and windows-latest x
+3.12/3.13) plus `agent-typecheck` and `agent-test`, and fails if any of them
+did not succeed -- a matrix or agent job failing has teeth at the merge gate
+without the org ruleset listing every leg by name.
 `tests/` must stay green.
+`agent/` must stay green: `npm run typecheck` and `npm test` in `agent/`.
+`agent/` tests run in workerd via `@cloudflare/vitest-pool-workers`, not node.
+The AI Gateway is the only hop the `agent/` suite replaces; it does so at the
+outbound-request boundary, so nothing in `agent/src/` is stubbed.
