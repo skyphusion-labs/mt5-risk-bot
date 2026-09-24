@@ -35,6 +35,18 @@ def _now() -> datetime:
     return datetime(2024, 1, 3, 12, 0, tzinfo=timezone.utc)  # Wednesday noon UTC
 
 
+def _cfg(tmp_path: Path, **kw) -> BotConfig:
+    """Keep the equity snapshot inside tmp_path.
+
+    RiskManager persists its snapshot beside cfg.journal_path (issue #7). With
+    the default relative path every test in this file would share one
+    ./journal.equity.json and read each other's peak.
+    """
+    cfg = BotConfig(**kw)
+    cfg.journal_path = str(tmp_path / "j.jsonl")
+    return cfg
+
+
 def test_parse_fx() -> None:
     assert parse_fx("EURUSD") == ("EUR", "USD")
     assert parse_fx("USDJPYm") == ("USD", "JPY")
@@ -60,7 +72,7 @@ def test_session_london_ny() -> None:
 
 def test_halt_file(tmp_path: Path) -> None:
     (tmp_path / "HALT").write_text("stop\n")
-    rm = RiskManager(BotConfig(), halt_dir=tmp_path)
+    rm = RiskManager(_cfg(tmp_path), halt_dir=tmp_path)
     d = rm.evaluate(
         account=_acct(),
         signal=_sig(),
@@ -72,8 +84,8 @@ def test_halt_file(tmp_path: Path) -> None:
     assert not d.allowed and d.halt and d.flatten
 
 
-def test_daily_loss_halt() -> None:
-    cfg = BotConfig()
+def test_daily_loss_halt(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
     rm = RiskManager(cfg)
     rm.observe(_acct(10_000), _now())
     d = rm.evaluate(
@@ -87,8 +99,8 @@ def test_daily_loss_halt() -> None:
     assert d.halt and d.reason == "daily_loss"
 
 
-def test_drawdown_halt() -> None:
-    cfg = BotConfig()
+def test_drawdown_halt(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path)
     rm = RiskManager(cfg)
     day1 = _now()
     day2 = datetime(2024, 1, 4, 12, 0, tzinfo=timezone.utc)
@@ -105,8 +117,8 @@ def test_drawdown_halt() -> None:
     assert d.halt and d.reason == "max_drawdown"
 
 
-def test_live_blocked_without_flag() -> None:
-    cfg = BotConfig(mode="mt5", live_accepted=False)
+def test_live_blocked_without_flag(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, mode="mt5", live_accepted=False)
     rm = RiskManager(cfg)
     d = rm.evaluate(
         account=_acct(trade_mode=2),
@@ -119,8 +131,8 @@ def test_live_blocked_without_flag() -> None:
     assert not d.allowed and d.reason == "live_not_accepted"
 
 
-def test_live_blocked_without_flag_mt4() -> None:
-    cfg = BotConfig(mode="mt4", live_accepted=False)
+def test_live_blocked_without_flag_mt4(tmp_path: Path) -> None:
+    cfg = _cfg(tmp_path, mode="mt4", live_accepted=False)
     rm = RiskManager(cfg)
     d = rm.evaluate(
         account=_acct(trade_mode=2),
@@ -134,7 +146,7 @@ def test_live_blocked_without_flag_mt4() -> None:
 
 
 def test_operator_halt_clears_file_not_drawdown(tmp_path: Path) -> None:
-    cfg = BotConfig()
+    cfg = _cfg(tmp_path)
     cfg.risk.halt_file = str(tmp_path / "HALT")
     rm = RiskManager(cfg, halt_dir=tmp_path)
     day1 = _now()
@@ -159,8 +171,8 @@ def test_operator_halt_clears_file_not_drawdown(tmp_path: Path) -> None:
     assert not rm.halt_path().exists()
 
 
-def test_rr_and_size_ok() -> None:
-    rm = RiskManager(BotConfig())
+def test_rr_and_size_ok(tmp_path: Path) -> None:
+    rm = RiskManager(_cfg(tmp_path))
     d = rm.evaluate(
         account=_acct(),
         signal=_sig(),

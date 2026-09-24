@@ -1,8 +1,25 @@
 """Account-level risk gates. Strategy does not size or send; this module does.
 
 A halt (daily loss, max drawdown, kill file) is sticky until the next UTC day
-for daily loss, and until the operator clears the halt file / restarts after
-drawdown. The engine is expected to flatten when flatten=True.
+for daily loss, and until the operator clears the halt file after drawdown. The
+engine is expected to flatten when flatten=True.
+
+Restart does NOT clear a halt, because it does not clear the state the halt is
+computed from. The `EquitySnapshot` persists beside the journal (see
+`state.py`): `day_start_equity` is keyed on `day_key`, so a genuine new UTC day
+resets the loss budget and the same day does not, and `peak_equity` outlives the
+process so the drawdown gate does not read zero after a crash. Every gate still
+recomputes its verdict from the snapshot on every call; what is persisted is the
+INPUT to that recomputation, never the verdict.
+
+Two extra halt reasons come out of that persistence, and both fail CLOSED,
+because a money gate that cannot measure must not trade:
+
+- `state_unreadable`: the snapshot exists but is corrupt, truncated, mistyped or
+  from an unknown version. The file is left untouched for the operator; clearing
+  it is a deliberate act that also resets the peak.
+- `state_unwritable`: the snapshot could not be written, so the next restart
+  would lose it.
 """
 
 from __future__ import annotations
@@ -24,6 +41,13 @@ from mt5_risk_bot.models import (
     Tick,
 )
 from mt5_risk_bot.sizing import lots_for_risk, money_per_lot_at_stop
+from mt5_risk_bot.state import (
+    StateUnreadable,
+    StateUnwritable,
+    load_snapshot,
+    save_snapshot,
+    snapshot_path_for,
+)
 
 
 def parse_fx(symbol: str) -> tuple[str, str] | None:
@@ -97,9 +121,21 @@ def day_key(ts: datetime) -> str:
 
 
 class RiskManager:
-    def __init__(self, cfg: BotConfig, *, halt_dir: str | Path = ".") -> None:
+    def __init__(
+        self,
+        cfg: BotConfig,
+        *,
+        halt_dir: str | Path = ".",
+        state_path: str | Path | None = None,
+    ) -> None:
         self.cfg = cfg
         self.halt_dir = Path(halt_dir)
+        self.state_path = (
+            Path(state_path)
+            if state_path is not None
+            else snapshot_path_for(cfg.journal_path)
+        )
+        self.state_error = ""
         self.snapshot = EquitySnapshot(
             time=0,
             balance=cfg.initial_balance,
@@ -110,6 +146,33 @@ class RiskManager:
         )
         self._halted = False
         self._halt_reason = ""
+        self._restore_state()
+
+    def _restore_state(self) -> None:
+        """Load the persisted snapshot. Absent is clean; unreadable is closed."""
+        try:
+            restored = load_snapshot(self.state_path)
+        except StateUnreadable as exc:
+            # COULD NOT MEASURE. Not a clean state, and not a default. Refuse to
+            # trade and leave the file alone so the operator can look at it.
+            self.state_error = str(exc)
+            self._halted = True
+            self._halt_reason = "state_unreadable"
+            return
+        if restored is not None:
+            self.snapshot = restored
+
+    def _persist_state(self) -> None:
+        """Write the snapshot. A write failure halts; it is a measurement loss."""
+        if self._halt_reason == "state_unreadable":
+            return  # the unreadable file is evidence; do not clobber it
+        try:
+            save_snapshot(self.state_path, self.snapshot)
+        except StateUnwritable as exc:
+            self.state_error = str(exc)
+            if not self._halted:
+                self._halted = True
+                self._halt_reason = "state_unwritable"
 
     def halt_path(self) -> Path:
         p = Path(self.cfg.risk.halt_file)
@@ -144,7 +207,13 @@ class RiskManager:
             return self._halt_reason
         return ""
 
+    def _durable(self) -> tuple[str, float, float]:
+        """The three fields a restart must not lose."""
+        s = self.snapshot
+        return (s.day_key, s.day_start_equity, s.peak_equity)
+
     def observe(self, account: Account, now: datetime) -> None:
+        before = self._durable()
         key = day_key(now)
         if self.snapshot.day_key != key:
             self.snapshot.day_start_equity = account.equity
@@ -157,6 +226,11 @@ class RiskManager:
         self.snapshot.equity = account.equity
         if account.equity > self.snapshot.peak_equity:
             self.snapshot.peak_equity = account.equity
+        if self._durable() != before:
+            # Persist on every evaluation that MOVES the snapshot, not only on a
+            # halt: a file written only at the halt has already lost the peak the
+            # drawdown gate needs.
+            self._persist_state()
 
     def _halt(self, reason: str, flatten: bool = True) -> RiskDecision:
         self._halted = True
@@ -166,7 +240,9 @@ class RiskManager:
     def circuit_reason(self, account: Account, now: datetime) -> str:
         """Why a new entry would be refused. Empty if the circuit is clear.
 
-        Does not set halt state or flatten.
+        Does not trip daily_loss / max_drawdown and does not flatten. It can
+        report and latch `state_unwritable`, because that is a real measurement
+        failure discovered while reading, not a verdict about the market.
         """
         self.observe(account, now)
         r = self.cfg.risk

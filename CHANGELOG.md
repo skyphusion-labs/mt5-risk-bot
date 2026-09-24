@@ -4,6 +4,19 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.1.3
+
+Restart no longer restores the permissive state and discards the protective one (issue #7).
+
+- Risk state persists to `journal.equity.json` next to the journal: `day_key`, `day_start_equity`, and `peak_equity`. `start` reads it back. A restart inside the same UTC day does not hand out a new loss budget, and the drawdown gate does not read a zeroed peak. A genuine new UTC day still resets the daily budget; the peak is not daily.
+- The snapshot is written whenever one of those three fields moves, not only at a halt. A file written only at the halt has already lost the peak.
+- The write is atomic (temp file, fsync, rename). A kill mid-write cannot leave a truncated file.
+- What is persisted is the INPUT the gates recompute from, never a stored verdict. No halt is made sticky by this file.
+- A corrupt, truncated, mistyped, non-finite, or newer-version snapshot halts with reason `state_unreadable` and the file is left alone for inspection. A snapshot that cannot be written halts with reason `state_unwritable`. Both are COULD NOT MEASURE and both fail closed; neither is treated as a clean start.
+- To reset the peak, stop the bot and delete `journal.equity.json`. Point the bot at a different account and delete it too.
+- Two new journal events: `live_not_restored` and `risk_state_error`. `/risk` also prints the state error, so COULD NOT MEASURE is visible at start and in chat, not only at the first refusal.
+- `live_accepted` is now PER PROCESS. `start` never arms real money from a `live_on` journal record; it writes `live_not_restored` and `/live` says arming was not restored. Re-arm with `/live on I-ACCEPT-RISK`. A crash loop can no longer keep real money armed from a `/live on` typed weeks earlier.
+
 ## 1.1.2
 
 - Tests compare paths with `pathlib.Path`, not slash strings. Windows `\tmp\...` vs `/tmp/...` is not a failure.

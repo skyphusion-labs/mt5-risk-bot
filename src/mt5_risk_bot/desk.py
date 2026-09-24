@@ -85,8 +85,20 @@ class Desk:
         self.advisor = advisor
         self.pending: Pending | None = None
         self.approve_always = False
+        self.live_expired = False
 
     def restore_from_journal(self, journal: object, now: float | None = None) -> None:
+        """Restore the desk's chat state. Never the real-money arm.
+
+        `live_accepted` is PER PROCESS. A journal replay must not be able to arm
+        real money, so a `live_on` record is reported and then declined: the
+        operator re-types `/live on I-ACCEPT-RISK` in this process or nothing is
+        armed. Per UTC day was the weaker reading and it still lets a crash loop
+        at 00:01 UTC hold real money armed all day with nobody watching.
+
+        The decline is never silent: it goes to the journal as `live_not_restored`
+        and `/live` says so until the operator re-arms.
+        """
         last_fn = getattr(journal, "last_event", None)
         if not callable(last_fn):
             return
@@ -96,9 +108,8 @@ class Desk:
             self.approve_always = True
         live = last_fn("live_on", "live_off")
         if isinstance(live, dict) and live.get("event") == "live_on":
-            cfg = getattr(self.engine, "cfg", None)
-            if cfg is not None:
-                cfg.live_accepted = True
+            self.live_expired = True
+            self._write_confirm("live_not_restored", scope="process")
         if not isinstance(rec, dict) or rec.get("event") != "confirm_stage":
             return
         stamp = time.time() if now is None else now
@@ -112,15 +123,19 @@ class Desk:
         if pending is not None:
             self.pending = pending
 
-    def _write_confirm(self, event: str, pending: Pending | None = None) -> None:
-        fields: dict = {}
+    def _write_confirm(
+        self, event: str, pending: Pending | None = None, **extra: object
+    ) -> None:
+        fields: dict = dict(extra)
         if pending is not None:
-            fields = {
-                "volume": pending.volume,
-                "source": pending.source,
-                "expires_at": pending.expires_at,
-                "close_ticket": pending.close_ticket,
-            }
+            fields.update(
+                {
+                    "volume": pending.volume,
+                    "source": pending.source,
+                    "expires_at": pending.expires_at,
+                    "close_ticket": pending.close_ticket,
+                }
+            )
             if pending.signal is not None:
                 fields["signal"] = pending.signal
         emit = getattr(self.engine, "_emit", None)
@@ -525,6 +540,7 @@ class Desk:
         if raw.upper() == "ON I-ACCEPT-RISK":
             if cfg is not None:
                 cfg.live_accepted = True
+            self.live_expired = False
             self._write_confirm("live_on")
             return (
                 "live armed. real-money sends allowed if the terminal is "
@@ -534,11 +550,17 @@ class Desk:
         if raw.lower() == "off":
             if cfg is not None:
                 cfg.live_accepted = False
+            self.live_expired = False
             self._write_confirm("live_off")
             return "live disarmed. real-money sends refused until /live on I-ACCEPT-RISK"
         if raw.lower() == "on":
             return "usage: /live on I-ACCEPT-RISK"
         armed = bool(cfg and getattr(cfg, "live_accepted", False))
+        if not armed and self.live_expired:
+            return (
+                "live=off. the journal has an older /live on; arming is per "
+                "process and was not restored. /live on I-ACCEPT-RISK to re-arm"
+            )
         return f"live={'on' if armed else 'off'}"
 
     def _approve(self, args: str) -> str:
