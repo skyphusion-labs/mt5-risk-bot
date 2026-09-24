@@ -512,6 +512,10 @@ It carries `requested`, `confirmed_closed`, `closed_elsewhere`, `survivor_count`
 Grep `flatten_incomplete` after any halt.
 `close_partial` means the broker filled less volume than asked.
 That is residual risk, not a close.
+`order_check_fail` carries `reason`: `broker_refused` means the venue rejected
+the pre-trade check, `not_measured` means the venue returned nothing, so the
+check never ran and the order was NOT sent. `not_measured` with `retcode=-1` is
+an IPC or bridge fault, not a trading decision; check the terminal link.
 Grep `reject` if it never trades.
 `outside_session` and `no_regime` are the usual reasons.
 `reconnect` is an MT5 IPC drop then `initialize`.

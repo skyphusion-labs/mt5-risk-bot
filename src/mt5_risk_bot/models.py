@@ -187,6 +187,26 @@ class OrderResult:
 
         return self.retcode in RETCODE_OK
 
+    @property
+    def measured(self) -> bool:
+        """True when the broker actually answered.
+
+        False means the call produced no result, so nothing was measured and
+        neither `ok` nor `retcode` carries a verdict. A caller that gates on a
+        pre-trade check must abort on this, because an unmeasured check is not
+        a passed check.
+        """
+        from mt5_risk_bot.constants import RETCODE_UNKNOWN
+
+        return self.retcode != RETCODE_UNKNOWN
+
+    @classmethod
+    def unknown(cls, comment: str, request: dict[str, Any] | None = None) -> OrderResult:
+        """No result came back: COULD NOT MEASURE, never PASSED."""
+        from mt5_risk_bot.constants import RETCODE_UNKNOWN
+
+        return cls(retcode=RETCODE_UNKNOWN, comment=comment, request=request or {})
+
     @classmethod
     def unchanged(cls) -> OrderResult:
         from mt5_risk_bot.constants import TRADE_RETCODE_DONE
