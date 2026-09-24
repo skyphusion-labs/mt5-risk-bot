@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "mt5-risk-bot"
-version = "1.1.7"
+version = "1.2.0"
 description = "Risk-first MetaTrader desk. Paper by default. No profit guarantee."
 readme = "README.md"
 requires-python = ">=3.12"
