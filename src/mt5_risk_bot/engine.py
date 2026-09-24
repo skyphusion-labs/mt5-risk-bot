@@ -514,6 +514,12 @@ class Engine:
             positions=positions,
             now=now,
         )
+        if decision.excluded_from_currency_limit:
+            self.journal.write(
+                "currency_limit_not_applicable",
+                symbol=symbol,
+                excluded=list(decision.excluded_from_currency_limit),
+            )
         if not decision.allowed:
             # journal.write, never _emit: a refusal is not broadcast to chat.
             # source and stage are what let one reject event name every path

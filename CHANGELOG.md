@@ -208,6 +208,16 @@ The MT4 symbol reader no longer fabricates values it never measured (issue #30, 
 - The Expert now serialises `volume_min`, `volume_max`, `volume_step` and `tick_value` with 8 decimals instead of 2 and 4. A 0.001 lot step used to arrive as `0.00` and refuse every order with no explanation. This removes TRUNCATION as a producer of zero; it does not remove zero itself, and that one is still a refusal.
 - `docs/MT4.md` now states field by field what MT4 can and cannot supply, and says outright that MT4 has one tick value by design, so the loss-leg field is not re-proposed.
 
+Currency-exposure limit: confirm the pair, or say the limit does not apply (issue #10).
+
+- The pair is the first six alphabetic characters after non-alphabetic characters are dropped, and BOTH halves must be recognised currency codes (ISO 4217 plus the metal codes ISO assigns, so `XAUUSD` and `XAGUSD` parse). The table CONFIRMS a pair; it never refuses a trade.
+- Pairs whose base or quote contains an M now parse. `USDMXN`, `MXNJPY`, `EURMXN`, `GBPMXN` and `CADMXN` previously did not, so those positions were absent from the per-currency limit.
+- Every vendor suffix convention resolves (`EURUSDm`, `EURUSD.a`, `EURUSD_i`, `EURUSDmicro`, `EURUSD-5`), and so does a separator inside the pair (`EUR.USD`, `EUR/USD`).
+- One rule, two outcomes. If either half is not a recognised code, or six alphabetic characters do not exist, the limit DOES NOT APPLY: the trade is ALLOWED and the exclusion is recorded as `currency_limit_not_applicable` with the excluded symbols. That covers an instrument that cannot be a pair (`US30`, `USOIL`, `GER40.cash`), decoration that hides the pair (`FXEURUSD`, `mEURUSD`), and a code missing from the table.
+- There is no third state. Cannot-tell and is-not-FX get the same treatment, because the honest answer to both is the same: do not pretend to measure currency exposure, do not block the trade, make the exclusion visible.
+- Not applicable is never silent. Silence was the original defect.
+- A code missing from the table degrades to allowed-and-recorded, never to refused, so completeness is desirable rather than a safety property. Crypto codes are not in the table, so `BTCUSD` is recorded as excluded.
+- `currency_exposure` raises for a symbol that is not an FX pair, so the silent skip cannot be reintroduced by a future caller. `evaluate` classifies first, so the `exposure_unmeasured` refusal is a tripwire against caller/classifier divergence and cannot fire from a broker symbol. A non-FX position contributes nothing to currency exposure, which is correct rather than an underestimate.
 
 ## 1.3.0
 

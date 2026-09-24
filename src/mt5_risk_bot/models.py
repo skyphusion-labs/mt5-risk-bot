@@ -405,6 +405,7 @@ class RiskDecision:
     volume: float = 0.0
     halt: bool = False
     flatten: bool = False
+    excluded_from_currency_limit: tuple[str, ...] = ()
 
 
 @dataclass

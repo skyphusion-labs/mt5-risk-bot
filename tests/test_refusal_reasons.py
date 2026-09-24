@@ -85,10 +85,11 @@ REASONS = (
     "size_zero",
     "size_exceeds_risk",
     "max_trades_per_day",
+    "exposure_unmeasured",
 )
 
 # Not reachable through any public RiskManager call. See the module docstring.
-UNREACHABLE = ("halted",)
+UNREACHABLE = ("halted", "exposure_unmeasured")
 
 
 def _acct(equity: float = 10_000, **kw) -> Account:
@@ -854,3 +855,32 @@ def test_a_wiped_account_is_refused_before_the_margin_ratio(tmp_path: Path) -> N
         )
         assert d.halt, "a gate that cannot measure must fail closed"
 
+
+
+def test_exposure_unmeasured_is_a_tripwire_not_a_gate(tmp_path: Path) -> None:
+    """currency_exposure raises, but evaluate never hands it a non-FX symbol.
+
+    The raise is what stops a future caller reintroducing the silent skip of
+    issue #10. evaluate classifies first and passes only confirmed pairs, so
+    no broker symbol can reach the except branch. Asserted by measurement:
+    currency_exposure still refuses when called directly, while a book full of
+    non-FX instruments is ALLOWED and recorded rather than refused. If a
+    non-FX position ever tripped this, one open index would block every
+    subsequent trade.
+    """
+    from mt5_risk_bot.risk import UnclassifiedSymbol, currency_exposure
+
+    with pytest.raises(UnclassifiedSymbol):
+        currency_exposure([], extra=("US30", Side.BUY))
+
+    cfg = _cfg(tmp_path)
+    cfg.risk.max_positions = 9
+    rm = RiskManager(cfg, halt_dir=tmp_path)
+    rm.observe(_acct(10_000), WED_NOON)
+    book = [
+        Position(1, "US30", Side.BUY, 0.1, 1.1, 1.09, 1.12, 1.1, 0, magic=cfg.risk.magic),
+        Position(2, "USOIL", Side.BUY, 0.1, 1.1, 1.09, 1.12, 1.1, 0, magic=cfg.risk.magic),
+    ]
+    d = _gate(rm, positions=book)
+    assert d.reason != "exposure_unmeasured"
+    assert d.allowed, d.reason
