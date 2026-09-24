@@ -9,18 +9,32 @@ REASONS is the denominator. It is asserted against the literals actually
 present in risk.py, so adding a reason to the module without adding a case
 here fails the suite instead of quietly lowering the count.
 
-Two reasons cannot be produced by RiskManager at all, and that is a finding,
-not a gap to paper over. Both are pinned by a test that FAILS if they ever
-become reachable, so the roster cannot rot into a test against dead code:
+One reason cannot be produced by RiskManager at all, and that is a finding,
+not a gap to paper over. It is pinned by a test that FAILS if it ever becomes
+reachable, so the roster cannot rot into a test against dead code:
 
-- `size_exceeds_risk` (risk.py:347) is dominated by `size_zero`.
-  `lots_for_risk` already refuses the identical condition with a TIGHTER
-  tolerance (1e-9 against the gate own 1e-6) and returns 0 lots, which the
-  preceding branch reports as `size_zero`. See
-  test_size_exceeds_risk_is_dominated_by_size_zero.
 - `halted` (risk.py:252) is an `or` fallback for a halted manager with an
   empty reason. Every site that sets the halt flag also sets a reason, so no
   public call can produce it. See test_halted_fallback_is_unreachable.
+
+`size_exceeds_risk` was the second one and is not unreachable any more.
+Issue #55 gave the gate a cap the sizer cannot compute, the room left before
+the daily-loss and drawdown halts, taken from the persisted snapshot, so the
+line fires on real inputs. The pin that held it dead,
+test_size_exceeds_risk_is_dominated_by_size_zero, is GONE ON PURPOSE and is
+replaced below by a case that names the reason. An assertion flipped quietly
+is the thing this repo hunts; this one was flipped deliberately, in the PR
+that made the line reachable, and it is named in that PR.
+
+That pin carries its own lesson, recorded here because it is the same mistake
+in a different place: it did NOT fail when the guard became reachable. It
+re-implemented the guard's old arithmetic from lots_for_risk instead of
+calling evaluate, so what it actually measured was the SIZER, which still
+behaves exactly as it did. A pin on a dead line has to call the line.
+
+The sweep, the case where the gate refuses a size the sizer allowed, and the
+proof that the disagreement comes from state the sizer never sees are in
+tests/test_size_guard.py.
 """
 
 from __future__ import annotations
@@ -35,7 +49,7 @@ from mt5_risk_bot.broker.paper import PaperBroker, default_spec
 from mt5_risk_bot.config import BotConfig
 from mt5_risk_bot.models import Account, Position, Side, Signal, SignalKind, Tick
 from mt5_risk_bot.risk import RiskManager
-from mt5_risk_bot.sizing import lots_for_risk, money_per_lot_at_stop
+from mt5_risk_bot.sizing import lots_for_risk
 from mt5_risk_bot.state import snapshot_path_for
 from mt5_risk_bot.synthetic import generate_bars
 from mt5_risk_bot.telegram import TgCommand
@@ -73,7 +87,7 @@ REASONS = (
 )
 
 # Not reachable through any public RiskManager call. See the module docstring.
-UNREACHABLE = ("halted", "size_exceeds_risk")
+UNREACHABLE = ("halted",)
 
 
 def _acct(equity: float = 10_000, **kw) -> Account:
@@ -149,6 +163,7 @@ def test_roster_covers_every_reason_in_the_module() -> None:
     stale = set(REASONS) - found
     assert not stale, "roster names reasons risk.py no longer has: " + repr(sorted(stale))
     assert len(REASONS) == len(set(REASONS)) == 20
+    assert set(UNREACHABLE) <= set(REASONS), "UNREACHABLE names a reason the roster does not"
 
 
 # --- 1. the halt family: reasons that come out of circuit() -----------------
@@ -415,53 +430,48 @@ def test_size_zero_names_the_reason(tmp_path: Path) -> None:
     assert d.volume == 0
 
 
-# --- 3. the two reasons RiskManager cannot produce, pinned as findings ------
+# --- 3. the last-line size guard, and the one reason still unreachable -----
 
 
-def test_size_exceeds_risk_is_dominated_by_size_zero(tmp_path: Path) -> None:
-    """risk.py:347 cannot fire. This test FAILS the day it can.
+def test_size_exceeds_risk_names_the_reason(tmp_path: Path) -> None:
+    """The last-line size guard, refusing a size the sizer was content with.
 
-    The last-line size guard recomputes exactly what lots_for_risk already
-    checked, from the same entry, stop and spec, but with a LOOSER tolerance:
+    Issue #55. This line used to recompute the cap lots_for_risk had already
+    applied, from the inputs lots_for_risk had already been given, with a
+    LOOSER tolerance, so nothing could reach it in a state it would refuse. It
+    now also measures the volume against the room left before the daily-loss
+    and drawdown halts, which comes from the persisted snapshot the sizer is
+    never given.
 
-        lots_for_risk:  actual_risk > budget * mrm + 1e-9  -> return 0 lots
-        risk.py:346:    worst       > budget * mrm + 1e-6  -> size_exceeds_risk
+    Here a per-trade risk of 0.5% of equity meets a daily loss budget of 0.1%
+    of what the day opened at. The sizer returns a real volume and is content
+    with it; one full stop-out on that volume would take the account straight
+    through the daily-loss halt, which has not tripped, so the gate refuses.
 
-    worst IS actual_risk, so anything that would trip the outer guard has
-    already been turned into 0 lots by the tighter inner one, and the
-    preceding branch reports it as size_zero. size_exceeds_risk is therefore
-    unreachable through RiskManager, which is why #11 could not find a way to
-    see it red: there is none. The reason string is still live in the
-    product, but only from engine.py, on the /replace path, which does not
-    call lots_for_risk at all (see the engine test below).
-
-    Reported, NOT fixed: collapsing the two guards is a change to a
-    real-money sizing path and belongs in its own reviewed issue.
+    The sweep and the independence experiment are in tests/test_size_guard.py.
     """
-    spec = default_spec("EURUSD")
-    cases = [
-        (10_000.0, 0.005, 1.0),
-        (100.0, 0.005, 1.0),
-        (1_000_000.0, 0.5, 2.0),
-        (10_000.0, 1.0, 1e-09),
-        (1.0, 1e-06, 1e06),
-    ]
-    reached = 0
-    for equity, risk_pct, mrm in cases:
-        for sl in (1.095, 1.0999, 1.05, 0.5):
-            entry = 1.10
-            lots = lots_for_risk(equity, risk_pct, entry, sl, spec, max_risk_multiple=mrm)
-            if lots <= 0:
-                continue  # risk.py returns size_zero before reaching line 346
-            reached += 1
-            worst = money_per_lot_at_stop(entry, sl, spec) * lots
-            cap = equity * risk_pct * mrm
-            assert worst <= cap + 1e-06, (
-                "risk.py:347 size_exceeds_risk became REACHABLE; it now needs a"
-                " real test and this pin must be replaced: "
-                + repr((equity, risk_pct, mrm, sl, lots, worst, cap))
-            )
-    assert reached >= 5, "the pin measured nothing; no case got past size_zero"
+    cfg = _cfg(tmp_path)
+    cfg.risk.daily_loss_pct = 0.001
+    rm = RiskManager(cfg, halt_dir=tmp_path)
+    acct = _acct(10_000)
+    rm.observe(acct, WED_NOON)
+    sig = _sig()
+
+    lots = lots_for_risk(
+        acct.equity,
+        cfg.risk.risk_pct,
+        sig.entry,
+        sig.sl,
+        default_spec("EURUSD"),
+        max_risk_multiple=cfg.risk.max_risk_multiple,
+    )
+    assert lots > 0, "the sizer must ALLOW here, or this case proves nothing"
+    assert rm.circuit_reason(acct, WED_NOON) == "", "the circuit must still be clear"
+
+    d = _gate(rm, account=acct, signal=sig)
+    assert d.allowed is False
+    assert d.reason == "size_exceeds_risk"
+    assert d.volume == 0
 
 
 def test_halted_fallback_is_unreachable(tmp_path: Path) -> None:
@@ -570,6 +580,8 @@ def _engine(tmp_path: Path, **kw) -> Engine:
     cfg.risk.halt_file = str(tmp_path / "HALT")
     if "risk_pct" in kw:
         cfg.risk.risk_pct = kw["risk_pct"]
+    if "daily_loss_pct" in kw:
+        cfg.risk.daily_loss_pct = kw["daily_loss_pct"]
     if "max_currency_exposure" in kw:
         cfg.risk.max_currency_exposure = kw["max_currency_exposure"]
     if "max_positions" in kw:
@@ -623,6 +635,26 @@ def test_size_zero_is_journaled_with_the_name(tmp_path: Path) -> None:
     rec = _reject(engine)
     assert rec["reason"] == "size_zero"
     assert rec["source"] == "telegram"
+    engine.stop()
+
+
+def test_size_exceeds_risk_is_journaled_with_the_name(tmp_path: Path) -> None:
+    """The same refusal as an operator receives it: a structured record.
+
+    A daily loss budget of 0.1% against a per-trade risk of 0.5%. The desk
+    sizes the order, the last-line guard refuses it, and what lands in the
+    journal is the NAMED reason rather than a line of prose in a chat. Before
+    issue #55 no input could produce this record at all.
+    """
+    engine = _engine(tmp_path, daily_loss_pct=0.001)
+    engine.start()
+    reply = engine.handle_command(TgCommand("1", 1, "/buy EURUSD", 1))
+    assert reply == "refused: size_exceeds_risk"
+    rec = _reject(engine)
+    assert rec["reason"] == "size_exceeds_risk"
+    assert rec["source"] == "telegram"
+    assert rec["stage"] == "stage"
+    assert rec["symbol"] == "EURUSD"
     engine.stop()
 
 
