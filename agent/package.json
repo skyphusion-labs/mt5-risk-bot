@@ -12,7 +12,7 @@
   "dependencies": {
     "@ai-sdk/openai": "^3.0.0",
     "@cloudflare/computer": "^0.3.1",
-    "ai": "^6.0.196",
+    "ai": "^7.0.108",
     "zod": "^4.6.5"
   },
   "devDependencies": {
