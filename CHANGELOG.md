@@ -4,12 +4,22 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
-## 1.3.0
+## 1.4.0
 
 - Agent: the `/ask` `session` key is validated input. It must be present and a JSON string of 1 to 64 characters, from letters, digits, dot, underscore, and hyphen. A non-string is refused instead of being converted, and an absent or empty key is refused instead of falling back. A refused key gets `400 {"error":"invalid session"}`, and the agent builds no workspace for it (GHSA-q6m5-q538-8g32).
 - Agent: a non-POST `/ask` answers `405 {"error":"POST only"}` from the Worker. Same status and body as before; it is decided before any workspace is addressed.
 - Agent: optional `ADVICE_SESSIONS` pins the served keys to a comma-separated list. Unset by default. Set with no usable entry serves nobody.
 - The bot posts the Telegram chat id, which fits the rule, so the desk needs no change. A hand-made caller that sent a number, an empty key, or a key with spaces, separators or unicode must send a conforming one.
+
+## 1.3.0
+
+Sender-level authorization for Telegram commands (GHSA-9fg6-2x5f-3jvp).
+
+- `TELEGRAM_ALLOW_SENDERS`, or `telegram.allow_senders` in `config.toml`, lists the Telegram sender ids that may command the desk. Every inbound command is checked against it, read-only commands included. A comma separates ids in the environment variable.
+- An update whose sender cannot be read is refused. An identity that was not measured is not an authorized one.
+- A group, supergroup, or channel chat id is negative. On a negative chat id with an empty allow-list, `run` and `doctor` exit non-zero instead of starting.
+- An empty allow-list on a private chat id is unchanged behaviour. An existing single-operator deployment needs no config edit.
+- A refused command is journaled as `command_rejected` with the sender id, the chat id, and the command name. It is never answered in chat.
 
 ## 1.2.0
 

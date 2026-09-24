@@ -108,8 +108,10 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
 2. Stop if doctor is not 0.
 3. Start the live loop for demo.
    `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
-4. For a real account, add `--i-accept-risk`, or arm from chat after start.
-   `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop --i-accept-risk`
+4. For a real account, arm from chat after start. Do not put
+   `--i-accept-risk` on a `--loop` command line (fc34): it re-arms real
+   money on every crash restart and undoes the per-process live expiry
+   1.1.3 added on purpose.
    `/live on I-ACCEPT-RISK`
 
 ### MT4 loop
@@ -141,8 +143,10 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
 3. Stop if doctor is not 0.
 4. Start the live loop for demo.
    `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop`
-5. For a real account, add `--i-accept-risk`, or arm from chat after start.
-   `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop --i-accept-risk`
+5. For a real account, arm from chat after start. Do not put
+   `--i-accept-risk` on a `--loop` command line (fc34): it re-arms real
+   money on every crash restart and undoes the per-process live expiry
+   1.1.3 added on purpose.
    `/live on I-ACCEPT-RISK`
 
 See `docs/MT4.md` and `mt4/README.md`.
@@ -263,14 +267,25 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
 1. Complete the Demo steps.
 2. Confirm `doctor --connect` exits 0.
 3. Set `risk_pct = 0.002` (0.2%) at first.
-4. Start the live loop with `--i-accept-risk`.
-   `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop --i-accept-risk`
-5. Or start without that flag and arm from chat.
+4. Start the live loop, then arm from chat.
+   `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
    `/live on I-ACCEPT-RISK`
    The phrase is required.
    `/live on` without it is usage.
    `/live off` disarms.
-6. Then `/approve always` if you want sends without `/confirm`.
+
+WARNING
+Never put `--i-accept-risk` on a `--loop` command line, in a supervisor,
+a service wrapper, a batch file, or a scheduled task (fc34). It re-arms
+real money on every crash restart, unattended, and undoes the
+per-process live expiry 1.1.3 added on purpose
+(`Desk.restore_from_journal` already refuses to re-arm from a `live_on`
+journal record; a command-line flag baked into a supervised invocation
+is the one place arming can still leak back in). `/live on
+I-ACCEPT-RISK` from the locked chat is per-process and never survives a
+restart -- use it instead.
+
+5. Then `/approve always` if you want sends without `/confirm`.
    On `trade_mode=2`, arm live before `/approve always`.
 
 ## Halt
@@ -331,6 +346,21 @@ Updates from any other chat are ignored.
 The bot still consumes those updates.
 Replies and notifies go only to that chat.
 
+## Sender lock
+
+`TELEGRAM_ALLOW_SENDERS` lists the Telegram sender ids that may command the desk.
+Use a comma between ids.
+`telegram.allow_senders` in `config.toml` is the same list.
+Every command is checked against the list.
+Read-only commands are checked too.
+An update whose sender cannot be read is refused.
+Leave the list empty for a private chat id. That operator needs no config edit.
+A group, supergroup, or channel chat id is negative.
+On a negative chat id with an empty list, `run` and `doctor` exit non-zero.
+To read a sender id, have that person send any message to the bot,
+then read `from.id` from the `getUpdates` response.
+A refused command is journaled as `command_rejected` and gets no reply.
+
 ## macOS
 
 Homebrew has Python, not MetaTrader.
@@ -358,8 +388,12 @@ It does not launch the terminal.
 5. Edit `EnvironmentVariables` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
 6. Add `XAI_API_KEY` or `ANTHROPIC_API_KEY` if you use advice.
 7. For an MT5 loop, change `--mode paper` to `--mode mt5`. For MT4, `--mode mt4`.
-8. For a real account, append `--i-accept-risk`, or arm from chat after start
-   with `/live on I-ACCEPT-RISK`.
+8. For a real account, arm from chat after start with
+   `/live on I-ACCEPT-RISK`. Never put `--i-accept-risk` in
+   `ProgramArguments` (fc34): `KeepAlive` means launchd restarts the bot
+   on a crash, and a flag baked into the persisted argument list re-arms
+   real money on every one of those restarts, unattended. `/live on
+   I-ACCEPT-RISK` is per-process and does not survive a restart.
 9. Put `--config` and the path before `run` in `ProgramArguments`.
 10. chmod 600 the installed plist. Never commit it.
 
