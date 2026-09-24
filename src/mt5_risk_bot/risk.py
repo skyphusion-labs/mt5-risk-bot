@@ -362,6 +362,18 @@ class RiskManager:
         if signal.rr + 1e-9 < r.min_rr:
             return RiskDecision(allowed=False, reason="rr_below_min")
 
+        # Before any gate reads the spec. `min_stop_distance()` is
+        # stops_level * point, so an unmeasured point makes the next check pass
+        # trivially, and `lots_for_risk` would refuse as `size_zero`, which
+        # says the budget was too small. Nothing measured is a different fact
+        # and it gets its own name.
+        not_measured = spec.unmeasured_for_sizing()
+        if not_measured:
+            return RiskDecision(
+                allowed=False,
+                reason="spec_not_measured:" + ",".join(sorted(not_measured)),
+            )
+
         min_dist = spec.min_stop_distance()
         if signal.risk_distance < min_dist:
             return RiskDecision(allowed=False, reason="stops_level")

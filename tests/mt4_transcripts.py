@@ -286,7 +286,7 @@ def t_symbol(
     volume_min: float = 0.01,
     volume_max: float = 500.0,
     volume_step: float = 0.01,
-    tick_value: str = "1.0000",
+    tick_value: str = "1.00000000",
     tick_size: float = 0.00001,
     contract_size: float = 100000.0,
     stops_level: int = 10,
@@ -295,19 +295,23 @@ def t_symbol(
 ) -> Transcript:
     """`SymbolReply` (:307-325).
 
-    `tick_value` is a raw string on purpose. The Expert emits
-    `DoubleToString(MarketInfo(sym, MODE_TICKVALUE), 4)` (:319), so four
-    decimals is the whole resolution the adapter ever sees, and a real
-    measurement below 0.00005 arrives as `"0.0000"`.
+    `tick_value` is a raw string on purpose: the exact bytes are the evidence.
+
+    The Expert emitted `DoubleToString(..., 4)` until 1.3.2, so four decimals
+    was the whole resolution the adapter ever saw and a real measurement below
+    0.00005 arrived as `"0.0000"`. It now emits 8, which removes TRUNCATION as
+    a producer of zero. It does not remove zero itself: `MarketInfo` still
+    answers 0 for a symbol that is not in Market Watch, and that zero is now a
+    refusal rather than a substituted 1.0.
     """
     return Transcript(
         "symbol",
         ea_ok(
             "digits=" + str(digits),
             "point=" + d(point, digits),
-            "volume_min=" + d(volume_min, 2),
-            "volume_max=" + d(volume_max, 2),
-            "volume_step=" + d(volume_step, 2),
+            "volume_min=" + d(volume_min, 8),
+            "volume_max=" + d(volume_max, 8),
+            "volume_step=" + d(volume_step, 8),
             "tick_value=" + tick_value,
             "tick_size=" + d(tick_size, digits),
             "contract_size=" + d(contract_size, 0),
