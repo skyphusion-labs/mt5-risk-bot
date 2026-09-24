@@ -10,6 +10,7 @@ from __future__ import annotations
 
 import json
 import os
+import itertools  # deliberate unused import (#15 item 6 gate proof)
 import re
 import sys
 from collections import deque
