@@ -74,6 +74,8 @@ class Engine:
         self.last_bar_time: dict[str, int] = {}
         self.halted = False
         self.telegram = telegram
+        if self.telegram is not None and self.telegram.audit_fn is None:
+            self.telegram.audit_fn = self._audit_telegram
         persist = advice_path_for(self.journal.path)
         if advisor is not None:
             self.advisor = advisor
@@ -87,6 +89,36 @@ class Engine:
         self._opened_this_step: set[int] = set()
         self._closed_this_step: set[int] = set()
         self._scale_outs: dict[int, tuple[float, float]] = {}
+
+    def _report_survivor(self, symbol: str, result: OrderResult) -> None:
+        """A send that failed may still have left something on the book.
+
+        This is the one case where a failure report is not the whole truth:
+        the desk is told the send failed while a position is live and has no
+        stop. Nothing else in the system reconciles that state, so it is
+        named here rather than left to a human noticing the terminal.
+        """
+        survivor = result.survivor_ticket
+        if survivor is None:
+            self._emit(
+                "survivor_unknown",
+                symbol=symbol,
+                retcode=result.retcode,
+                comment=result.comment,
+            )
+            return
+        if survivor:
+            self._emit(
+                "unmanaged_position",
+                symbol=symbol,
+                ticket=int(survivor),
+                retcode=result.retcode,
+                comment=result.comment,
+            )
+
+    def _audit_telegram(self, event: str, fields: dict[str, Any]) -> None:
+        # Journal only: a refusal is never echoed back to the chat.
+        self.journal.write(event, **fields)
 
     def _emit(self, event: str, **fields: Any) -> None:
         self.journal.write(event, **fields)
@@ -118,6 +150,13 @@ class Engine:
             equity=acct.equity,
             server=acct.server,
             symbols=self.cfg.symbols,
+            # The handover posture (#25) is invisible from the config alone
+            # unless someone reads it. Put it in the one record every
+            # session already writes, so a journal reader can tell after
+            # the fact which posture a session ran under, and so it is
+            # never silently missing the way an unread config key would be.
+            approve_always_allowed=self.cfg.telegram.allow_approve_always,
+            auto_allowed=self.cfg.telegram.allow_auto,
         )
         self._seen_pos = {
             p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
@@ -397,9 +436,12 @@ class Engine:
             return check
         result = self.broker.market(order)
         if result.ok:
+            self.risk.record_trade()
             ticket = int(result.order or result.deal or 0)
             if ticket:
                 self._opened_this_step.add(ticket)
+        else:
+            self._report_survivor(signal.symbol, result)
         self._emit(
             "open",
             symbol=signal.symbol,
@@ -473,8 +515,13 @@ class Engine:
             now=now,
         )
         if not decision.allowed:
+            # journal.write, never _emit: a refusal is not broadcast to chat.
+            # source and stage are what let one reject event name every path
+            # apart, so the auto leg has to carry them too.
             self.journal.write(
                 "reject",
+                source="auto",
+                stage="signal",
                 symbol=symbol,
                 reason=decision.reason,
                 kind=sig.kind.value,
@@ -648,6 +695,10 @@ class Engine:
         if not self._pretrade_ok(check, signal.symbol):
             return check
         result = self.broker.working(order)
+        if result.ok:
+            self.risk.record_trade()
+        else:
+            self._report_survivor(signal.symbol, result)
         self._emit(
             "pending",
             symbol=signal.symbol,
@@ -1294,9 +1345,11 @@ class Engine:
 
 def _format_event(event: str, fields: dict[str, Any]) -> str:
     if event == "start":
+        approve = "allowed" if fields.get("approve_always_allowed", True) else "disabled"
+        auto = "allowed" if fields.get("auto_allowed", True) else "disabled"
         return (
             f"start mode={fields.get('mode')} equity={fields.get('equity')} "
-            f"symbols={fields.get('symbols')}"
+            f"symbols={fields.get('symbols')} approve_always={approve} auto={auto}"
         )
     if event == "stop":
         return "stop"
@@ -1373,6 +1426,18 @@ def _format_event(event: str, fields: dict[str, Any]) -> str:
         )
         tail = str(fields.get("tail") or "")
         return f"{head}\n{tail}".strip()
+    if event == "unmanaged_position":
+        return (
+            f"UNMANAGED POSITION #{fields.get('ticket')} {fields.get('symbol')}: the send "
+            f"reported FAILED (retcode={fields.get('retcode')}) but this ticket is still "
+            f"open and has NO STOP. Close or protect it in the terminal now."
+        )
+    if event == "survivor_unknown":
+        return (
+            f"COULD NOT MEASURE {fields.get('symbol')}: a send failed "
+            f"(retcode={fields.get('retcode')}) and the Expert did not say whether it left "
+            f"a position open. Update Mt4RiskBot.mq4, then check the terminal."
+        )
     return ""
 
 

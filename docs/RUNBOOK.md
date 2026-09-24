@@ -108,8 +108,10 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
 2. Stop if doctor is not 0.
 3. Start the live loop for demo.
    `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
-4. For a real account, add `--i-accept-risk`, or arm from chat after start.
-   `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop --i-accept-risk`
+4. For a real account, arm from chat after start. Do not put
+   `--i-accept-risk` on a `--loop` command line (fc34): it re-arms real
+   money on every crash restart and undoes the per-process live expiry
+   1.1.3 added on purpose.
    `/live on I-ACCEPT-RISK`
 
 ### MT4 loop
@@ -141,8 +143,10 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
 3. Stop if doctor is not 0.
 4. Start the live loop for demo.
    `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop`
-5. For a real account, add `--i-accept-risk`, or arm from chat after start.
-   `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop --i-accept-risk`
+5. For a real account, arm from chat after start. Do not put
+   `--i-accept-risk` on a `--loop` command line (fc34): it re-arms real
+   money on every crash restart and undoes the per-process live expiry
+   1.1.3 added on purpose.
    `/live on I-ACCEPT-RISK`
 
 See `docs/MT4.md` and `mt4/README.md`.
@@ -225,6 +229,13 @@ Laptop: `agent/.dev.vars` (0600, gitignored).
 
 `/model computer` at runtime.
 Session is the Telegram chat id (one workspace per chat).
+The agent needs `session` in the body. It must be a JSON string.
+Use letters, digits, dot, underscore, and hyphen. The length is 1 to 64.
+A missing or bad session gets `400 {"error":"invalid session"}`.
+The agent builds no workspace for a session it refuses.
+There is no automatic fallback. Send `default` to share one desk on purpose.
+`ADVICE_SESSIONS` is optional. Set it to a comma list to serve only those keys.
+The bot sends the chat id, so it needs no change.
 Redeploy: `cd agent && npx wrangler deploy` (needs `CLOUDFLARE_API_TOKEN`).
 The agent is still a Cloudflare preview.
 
@@ -256,14 +267,25 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
 1. Complete the Demo steps.
 2. Confirm `doctor --connect` exits 0.
 3. Set `risk_pct = 0.002` (0.2%) at first.
-4. Start the live loop with `--i-accept-risk`.
-   `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop --i-accept-risk`
-5. Or start without that flag and arm from chat.
+4. Start the live loop, then arm from chat.
+   `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
    `/live on I-ACCEPT-RISK`
    The phrase is required.
    `/live on` without it is usage.
    `/live off` disarms.
-6. Then `/approve always` if you want sends without `/confirm`.
+
+WARNING
+Never put `--i-accept-risk` on a `--loop` command line, in a supervisor,
+a service wrapper, a batch file, or a scheduled task (fc34). It re-arms
+real money on every crash restart, unattended, and undoes the
+per-process live expiry 1.1.3 added on purpose
+(`Desk.restore_from_journal` already refuses to re-arm from a `live_on`
+journal record; a command-line flag baked into a supervised invocation
+is the one place arming can still leak back in). `/live on
+I-ACCEPT-RISK` from the locked chat is per-process and never survives a
+restart -- use it instead.
+
+5. Then `/approve always` if you want sends without `/confirm`.
    On `trade_mode=2`, arm live before `/approve always`.
 
 ## Halt
@@ -324,6 +346,21 @@ Updates from any other chat are ignored.
 The bot still consumes those updates.
 Replies and notifies go only to that chat.
 
+## Sender lock
+
+`TELEGRAM_ALLOW_SENDERS` lists the Telegram sender ids that may command the desk.
+Use a comma between ids.
+`telegram.allow_senders` in `config.toml` is the same list.
+Every command is checked against the list.
+Read-only commands are checked too.
+An update whose sender cannot be read is refused.
+Leave the list empty for a private chat id. That operator needs no config edit.
+A group, supergroup, or channel chat id is negative.
+On a negative chat id with an empty list, `run` and `doctor` exit non-zero.
+To read a sender id, have that person send any message to the bot,
+then read `from.id` from the `getUpdates` response.
+A refused command is journaled as `command_rejected` and gets no reply.
+
 ## macOS
 
 Homebrew has Python, not MetaTrader.
@@ -351,8 +388,12 @@ It does not launch the terminal.
 5. Edit `EnvironmentVariables` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
 6. Add `XAI_API_KEY` or `ANTHROPIC_API_KEY` if you use advice.
 7. For an MT5 loop, change `--mode paper` to `--mode mt5`. For MT4, `--mode mt4`.
-8. For a real account, append `--i-accept-risk`, or arm from chat after start
-   with `/live on I-ACCEPT-RISK`.
+8. For a real account, arm from chat after start with
+   `/live on I-ACCEPT-RISK`. Never put `--i-accept-risk` in
+   `ProgramArguments` (fc34): `KeepAlive` means launchd restarts the bot
+   on a crash, and a flag baked into the persisted argument list re-arms
+   real money on every one of those restarts, unattended. `/live on
+   I-ACCEPT-RISK` is per-process and does not survive a restart.
 9. Put `--config` and the path before `run` in `ProgramArguments`.
 10. chmod 600 the installed plist. Never commit it.
 
@@ -421,6 +462,36 @@ Then `/approve always` if you want sends without `/confirm`.
 `/trail on` trails open positions each tick.
 It does not turn auto on.
 SL/TP hits and pending fills still alert in Telegram when auto is off.
+
+## Handover posture
+
+`/approve always` and `/auto on` are the two paths that reach the broker
+with no human keystroke: `/approve always` sends inside the same `handle()`
+call as the advice turn, and `/auto on` trades from the EMA signal with no
+confirm step at all.
+`telegram.allow_approve_always` and `telegram.allow_auto` in `config.toml`
+(env: `TELEGRAM_ALLOW_APPROVE_ALWAYS`, `TELEGRAM_ALLOW_AUTO`) gate them.
+Both default true, so an operator who never sets these keys sees no change.
+Set either to false and the matching command is refused with a named reason
+(`approve_always_disabled`, `auto_disabled`), journaled as `reject` with
+`source=telegram`, and never answered in chat.
+`/approve off` and `/auto off` are never refused; turning a capability off
+is always allowed.
+A value that is present but not a clean boolean is read as false, never as
+the default: a config typo or a bad env var can only remove the capability,
+never grant it.
+`config.handover.toml` ships with both set false. Copy it to `config.toml`
+for a handed-over desk. To re-enable on your own desk, set both to true, or
+remove the keys.
+
+The default stays true on purpose: flipping it would silently change every
+existing deployment, including one that has never heard of this key. That
+leaves a gap for a handover that forgets `config.handover.toml`, so the
+posture is observable instead of hidden in a config file. `doctor` and
+`run` print it on every invocation (`approve always: allowed|disabled`,
+`auto: allowed|disabled`), and every `start` journal record carries
+`approve_always_allowed` and `auto_allowed`, so `journal.jsonl` answers
+which posture a session actually ran under, after the fact.
 
 Paper is the default (`account.mode = "paper"`).
 Real accounts still need `--i-accept-risk` at start, or `/live on I-ACCEPT-RISK` in the locked chat.
@@ -505,7 +576,26 @@ A pending fill writes `open` with `fill=true`.
 A vanished ticket writes `close` with `fill=true`.
 The venue holds the live book. It is not the fill log.
 
-JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `live_on`, `live_off`, `live_not_restored`, `risk_state_error`, `flatten`, `flatten_incomplete`, `close_failed`, `close_partial`, `cancel_failed`, `positions_read_failed`, `orders_read_failed`, `stop`.
+JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `auto_on`, `auto_off`, `live_on`, `live_off`, `live_not_restored`, `risk_state_error`, `advice_turn`, `advice_circuit_block`, `advice_stage_failed`, `flatten`, `flatten_incomplete`, `close_failed`, `close_partial`, `cancel_failed`, `positions_read_failed`, `orders_read_failed`, `stop`.
+`reject` is written by every gate that refuses, on every path, and it is the
+record to grep when the bot will not trade.
+It carries the NAMED `reason`, plus `source` (`auto`, `telegram`, or `advice`)
+and `stage` (`signal`, `stage`, `stage_close`, `confirm`, `reverse`,
+`confirm_reverse`, `reverse_after_close`, or `approve`).
+`symbol`, `kind`, `rr`, `ticket`, and `command` are present when the refused
+request had them.
+A refusal is journaled and is never sent back to the chat that triggered it.
+The chat gets its one-line reply, and nothing else.
+With no journal configured the refusal still prints to stderr, so a control
+that fired can never look unexercised.
+`advice_turn` closes one advice turn: `provider`, `session`, `action`,
+`symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, and `staged` (whether the
+desk tried to turn the suggestion into an order).
+The question and the model reply are never journaled.
+`advice_circuit_block` is the circuit refusing to let the model stage at all.
+`advice_stage_failed` carries `measured=false`: the order could not be built,
+so no rule said no. COULD NOT MEASURE is not REFUSED, and it is deliberately
+not a `reject`.
 `flatten` is one record per sweep.
 It carries `requested`, `confirmed_closed`, `closed_elsewhere`, `survivor_count`, and `measured`.
 `flatten_incomplete` is the same record, written again, when the sweep left risk open.

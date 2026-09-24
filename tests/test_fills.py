@@ -263,6 +263,8 @@ def test_replace_pending_risk_and_halt(tmp_path) -> None:
     risked = engine.handle_command(
         TgCommand("1", 1, f"/replace {order.ticket} {wider}", 3)
     )
+    # The ENGINE /replace guard, not RiskManager: risk.py carries the same literal
+    # on a line that cannot execute. See tests/test_refusal_reasons.py (issue 11).
     assert "size_exceeds_risk" in risked
     engine.risk.write_halt_file("operator")
     new_px = spec.normalize_price(limit - 0.001)

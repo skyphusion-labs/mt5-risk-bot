@@ -26,6 +26,12 @@ class RiskConfig:
     halt_file: str = "HALT"
     max_risk_multiple: float = 1.0
     deviation_points: int = 20
+    #: Opening sends allowed per UTC day, across auto, telegram and advice.
+    #: 0 disables the cap. Counts OPENS only: a close must never be capped,
+    #: because a control that can stop you reducing exposure is not a risk
+    #: control. `daily_loss_pct` only fires after the money is gone; this is
+    #: the one that bounds churn before it.
+    max_trades_per_day: int = 0
 
 
 @dataclass
@@ -83,6 +89,22 @@ def resolve_mt4_files_dir(raw: str, *, platform: str | None = None) -> str:
     return ""
 
 
+def resolve_state_path(raw: str, *, base_dir: Path) -> str:
+    """Anchor a relative journal_path/halt_file to an explicit base (fc34).
+
+    `base_dir` is the config file's own directory when --config was given,
+    else the process working directory -- both documented, explicit bases.
+    What this refuses is the alternative: a relative path resolving
+    implicitly against wherever the process happens to be started from.
+    Under Windows Task Scheduler that working directory is not the repo,
+    so the journal, the instance lock, and the emergency HALT file must
+    not depend on it. An absolute path (already pinned by the operator)
+    passes through unchanged.
+    """
+    p = Path(raw)
+    return str(p if p.is_absolute() else base_dir / p)
+
+
 @dataclass
 class Mt4Config:
     files_dir: str = ""
@@ -113,12 +135,78 @@ DEFAULT_TG_EVENTS = (
 )
 
 
+def _parse_bool_flag(raw: object, *, default: bool) -> bool:
+    """Fail-closed boolean for a capability switch.
+
+    An operator setting an env var is always handed a string, and Python's
+    bool("false") is True: the classic footgun that would silently re-arm a
+    capability an operator just tried to turn off. A value that is PRESENT
+    but not cleanly true/false is treated as False, never as `default`, so a
+    typo or a bad env var can only ever remove capability, never grant it.
+    A value that is fully absent (None) falls back to `default`, which is
+    what preserves an existing deployment's behaviour on upgrade: it has
+    never heard of this key, so nothing about it changes.
+    """
+    if raw is None:
+        return default
+    if isinstance(raw, bool):
+        return raw
+    text = str(raw).strip().lower()
+    if text in {"1", "true", "yes", "on"}:
+        return True
+    if text in {"0", "false", "no", "off"}:
+        return False
+    return False
+
+def is_shared_chat_id(chat_id: str) -> bool:
+    """True when the id is a Telegram group, supergroup or channel.
+
+    Telegram numbers private chats positively and every shared chat
+    negatively. A non-numeric id is not treated as shared.
+    """
+    try:
+        return int(str(chat_id).strip()) < 0
+    except (TypeError, ValueError):
+        return False
+
+
+def parse_allow_senders(raw: object) -> tuple[int, ...]:
+    """Normalise allow_senders from a TOML list or a comma-separated env var."""
+    if raw is None:
+        return ()
+    items = str(raw).split(",") if isinstance(raw, str) else list(raw)  # type: ignore[call-overload]
+    out: list[int] = []
+    for item in items:
+        text = str(item).strip()
+        if not text:
+            continue
+        try:
+            value = int(text)
+        except ValueError:
+            raise ValueError(
+                "telegram.allow_senders must be numeric Telegram sender ids"
+            ) from None
+        if value <= 0:
+            raise ValueError("telegram.allow_senders ids must be positive")
+        if value not in out:
+            out.append(value)
+    return tuple(out)
+
+
 @dataclass
 class TelegramConfig:
     token: str = ""
     chat_id: str = ""
     notify_events: tuple[str, ...] = DEFAULT_TG_EVENTS
     confirm_seconds: int = 120
+    # Handover posture (#25). Both default True: an operator who has never
+    # heard of this key gets today's behaviour unchanged. The shipped
+    # handover template sets both false. Fail-closed parsing lives in
+    # _parse_bool_flag, not here: a dataclass default cannot see a garbled
+    # config value, only the loader can.
+    allow_approve_always: bool = True
+    allow_auto: bool = True
+    allow_senders: tuple[int, ...] = ()
 
     @property
     def enabled(self) -> bool:
@@ -128,8 +216,13 @@ class TelegramConfig:
 @dataclass
 class AdviceConfig:
     provider: str = "grok"  # grok | claude | computer
+    #: Advice turns allowed per UTC day. 0 disables the cap.
+    #: This is a COST control, not only a risk one: hosted inference is billed
+    #: per turn and a turn costs money whether or not it ends in an order, so
+    #: the send cap above cannot see this spend at all.
+    max_turns_per_day: int = 0
     grok_model: str = "grok-4"
-    claude_model: str = "claude-sonnet-4-5"
+    claude_model: str = "claude-sonnet-5"
     grok_key: str = ""
     claude_key: str = ""
     grok_url: str = "https://api.x.ai/v1/chat/completions"
@@ -152,6 +245,19 @@ class BotConfig:
     mode: str = "paper"  # paper | mt5 | mt4
     initial_balance: float = 10_000.0
     symbols: list[str] = field(default_factory=lambda: ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"])
+    #: What the MODEL is allowed to open, which is not the same question as
+    #: what the desk scans. `symbols` is a SCAN list: it drives /quote and the
+    #: auto scan, and an operator who scans three pairs may still want to act
+    #: on a fourth BY HAND. So a human command is not constrained by this, and
+    #: an advice-staged symbol is.
+    #: EMPTY means "use `symbols`". It never means "allow anything": an empty
+    #: whitelist that permits everything is the defect, not the default.
+    advice_symbols: list[str] = field(default_factory=list)
+
+    def advice_allows(self, symbol: str) -> bool:
+        """Whether the model may OPEN this symbol. Closes are never gated."""
+        allowed = self.advice_symbols or self.symbols
+        return symbol.upper() in {s.upper() for s in allowed}
     risk: RiskConfig = field(default_factory=RiskConfig)
     strategy: StrategyConfig = field(default_factory=StrategyConfig)
     session: SessionConfig = field(default_factory=SessionConfig)
@@ -176,6 +282,10 @@ class BotConfig:
             raise ValueError("max_drawdown_pct must be in (0, 0.50]")
         if r.max_positions < 1:
             raise ValueError("max_positions must be >= 1")
+        if r.max_trades_per_day < 0:
+            raise ValueError("max_trades_per_day must be >= 0 (0 disables)")
+        if self.advice.max_turns_per_day < 0:
+            raise ValueError("advice.max_turns_per_day must be >= 0 (0 disables)")
         s = self.strategy
         if s.fast_ema >= s.slow_ema:
             raise ValueError("fast_ema must be < slow_ema")
@@ -190,6 +300,11 @@ class BotConfig:
             raise ValueError("at least one symbol required")
         if self.telegram.confirm_seconds <= 0:
             raise ValueError("confirm_seconds must be > 0")
+        if is_shared_chat_id(self.telegram.chat_id) and not self.telegram.allow_senders:
+            raise ValueError(
+                "telegram.chat_id is a shared chat: set telegram.allow_senders "
+                "(or TELEGRAM_ALLOW_SENDERS) to the operator sender ids"
+            )
 
 
 def _section(data: dict, name: str) -> dict:
@@ -209,6 +324,11 @@ def _hhmm(s: str) -> str:
 
 def load_config(path: str | Path | None = None) -> BotConfig:
     data: dict = {}
+    # Explicit, documented base for resolve_state_path(): the config
+    # file's own directory when one was given, else the process working
+    # directory. Both are named; neither is "wherever we happened to
+    # start" by accident.
+    base_dir = Path(path).resolve().parent if path is not None else Path.cwd()
     if path is not None:
         raw = Path(path).read_bytes()
         parsed = tomllib.loads(raw.decode("utf-8"))
@@ -226,6 +346,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     advice_s = _section(data, "advice")
     engine_s = _section(data, "engine")
     symbols_s = data.get("symbols", {})
+    advice_names = list(data.get("advice", {}).get("symbols", []) or [])
 
     names = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
     if isinstance(symbols_s, dict) and "names" in symbols_s:
@@ -238,11 +359,22 @@ def load_config(path: str | Path | None = None) -> BotConfig:
     server = os.environ.get("MT5_SERVER", str(mt5_s.get("server", "") or ""))
     tg_token = os.environ.get("TELEGRAM_BOT_TOKEN", str(tg_s.get("token", "") or ""))
     tg_chat = os.environ.get("TELEGRAM_CHAT_ID", str(tg_s.get("chat_id", "") or ""))
+    tg_allow_approve_always = _parse_bool_flag(
+        os.environ.get("TELEGRAM_ALLOW_APPROVE_ALWAYS", tg_s.get("allow_approve_always")),
+        default=True,
+    )
+    tg_allow_auto = _parse_bool_flag(
+        os.environ.get("TELEGRAM_ALLOW_AUTO", tg_s.get("allow_auto")),
+        default=True,
+    )
     grok_key = os.environ.get("XAI_API_KEY", str(advice_s.get("grok_key", "") or ""))
     claude_key = os.environ.get("ANTHROPIC_API_KEY", str(advice_s.get("claude_key", "") or ""))
     computer_url = os.environ.get("ADVICE_URL", str(advice_s.get("computer_url", "") or ""))
     computer_token = os.environ.get("ADVICE_TOKEN", str(advice_s.get("computer_token", "") or ""))
     provider = os.environ.get("AI_PROVIDER", str(advice_s.get("provider", "grok") or "grok")).lower()
+    tg_allow = parse_allow_senders(
+        os.environ.get("TELEGRAM_ALLOW_SENDERS", tg_s.get("allow_senders", ()))
+    )
     events_raw = tg_s.get("notify_events", list(DEFAULT_TG_EVENTS))
     if isinstance(events_raw, str):
         events = tuple(x.strip() for x in events_raw.split(",") if x.strip())
@@ -253,9 +385,12 @@ def load_config(path: str | Path | None = None) -> BotConfig:
         mode=os.environ.get("ACCOUNT_MODE", str(account.get("mode", "paper"))),
         initial_balance=float(account.get("initial_balance", 10_000.0)),
         symbols=names,
+        advice_symbols=[str(x).upper() for x in advice_names],
         poll_seconds=int(os.environ.get("POLL_SECONDS", engine_s.get("poll_seconds", 15))),
         comment=str(engine_s.get("comment", "mt5-risk-bot")),
-        journal_path=str(engine_s.get("journal_path", "journal.jsonl")),
+        journal_path=resolve_state_path(
+            str(engine_s.get("journal_path", "journal.jsonl")), base_dir=base_dir
+        ),
         risk=RiskConfig(
             risk_pct=float(risk_s.get("risk_pct", 0.005)),
             daily_loss_pct=float(risk_s.get("daily_loss_pct", 0.02)),
@@ -266,9 +401,12 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             max_spread_atr_frac=float(risk_s.get("max_spread_atr_frac", 0.15)),
             min_free_margin_pct=float(risk_s.get("min_free_margin_pct", 0.50)),
             magic=int(risk_s.get("magic", 20260909)),
-            halt_file=str(risk_s.get("halt_file", "HALT")),
+            halt_file=resolve_state_path(
+                str(risk_s.get("halt_file", "HALT")), base_dir=base_dir
+            ),
             max_risk_multiple=float(risk_s.get("max_risk_multiple", 1.0)),
             deviation_points=int(risk_s.get("deviation_points", 20)),
+            max_trades_per_day=int(risk_s.get("max_trades_per_day", 0)),
         ),
         strategy=StrategyConfig(
             auto=bool(strat_s.get("auto", False)),
@@ -309,11 +447,15 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             chat_id=tg_chat,
             notify_events=events or DEFAULT_TG_EVENTS,
             confirm_seconds=int(tg_s.get("confirm_seconds", 120)),
+            allow_approve_always=tg_allow_approve_always,
+            allow_auto=tg_allow_auto,
+            allow_senders=tg_allow,
         ),
         advice=AdviceConfig(
             provider=provider if provider in {"grok", "claude", "computer"} else "grok",
+            max_turns_per_day=int(advice_s.get("max_turns_per_day", 0)),
             grok_model=str(advice_s.get("grok_model", "grok-4")),
-            claude_model=str(advice_s.get("claude_model", "claude-sonnet-4-5")),
+            claude_model=str(advice_s.get("claude_model", "claude-sonnet-5")),
             grok_key=grok_key,
             claude_key=claude_key,
             grok_url=str(advice_s.get("grok_url", "https://api.x.ai/v1/chat/completions")),

@@ -3,13 +3,47 @@
 #property description "File mailbox for mt5-risk-bot MT4 adapter. FILE_COMMON."
 
 input int Slippage = 30;
+input int ReconcileMagic = 0;   // 0 = report every position that has no stop
 
 bool gBusy = false;
+
+// Report every position that is open with no stop loss. A position that
+// predates this session is NOT adopted: this Expert only reports it, so a
+// human decides. Silence here is how an orphan from a previous session
+// becomes permanent.
+void ReportUnmanaged()
+{
+   int total = OrdersTotal();
+   int found = 0;
+   for(int i=0; i<total; i++)
+   {
+      if(!OrderSelect(i, SELECT_BY_POS, MODE_TRADES))
+         continue;
+      if(OrderType() > OP_SELL)
+         continue;
+      if(ReconcileMagic != 0 && OrderMagicNumber() != ReconcileMagic)
+         continue;
+      if(OrderStopLoss() != 0)
+         continue;
+      found++;
+      Print("mt4riskbot UNMANAGED ticket=", OrderTicket(),
+            " symbol=", OrderSymbol(),
+            " type=", OrderType(),
+            " lots=", DoubleToString(OrderLots(), 2),
+            " magic=", OrderMagicNumber(),
+            " opened=", TimeToString(OrderOpenTime()),
+            " -- open with NO STOP, not adopted by this session");
+   }
+   if(found > 0)
+      Print("mt4riskbot ", found,
+            " position(s) open with NO STOP at startup. Close or protect them in the terminal.");
+}
 
 int OnInit()
 {
    if(!EventSetMillisecondTimer(100))
       EventSetTimer(1);
+   ReportUnmanaged();
    return(INIT_SUCCEEDED);
 }
 
@@ -85,9 +119,33 @@ string Ok(string id)
    return "id=" + id + "\nok=1\n";
 }
 
+// Strip the characters the wire uses as structure. The Python side does the
+// same on the way out (`_wire`, mt4_live.py:93-95); doing it on only one side
+// is what let a broker comment containing a pipe shift every field after it.
+// Both ends sanitise and neither trusts the other.
+// Framing characters only: `_wire` also forces ASCII, which MQL4 has no cheap
+// equivalent for. That asymmetry is stated in docs/MT4.md.
+string Wire(string s)
+{
+   StringReplace(s, "\r", " ");
+   StringReplace(s, "\n", " ");
+   StringReplace(s, "|", "/");
+   return s;
+}
+
 string Fail(string id, int err, string msg)
 {
    return "id=" + id + "\nok=0\nretcode=" + IntegerToString(err) + "\nerror=" + msg + "\n";
+}
+
+// Every failure from a trade handler states what it left behind.
+// survivor=0 means the book was checked and nothing survived. A positive
+// value is a live ticket the desk must deal with. The field is always
+// present, so an adapter can tell an Expert that answered 0 from an
+// Expert too old to answer at all.
+string FailTrade(string id, int err, string msg, int survivor)
+{
+   return Fail(id, err, msg) + "survivor_ticket=" + IntegerToString(survivor) + "\n";
 }
 
 int Tf(string name)
@@ -193,10 +251,13 @@ bool StopsOk(string sym, int typ, double price, double sl, double tp)
    return true;
 }
 
-int SendRetry(string sym, int typ, double vol, double price, int slip, string comment, int magic)
+// `err` carries the error OUT. GetLastError() clears the register on read, so
+// a caller that reads it a second time gets 0 and reports a rejection with no
+// reason. The loop is the only place that can still see it.
+int SendRetry(string sym, int typ, double vol, double price, int slip, string comment, int magic, int &err)
 {
    int ticket = -1;
-   int err = 0;
+   err = 0;
    for(int i=0; i<8; i++)
    {
       RefreshRates();
@@ -213,21 +274,82 @@ int SendRetry(string sym, int typ, double vol, double price, int slip, string co
    return -1;
 }
 
-bool ModifyRetry(int ticket, double price, double sl, double tp)
+// Same contract as SendRetry. The OrderSelect branch used to return without
+// reading the register at all, which left the caller reading a DIFFERENT call's
+// error rather than nothing; that is a wrong answer, not a missing one.
+bool ModifyRetry(int ticket, double price, double sl, double tp, int &err)
 {
+   err = 0;
    for(int i=0; i<5; i++)
    {
       RefreshRates();
       if(!OrderSelect(ticket, SELECT_BY_TICKET))
+      {
+         err = GetLastError();
          return false;
+      }
       if(OrderModify(ticket, price, sl, tp, 0, clrNONE))
          return true;
-      int err = GetLastError();
+      err = GetLastError();
       if(err != 146 && err != 1)
          return false;
       Sleep(50);
    }
    return false;
+}
+
+// 1 = still on the book, 0 = confirmed gone, -1 = cannot tell.
+// Leaves the ticket selected when it returns 1.
+int TicketState(int ticket)
+{
+   if(!OrderSelect(ticket, SELECT_BY_TICKET))
+      return -1;
+   if(OrderCloseTime() != 0)
+      return 0;
+   return 1;
+}
+
+// Close a position this Expert has just opened but could not protect.
+// Returns true ONLY when the book confirms the position is gone. OrderClose's
+// own return value is recorded and logged, never treated as proof: it is a
+// claim about the book, and the book is the artifact.
+bool RollbackPosition(int ticket, string sym, int slip)
+{
+   for(int i=0; i<6; i++)
+   {
+      int state = TicketState(ticket);
+      if(state == 0)
+         return true;
+      if(state == 1)
+      {
+         RefreshRates();
+         double px = (OrderType() == OP_BUY) ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK);
+         bool sent = OrderClose(ticket, OrderLots(), px, slip, clrNONE);
+         if(!sent)
+            Print("mt4riskbot rollback close failed ticket=", ticket, " err=", GetLastError());
+      }
+      Sleep(50);
+   }
+   return TicketState(ticket) == 0;
+}
+
+// Same contract for a pending order that was placed but could not be protected.
+bool RollbackPending(int ticket)
+{
+   for(int i=0; i<6; i++)
+   {
+      int state = TicketState(ticket);
+      if(state == 0)
+         return true;
+      if(state == 1)
+      {
+         bool sent = OrderDelete(ticket);
+         if(!sent)
+            Print("mt4riskbot rollback delete failed ticket=", ticket, " err=", GetLastError());
+      }
+      Sleep(50);
+   }
+   return TicketState(ticket) == 0;
 }
 
 string Handle(string body)
@@ -283,13 +405,13 @@ string AccountReply(string id)
       + "margin=" + DoubleToString(AccountMargin(), 2) + "\n"
       + "margin_free=" + DoubleToString(AccountFreeMargin(), 2) + "\n"
       + "profit=" + DoubleToString(AccountProfit(), 2) + "\n"
-      + "currency=" + AccountCurrency() + "\n"
+      + "currency=" + Wire(AccountCurrency()) + "\n"
       + "leverage=" + IntegerToString(AccountLeverage()) + "\n"
       + "trade_mode=" + IntegerToString(mode) + "\n"
       + "trade_allowed=" + IntegerToString(allowed) + "\n"
       + "trade_expert=" + IntegerToString(expert) + "\n"
-      + "name=" + AccountName() + "\n"
-      + "server=" + AccountServer() + "\n";
+      + "name=" + Wire(AccountName()) + "\n"
+      + "server=" + Wire(AccountServer()) + "\n";
 }
 
 string TickReply(string id, string sym)
@@ -313,10 +435,10 @@ string SymbolReply(string id, string sym)
    return Ok(id)
       + "digits=" + IntegerToString(digits) + "\n"
       + "point=" + DoubleToString(MarketInfo(sym, MODE_POINT), digits) + "\n"
-      + "volume_min=" + DoubleToString(MarketInfo(sym, MODE_MINLOT), 2) + "\n"
-      + "volume_max=" + DoubleToString(MarketInfo(sym, MODE_MAXLOT), 2) + "\n"
-      + "volume_step=" + DoubleToString(MarketInfo(sym, MODE_LOTSTEP), 2) + "\n"
-      + "tick_value=" + DoubleToString(MarketInfo(sym, MODE_TICKVALUE), 4) + "\n"
+      + "volume_min=" + DoubleToString(MarketInfo(sym, MODE_MINLOT), 8) + "\n"
+      + "volume_max=" + DoubleToString(MarketInfo(sym, MODE_MAXLOT), 8) + "\n"
+      + "volume_step=" + DoubleToString(MarketInfo(sym, MODE_LOTSTEP), 8) + "\n"
+      + "tick_value=" + DoubleToString(MarketInfo(sym, MODE_TICKVALUE), 8) + "\n"
       + "tick_size=" + DoubleToString(MarketInfo(sym, MODE_TICKSIZE), digits) + "\n"
       + "contract_size=" + DoubleToString(MarketInfo(sym, MODE_LOTSIZE), 0) + "\n"
       + "stops_level=" + IntegerToString((int)MarketInfo(sym, MODE_STOPLEVEL)) + "\n"
@@ -381,7 +503,7 @@ string BookReply(string id, string magicStr, bool pending)
       if(pending)
       {
          line = IntegerToString(OrderTicket())
-            + "|" + OrderSymbol()
+            + "|" + Wire(OrderSymbol())
             + "|" + SideOf(typ)
             + "|" + KindOf(typ)
             + "|" + DoubleToString(OrderLots(), 2)
@@ -389,13 +511,13 @@ string BookReply(string id, string magicStr, bool pending)
             + "|" + DoubleToString(OrderStopLoss(), digits)
             + "|" + DoubleToString(OrderTakeProfit(), digits)
             + "|" + IntegerToString(OrderMagicNumber())
-            + "|" + OrderComment()
+            + "|" + Wire(OrderComment())
             + "|" + IntegerToString((int)OrderOpenTime());
       }
       else
       {
          line = IntegerToString(OrderTicket())
-            + "|" + OrderSymbol()
+            + "|" + Wire(OrderSymbol())
             + "|" + SideOf(typ)
             + "|" + DoubleToString(OrderLots(), 2)
             + "|" + DoubleToString(OrderOpenPrice(), digits)
@@ -404,7 +526,7 @@ string BookReply(string id, string magicStr, bool pending)
             + "|" + DoubleToString(OrderClosePrice(), digits)
             + "|" + DoubleToString(OrderProfit(), 2)
             + "|" + IntegerToString(OrderMagicNumber())
-            + "|" + OrderComment()
+            + "|" + Wire(OrderComment())
             + "|" + DoubleToString(OrderSwap(), 2)
             + "|" + IntegerToString((int)OrderOpenTime());
       }
@@ -425,32 +547,38 @@ string CheckMarket(string id, string body, bool send)
    int slip = (int)StringToInteger(KV(body, "deviation"));
    if(slip <= 0) slip = Slippage;
    if(sym == "" || (side != "buy" && side != "sell"))
-      return Fail(id, 1, "symbol");
+      return FailTrade(id, 1, "symbol", 0);
    if(!IsTradeAllowed() || !IsExpertEnabled())
-      return Fail(id, 133, "trade_disabled");
+      return FailTrade(id, 133, "trade_disabled", 0);
    SymbolSelect(sym, true);
    if(!VolumeOk(sym, vol))
-      return Fail(id, 131, "invalid_volume");
+      return FailTrade(id, 131, "invalid_volume", 0);
    int typ = (side == "buy") ? OP_BUY : OP_SELL;
    RefreshRates();
    double price = (typ == OP_BUY) ? MarketInfo(sym, MODE_ASK) : MarketInfo(sym, MODE_BID);
    if(!StopsOk(sym, typ, price, sl, tp))
-      return Fail(id, 130, "invalid_stops");
+      return FailTrade(id, 130, "invalid_stops", 0);
    if(!send)
       return Ok(id) + "ticket=0\nprice=" + DoubleToString(price, (int)MarketInfo(sym, MODE_DIGITS)) + "\n";
-   int ticket = SendRetry(sym, typ, vol, price, slip, ClipComment(KV(body, "comment")), magic);
+   int sendErr = 0;
+   int ticket = SendRetry(sym, typ, vol, price, slip, ClipComment(KV(body, "comment")), magic, sendErr);
    if(ticket < 0)
-      return Fail(id, GetLastError(), "OrderSend");
+      return FailTrade(id, sendErr, "OrderSend", 0);
    if(sl > 0 || tp > 0)
    {
-      if(!OrderSelect(ticket, SELECT_BY_TICKET))
-         return Fail(id, GetLastError(), "select");
-      if(!ModifyRetry(ticket, OrderOpenPrice(), sl, tp))
+      // A position exists from here on. Failing to select it is not a reason
+      // to abandon it; it is a reason to roll it back.
+      double openPrice = 0;
+      int modErr = 0;
+      if(OrderSelect(ticket, SELECT_BY_TICKET))
+         openPrice = OrderOpenPrice();
+      else
+         modErr = GetLastError();
+      if(openPrice <= 0 || !ModifyRetry(ticket, openPrice, sl, tp, modErr))
       {
-         RefreshRates();
-         double px = (OrderType() == OP_BUY) ? MarketInfo(sym, MODE_BID) : MarketInfo(sym, MODE_ASK);
-         OrderClose(ticket, OrderLots(), px, slip, clrNONE);
-         return Fail(id, 130, "sl_modify_failed");
+         if(!RollbackPosition(ticket, sym, slip))
+            return FailTrade(id, modErr, "sl_modify_failed_position_live", ticket);
+         return FailTrade(id, modErr, "sl_modify_failed", 0);
       }
    }
    if(!OrderSelect(ticket, SELECT_BY_TICKET))
@@ -473,26 +601,29 @@ string CheckWorking(string id, string body, bool send)
    double tp = StringToDouble(KV(body, "tp"));
    int magic = (int)StringToInteger(KV(body, "magic"));
    if(sym == "" || (side != "buy" && side != "sell") || (kind != "limit" && kind != "stop"))
-      return Fail(id, 1, "symbol");
+      return FailTrade(id, 1, "symbol", 0);
    if(!IsTradeAllowed() || !IsExpertEnabled())
-      return Fail(id, 133, "trade_disabled");
+      return FailTrade(id, 133, "trade_disabled", 0);
    SymbolSelect(sym, true);
    if(!VolumeOk(sym, vol))
-      return Fail(id, 131, "invalid_volume");
+      return FailTrade(id, 131, "invalid_volume", 0);
    int typ = PendingType(side, kind);
    if(!StopsOk(sym, typ, price, sl, tp))
-      return Fail(id, 130, "invalid_stops");
+      return FailTrade(id, 130, "invalid_stops", 0);
    if(!send)
       return Ok(id) + "ticket=0\n";
-   int ticket = SendRetry(sym, typ, vol, price, Slippage, ClipComment(KV(body, "comment")), magic);
+   int sendErr = 0;
+   int ticket = SendRetry(sym, typ, vol, price, Slippage, ClipComment(KV(body, "comment")), magic, sendErr);
    if(ticket < 0)
-      return Fail(id, GetLastError(), "OrderSend");
+      return FailTrade(id, sendErr, "OrderSend", 0);
    if(sl > 0 || tp > 0)
    {
-      if(!ModifyRetry(ticket, price, sl, tp))
+      int modErr = 0;
+      if(!ModifyRetry(ticket, price, sl, tp, modErr))
       {
-         OrderDelete(ticket);
-         return Fail(id, 130, "sl_modify_failed");
+         if(!RollbackPending(ticket))
+            return FailTrade(id, modErr, "sl_modify_failed_order_live", ticket);
+         return FailTrade(id, modErr, "sl_modify_failed", 0);
       }
    }
    return Ok(id) + "ticket=" + IntegerToString(ticket) + "\nprice=" + DoubleToString(price, (int)MarketInfo(sym, MODE_DIGITS)) + "\n";
@@ -507,8 +638,9 @@ string ModifyPos(string id, string body)
       return Fail(id, 4108, "not_found");
    if(OrderType() > OP_SELL)
       return Fail(id, 1, "not_position");
-   if(!ModifyRetry(ticket, OrderOpenPrice(), sl, tp))
-      return Fail(id, GetLastError(), "OrderModify");
+   int modErr = 0;
+   if(!ModifyRetry(ticket, OrderOpenPrice(), sl, tp, modErr))
+      return Fail(id, modErr, "OrderModify");
    return Ok(id) + "ticket=" + IntegerToString(ticket) + "\n";
 }
 
@@ -528,8 +660,9 @@ string ModifyPend(string id, string body)
    if(p != "") price = StringToDouble(p);
    if(s != "") sl = StringToDouble(s);
    if(t != "") tp = StringToDouble(t);
-   if(!ModifyRetry(ticket, price, sl, tp))
-      return Fail(id, GetLastError(), "OrderModify");
+   int modErr = 0;
+   if(!ModifyRetry(ticket, price, sl, tp, modErr))
+      return Fail(id, modErr, "OrderModify");
    return Ok(id) + "ticket=" + IntegerToString(ticket) + "\n";
 }
 

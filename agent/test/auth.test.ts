@@ -53,7 +53,9 @@ describe("auth: the four ways a caller can present itself", () => {
   });
 
   it("accepts the correct token", async () => {
-    const res = await call(askRequest({ question: "q" }, { token: `Bearer ${GOOD_TOKEN}` }));
+    const res = await call(
+      askRequest({ session: "auth-accept", question: "q" }, { token: `Bearer ${GOOD_TOKEN}` }),
+    );
     expect(res.status).not.toBe(401);
     expect(res.status).toBe(200);
   });
@@ -68,7 +70,7 @@ describe("auth: accepted header shapes, pinned as they are today", () => {
     ["trailing whitespace on the credential", `Bearer ${GOOD_TOKEN}   `],
     ["tab after the scheme", `Bearer\t${GOOD_TOKEN}`],
   ])("accepts %s", async (_label, header) => {
-    const res = await call(askRequest({ question: "q" }, { token: header }));
+    const res = await call(askRequest({ session: "auth-shapes", question: "q" }, { token: header }));
     expect(res.status).toBe(200);
   });
 });

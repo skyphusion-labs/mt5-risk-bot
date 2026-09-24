@@ -1,0 +1,97 @@
+# Handover config template (#25). Copy to config.toml on the handed-over
+# desk (Gil, Inder), then fill in the account/venue section for real.
+# Secrets belong in the environment, never in this file:
+#   export MT5_LOGIN=... / MT5_PASSWORD=... / MT5_SERVER=...  (mt5)
+#   export TELEGRAM_BOT_TOKEN=... / TELEGRAM_CHAT_ID=...
+#   export XAI_API_KEY=...            # Grok, if you use default advice
+#
+# What this template turns off, and why:
+#   /approve always removes the only per-order human consent step: the
+#   model's staged order reaches the broker inside the same Telegram
+#   handle() call that produced the advice, with no /confirm in between.
+#   /auto on trades on its own from the EMA regime signal, with no confirm
+#   step at all. Both are two independent paths to a real-money send with
+#   no human keystroke (parent issue #38). Neither is safe to hand a
+#   first-time operator leaning on the sizer alone; see #8, #9, #12, #13.
+#
+# Both flags below default true if left out entirely, so an existing
+# desk that never adopts this template is unaffected. This file sets them
+# explicitly rather than relying on that default: the safe posture for a
+# handover must be visible in the file an operator is reading, not implied
+# by an absence they cannot see.
+#
+# To re-enable on THIS desk once you trust the operator and the sizer
+# defects above are closed: set both to true, or unset them.
+
+[account]
+mode = "paper"              # paper | mt5 | mt4. Stays paper until #32/#33 (Conrad-only).
+initial_balance = 10000.0
+
+[mt5]
+terminal_path = ""
+timeout_ms = 60000
+# login / password / server: leave empty. Use env vars.
+
+[mt4]
+# Common Files folder. Attach mt4/Experts/Mt4RiskBot.mq4 to one chart.
+# Windows: leave empty (defaults to %APPDATA%\MetaQuotes\Terminal\Common\Files)
+# or set MT4_FILES_DIR. %APPDATA% in this value expands.
+files_dir = ""
+timeout_ms = 5000
+
+[risk]
+risk_pct = 0.005            # 0.5% of equity per trade
+daily_loss_pct = 0.02       # flatten + halt for the UTC day
+max_drawdown_pct = 0.10     # flatten + halt until restart after you inspect
+max_positions = 3
+max_currency_exposure = 2   # net |count| per currency across open trades
+min_rr = 1.5
+max_spread_atr_frac = 0.15
+min_free_margin_pct = 0.50
+magic = 20260909
+halt_file = "HALT"          # create this file to flatten immediately
+deviation_points = 20
+
+[strategy]
+auto = false                # /auto on is refused; see [telegram] below.
+trail = false                # /trail on manages existing positions each tick. Not EMA entries.
+timeframe = "H1"
+fast_ema = 21
+slow_ema = 55
+adx_period = 14
+adx_min = 20.0
+atr_period = 14
+atr_stop_mult = 1.5
+atr_tp_mult = 2.5
+breakeven_r = 1.0
+trail_r = 1.5
+trail_atr_mult = 1.2
+
+[symbols]
+names = ["EURUSD", "GBPUSD", "USDJPY", "AUDUSD"]
+
+[session]
+enabled = true
+start_utc = "07:00"
+end_utc = "17:00"
+skip_friday_after_utc = "16:00"
+
+[engine]
+poll_seconds = 15
+comment = "mt5-risk-bot"
+journal_path = "journal.jsonl"
+
+[telegram]
+notify_events = ["start", "stop", "open", "close", "halt", "order_check_fail", "pending", "recap", "flatten_incomplete"]
+confirm_seconds = 120
+# The handover posture. /approve always and /auto on are refused with a
+# named reason, journaled as `reject`, and never answered in chat.
+allow_approve_always = false
+allow_auto = false
+
+[advice]
+provider = "grok"
+grok_model = "grok-4"
+claude_model = "claude-sonnet-4-5"
+computer_model = "xai/grok-4.6"
+# computer_url / computer_token: environment only (ADVICE_URL, ADVICE_TOKEN)
