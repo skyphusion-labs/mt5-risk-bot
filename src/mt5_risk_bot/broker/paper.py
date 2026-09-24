@@ -250,7 +250,7 @@ class PaperBroker:
         return self._apply(_working_req(order), commit=True)
 
     def modify_position(self, ticket: int, sl: float, tp: float, symbol: str = "") -> OrderResult:
-        req = {"action": TRADE_ACTION_SLTP, "position": ticket, "sl": sl, "tp": tp}
+        req: dict[str, object] = {"action": TRADE_ACTION_SLTP, "position": ticket, "sl": sl, "tp": tp}
         if symbol:
             req["symbol"] = symbol
         return self._apply(req, commit=True)
@@ -314,7 +314,7 @@ class PaperBroker:
         )
 
     def close_by(self, ticket: int, other: int, symbol: str = "") -> OrderResult:
-        req = {"action": TRADE_ACTION_CLOSE_BY, "position": ticket, "position_by": other}
+        req: dict[str, object] = {"action": TRADE_ACTION_CLOSE_BY, "position": ticket, "position_by": other}
         if symbol:
             req["symbol"] = symbol
         return self._apply(req, commit=True)

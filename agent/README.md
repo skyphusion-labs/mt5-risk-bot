@@ -15,7 +15,7 @@ Live:
 
 - Worker: `https://mt5-risk-agent.skyphusion.workers.dev`
 - Health: `GET /health` -> `ok`
-- Ask: `POST /ask` with `Authorization: Bearer ADVICE_TOKEN`
+- Ask: `POST /ask` with `Authorization: Bearer ADVICE_TOKEN` and a `session` in the body
 - The gateway: `mt5-risk-bot` (account `fabcb25d9c7eb087110ec474a03e50d2`)
 - Model: `xai/grok-4.6`
 
@@ -41,6 +41,32 @@ WARNING
 Do not put `CF_AIG_TOKEN` on `gateway.ai.cloudflare.com` as `Authorization`.
 The gateway forwards that header to xAI as a provider key.
 Unified Billing is skipped.
+
+## Session key
+
+`session` names the Durable Object that answers, so it is the boundary between
+one caller's working memory and another's. The Worker validates it before it
+addresses anything.
+
+- It must be PRESENT and a JSON string. A number, a boolean, `null`, an array or
+  an object is refused, not converted to a string.
+- 1 to 64 characters, from letters, digits, dot, underscore and hyphen. No
+  spaces, no newlines, no path or URL separators, no unicode.
+- There is no implicit fallback. An absent or empty `session` is refused; a
+  caller that wants the shared desk sends `default` and means it.
+
+A refused key gets `400 {"error":"invalid session"}` and no Durable Object is
+created. A non-POST `/ask` gets `405 {"error":"POST only"}` from the Worker
+itself now rather than from the Durable Object, for the same reason: the status
+and body are unchanged, but nothing is addressed to produce them.
+
+`ADVICE_SESSIONS` is optional and unset by default. Set it on the deployment to
+a comma-separated list and those are the only keys served; leave it unset and
+the rule above is the only constraint. A list that is set but holds no usable
+entry serves nobody, which is the safe direction for a typo.
+
+The bot posts the Telegram chat id, which fits the rule. `tests/test_desk.py`
+pins that caller side, and `agent/test/session.test.ts` pins this side.
 
 ## Tests
 
@@ -107,5 +133,5 @@ Do not paste tokens into chat.
 
 `/ask` and free text POST `{session, question, context, history, model}`.
 `history` is `journal.tail` (JSON list). The agent writes it to `/workspace/history.json`.
-Session is the Telegram chat id.
+Session is the Telegram chat id, and it is required. See Session key above.
 The agent does not send trades.
