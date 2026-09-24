@@ -10,6 +10,7 @@ from __future__ import annotations
 import sys
 import threading
 import time
+from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
@@ -133,6 +134,21 @@ def _coerce(v: str) -> Any:
 
 def _truthy(v: Any) -> bool:
     return v in {True, 1, "1", "true", "True", "yes"}
+
+
+def _survivor_ticket(d: dict[str, Any], ok: bool) -> int | None:
+    """What the Expert said about exposure left behind by a failed send.
+
+    The Expert states this on every reply from a trade handler, including
+    the ordinary rejections where the answer is zero. Absence therefore
+    means one thing only: the Expert predates this contract and cannot
+    answer. That is COULD NOT MEASURE, and it is reported as None.
+    Returning 0 there would turn an unanswered question into a clean bill
+    of health, which is the defect this field exists to close.
+    """
+    if "survivor_ticket" in d:
+        return int(d.get("survivor_ticket") or 0)
+    return 0 if ok else None
 
 
 def parse_rows(data: dict[str, Any], fields: tuple[str, ...], *, nested: str = "") -> list[dict[str, Any]]:
@@ -345,13 +361,15 @@ class Mt4Broker:
         return self._result(self._call("check_market", self._market_payload(order)))
 
     def market(self, order: MarketOrder) -> OrderResult:
-        return self._result(self._call("market", self._market_payload(order)))
+        return self._result(self._call("market", self._market_payload(order)), sends=True)
 
     def check_working(self, order: WorkingOrder) -> OrderResult:
         return self._result(self._call("check_working", self._working_payload(order)), placed=True)
 
     def working(self, order: WorkingOrder) -> OrderResult:
-        return self._result(self._call("working", self._working_payload(order)), placed=True)
+        return self._result(
+            self._call("working", self._working_payload(order)), placed=True, sends=True
+        )
 
     def modify_position(self, ticket: int, sl: float, tp: float, symbol: str = "") -> OrderResult:
         return self._result(
@@ -451,13 +469,21 @@ class Mt4Broker:
             raise RuntimeError(str(d.get("error")))
         return d
 
-    def _result(self, d: dict[str, Any], *, placed: bool = False) -> OrderResult:
+    def _result(
+        self, d: dict[str, Any], *, placed: bool = False, sends: bool = False
+    ) -> OrderResult:
         if not isinstance(d, dict) or ("ok" not in d and "retcode" not in d):
             # The EA answered with no verdict at all, so nothing was measured.
             # This used to fall through to REJECT, which told the operator the
             # broker said no when the broker had in fact said nothing.
             err = d.get("error") if isinstance(d, dict) else None
-            return OrderResult.unknown(f"no result: {err or 'empty mt4 response'}")
+            unknown = OrderResult.unknown(f"no result: {err or 'empty mt4 response'}")
+            if not sends:
+                return unknown
+            # A send with no verdict cannot tell us whether a position was
+            # opened, so survivorship is unknown too. Zero here would be the
+            # same lie one layer down.
+            return replace(unknown, survivor_ticket=None)
         ok = _truthy(d.get("ok"))
         raw = int(d.get("retcode", 0) or 0)
         if ok:
@@ -476,6 +502,9 @@ class Mt4Broker:
             deal=int(d.get("ticket", 0) or 0),
             volume=float(d.get("volume", 0) or 0),
             price=float(d.get("price", 0) or 0),
+            # Only a send can strand a position. Every other op is asked
+            # nothing, so it answers 0 rather than an alarming None.
+            survivor_ticket=_survivor_ticket(d, ok) if sends else 0,
         )
 
 
