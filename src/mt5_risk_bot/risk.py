@@ -38,6 +38,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 
 from mt5_risk_bot.config import BotConfig, SessionConfig
+from mt5_risk_bot.currencies import CURRENCY_CODES
 from mt5_risk_bot.models import (
     Account,
     EquitySnapshot,
@@ -59,26 +60,77 @@ from mt5_risk_bot.state import (
 )
 
 
+SYMBOL_FX = "fx"
+SYMBOL_NOT_FX = "not_fx"
+FX_ALPHA = 6
+
+
+
 def parse_fx(symbol: str) -> tuple[str, str] | None:
-    s = symbol.replace(".", "").replace("m", "").replace("M", "")
-    # Strip common broker suffixes
-    for suf in ("pro", "mini", "m", "c"):
-        if s.lower().endswith(suf) and len(s) > 6:
-            s = s[: -len(suf)]
-    s = "".join(ch for ch in s if ch.isalpha()).upper()
-    if len(s) >= 6:
-        return s[:3], s[3:6]
+    """Base and quote when the symbol is an FX pair, otherwise None.
+
+    Non-alphabetic characters are dropped, the first six alphabetic characters
+    are taken, and BOTH halves are checked against CURRENCY_CODES. The table
+    CONFIRMS a pair; it never refuses a trade.
+
+    None therefore means one thing only: the currency-exposure limit does not
+    apply to this symbol. It covers an instrument that cannot be a pair (US30),
+    a decoration that hides the pair (FXEURUSD, mEURUSD), and a pair whose code
+    is missing from the table. The caller allows the trade and records the
+    exclusion; it never treats None as zero exposure and never refuses on it.
+
+    Dropping separators is safe BECAUSE the table confirms: EUR.USD resolves to
+    EUR/USD, while US30.cash resolves to USCASH and is rejected by the codes
+    rather than by the shape.
+    """
+    s = "".join(ch for ch in symbol if ch.isalpha()).upper()
+    if len(s) < FX_ALPHA:
+        return None
+    base, quote = s[:3], s[3:6]
+    if base in CURRENCY_CODES and quote in CURRENCY_CODES:
+        return base, quote
     return None
 
 
+def classify_symbol(symbol: str) -> str:
+    """Say whether the currency-exposure limit applies to this symbol.
+
+    SYMBOL_FX: the first six alphabetic characters are two recognised currency
+    codes, so the limit applies.
+
+    SYMBOL_NOT_FX: everything else. The limit is NOT APPLICABLE, which is not
+    the same as unmeasurable and gets the opposite answer: the caller ALLOWS
+    the trade and records the exclusion. There is no third state, because
+    cannot-tell and is-not-FX deserve the same treatment: do not pretend to
+    measure currency exposure, do not block the trade, make it visible.
+
+    Not applicable is never silence. Silence was the original defect.
+    """
+    return SYMBOL_FX if parse_fx(symbol) is not None else SYMBOL_NOT_FX
+
+
+class UnclassifiedSymbol(ValueError):
+    """Raised by currency_exposure for a symbol that is not an FX pair.
+
+    TRIPWIRE, not a gate. evaluate() classifies first and never passes a
+    non-FX symbol here, so this cannot fire from any broker symbol. It exists
+    so a future caller cannot reintroduce the silent skip that was the defect
+    in issue #10, and so caller/classifier divergence fails loudly.
+    """
+
 def currency_exposure(positions: list[Position], extra: tuple[str, Side] | None = None) -> dict[str, int]:
-    """Net count of positions touching each currency. Buy EURUSD: +EUR, -USD."""
+    """Net count of positions touching each currency. Buy EURUSD: +EUR, -USD.
+
+    Raises UnclassifiedSymbol when a symbol cannot be resolved to a pair. An
+    unclassified symbol is unknown exposure, so it must never be counted as
+    zero and silently dropped from the limit.
+    """
     counts: dict[str, int] = {}
 
     def apply(symbol: str, side: Side, sign: int = 1) -> None:
         pair = parse_fx(symbol)
         if pair is None:
-            return
+            raise UnclassifiedSymbol(symbol)
         base, quote = pair
         if side is Side.BUY:
             counts[base] = counts.get(base, 0) + sign
@@ -425,9 +477,27 @@ class RiskManager:
         if any(p.symbol == signal.symbol for p in ours):
             return RiskDecision(allowed=False, reason="already_in_symbol")
 
-        exposure = currency_exposure(ours, extra=(signal.symbol, signal.side))
+        staged_fx = classify_symbol(signal.symbol) == SYMBOL_FX
+        fx_ours = [p for p in ours if classify_symbol(p.symbol) == SYMBOL_FX]
+        excluded = tuple(
+            ([] if staged_fx else [signal.symbol])
+            + [p.symbol for p in ours if classify_symbol(p.symbol) != SYMBOL_FX]
+        )
+        extra = (signal.symbol, signal.side) if staged_fx else None
+        try:
+            exposure = currency_exposure(fx_ours, extra=extra)
+        # TRIPWIRE, not a gate: fx_ours is pre-filtered, so no broker symbol
+        # reaches this. It catches caller/classifier divergence only. A non-FX
+        # position contributes nothing to currency exposure, which is correct
+        # and not an underestimate, so it must never trip this.
+        except UnclassifiedSymbol:
+            return RiskDecision(allowed=False, reason="exposure_unmeasured")
         if any(abs(v) > r.max_currency_exposure for v in exposure.values()):
-            return RiskDecision(allowed=False, reason="currency_exposure")
+            return RiskDecision(
+                allowed=False,
+                reason="currency_exposure",
+                excluded_from_currency_limit=excluded,
+            )
 
         if signal.sl <= 0 or signal.risk_distance <= 0:
             return RiskDecision(allowed=False, reason="sl_required")
@@ -489,4 +559,9 @@ class RiskManager:
         if worst > min(per_trade, self.loss_room(account)) + 1e-9:
             return RiskDecision(allowed=False, reason="size_exceeds_risk")
 
-        return RiskDecision(allowed=True, reason="ok", volume=lots)
+        return RiskDecision(
+            allowed=True,
+            reason="ok",
+            volume=lots,
+            excluded_from_currency_limit=excluded,
+        )
