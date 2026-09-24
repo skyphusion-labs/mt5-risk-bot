@@ -4,6 +4,17 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.3.0
+
+Sender-level authorization for Telegram commands (GHSA-9fg6-2x5f-3jvp).
+
+- `TELEGRAM_ALLOW_SENDERS`, or `telegram.allow_senders` in `config.toml`, lists the Telegram sender ids that may command the desk. Every inbound command is checked against it, read-only commands included. A comma separates ids in the environment variable.
+- An update whose sender cannot be read is refused. An identity that was not measured is not an authorized one.
+- A group, supergroup, or channel chat id is negative. On a negative chat id with an empty allow-list, `run` and `doctor` exit non-zero instead of starting.
+- An empty allow-list on a private chat id is unchanged behaviour. An existing single-operator deployment needs no config edit.
+- A refused command is journaled as `command_rejected` with the sender id, the chat id, and the command name. It is never answered in chat.
+
+
 ## 1.2.0
 
 An MT4 market order can no longer be left open with no stop while the desk is told the send failed (issue #23).

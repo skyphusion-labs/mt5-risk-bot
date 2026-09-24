@@ -74,6 +74,8 @@ class Engine:
         self.last_bar_time: dict[str, int] = {}
         self.halted = False
         self.telegram = telegram
+        if self.telegram is not None and self.telegram.audit_fn is None:
+            self.telegram.audit_fn = self._audit_telegram
         persist = advice_path_for(self.journal.path)
         if advisor is not None:
             self.advisor = advisor
@@ -113,6 +115,10 @@ class Engine:
                 retcode=result.retcode,
                 comment=result.comment,
             )
+
+    def _audit_telegram(self, event: str, fields: dict[str, Any]) -> None:
+        # Journal only: a refusal is never echoed back to the chat.
+        self.journal.write(event, **fields)
 
     def _emit(self, event: str, **fields: Any) -> None:
         self.journal.write(event, **fields)

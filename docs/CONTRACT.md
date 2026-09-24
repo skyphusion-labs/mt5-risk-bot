@@ -46,6 +46,7 @@ Auto EMA trading is off until `/auto on`.
 | Agent billing | `AI_PROVIDER=computer` posts to the agent. The agent bills through the gateway (`CF_AIG_TOKEN`), not a provider key. |
 | Redact | Journal writes, `loop_error` stderr, and Telegram `send` redact BotFather tokens. Named secret keys in the journal become `[REDACTED]`. |
 | File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.equity.json`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600 on Unix. The bot sets umask 077. Windows has no POSIX mode bits; the lock is still exclusive. |
+| Sender lock | `TELEGRAM_ALLOW_SENDERS` (or `telegram.allow_senders`) lists the sender ids that may command the desk. Every command is checked, read-only included. A sender that cannot be read is refused. A negative (shared) chat id with an empty list refuses to start. A refusal is journaled as `command_rejected` and is not answered. |
 | Sizer | `RiskManager.evaluate` is the only sizer. It is not optional. |
 
 ## Forbidden claims
