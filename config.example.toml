@@ -78,7 +78,9 @@ journal_path = "journal.jsonl"
 #   export ADVICE_URL=https://mt5-risk-agent.skyphusion.workers.dev/ask
 #   export ADVICE_TOKEN=              # from agent/.dev.vars, never commit
 [telegram]
-notify_events = ["start", "stop", "open", "close", "halt", "order_check_fail", "pending", "recap"]
+# flatten_incomplete is residual exposure after a failed flatten. It is sent even
+# if you leave it out of this list; see telegram.ALWAYS_NOTIFY_EVENTS.
+notify_events = ["start", "stop", "open", "close", "halt", "order_check_fail", "pending", "recap", "flatten_incomplete"]
 confirm_seconds = 120
 
 [advice]

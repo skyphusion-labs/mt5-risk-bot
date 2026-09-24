@@ -34,11 +34,13 @@ Auto EMA trading is off until `/auto on`.
 | Risk state | `journal.equity.json` holds `day_key`, `day_start_equity`, and `peak_equity` next to the journal. It is the INPUT the gates recompute from, never a stored verdict. The write is atomic (temp file, then rename). |
 | State unreadable | A snapshot that is corrupt, truncated, or from a newer version halts with reason `state_unreadable`. The file is not changed. This is COULD NOT MEASURE, not a clean start. Inspect it, then delete it to start clean; that also resets the peak. |
 | State unwritable | A snapshot that cannot be written halts with reason `state_unwritable`. The next restart would lose the loss budget, so the bot refuses to trade. |
+| Flatten proof | A flatten counts what it closed. It reports `requested`, `confirmed_closed`, `closed_elsewhere`, and the survivor tickets, to `journal.jsonl` as `flatten`. A close is confirmed only when the filled volume covers the whole position, so a partial fill (`DONE_PARTIAL`) is residual risk, never a close. An unreadable book is COULD NOT MEASURE, which counts as an incomplete sweep, not a clean one. |
+| Flatten failure | A sweep that leaves risk open writes `flatten_incomplete` and alerts `FLATTEN INCOMPLETE: n still open` with the tickets. `notify_events` cannot silence that alert. Survivors are never marked already-seen, so they alert again. The halt still holds: a failed flatten stops new entries. |
 | Real money | Real-money accounts (`trade_mode = 2`) refuse orders unless `--i-accept-risk` was passed at start or `/live on I-ACCEPT-RISK` was sent in the locked chat. |
 | Fills SSOT | `journal.jsonl` is the source of truth for fills the bot observed. Pending fills write `open` with `fill=true`. Vanished tickets write `close` with `fill=true`. The venue holds the live book. It is not the fill log. |
 | Paper default | Paper is the default mode. |
 | Alerts | SL/TP hits and pending-order fills emit Telegram alerts even when `/auto` is off. |
-| Notify | Default notify events include `open`, `close`, `pending`, and `recap`. |
+| Notify | Default notify events include `open`, `close`, `pending`, and `recap`. `flatten_incomplete` is always sent, whatever `notify_events` says. |
 | Recap | A UTC day roll sends a recap notify (`journal.tail`, equity vs `day_start`). That is not a trade. `/recap` dumps the same snapshot. |
 | Secrets | Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `AI_PROVIDER`, `ADVICE_URL`, `ADVICE_TOKEN`. |
 | Agent billing | `AI_PROVIDER=computer` posts to the agent. The agent bills through the gateway (`CF_AIG_TOKEN`), not a provider key. |

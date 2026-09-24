@@ -201,6 +201,96 @@ class OrderResult:
 
 
 @dataclass(frozen=True)
+class FlattenReport:
+    """What a flatten sweep actually achieved. Counts, never a bare boolean.
+
+    positions_requested         open positions read before the sweep (the denominator)
+    positions_confirmed_closed  closes whose filled volume covered the whole position
+    positions_closed_elsewhere  absent from the post-sweep read and never confirmed by
+                                us, i.e. an SL/TP or a manual close landed between the
+                                read and the sweep. Not exposure, so not an alarm.
+    survivors                   tickets that may still carry exposure: present in the
+                                post-sweep read, or a close that reported residual
+                                volume, or unverifiable because the read failed
+    residual                    the subset of survivors whose close claimed success
+                                while filling less volume than requested
+    measured                    False when the post-sweep read could not be taken. For
+                                a flatten, COULD NOT MEASURE is an incomplete sweep,
+                                never a clean one: every requested ticket is counted as
+                                a survivor, because the broker that could not be read is
+                                the same broker whose close confirmations would have to
+                                be believed. The count is then an upper bound.
+
+    The denominator is an identity, not a vibe:
+    confirmed_closed + closed_elsewhere + |survivors from the requested set| == requested.
+    Each instrument can only move survivors up, never down.
+    """
+
+    reason: str
+    positions_requested: int = 0
+    positions_confirmed_closed: int = 0
+    positions_closed_elsewhere: int = 0
+    survivors: tuple[int, ...] = ()
+    residual: tuple[int, ...] = ()
+    orders_requested: int = 0
+    orders_confirmed_cancelled: int = 0
+    orders_gone_elsewhere: int = 0
+    order_survivors: tuple[int, ...] = ()
+    measured: bool = True
+
+    @property
+    def survivor_count(self) -> int:
+        return len(self.survivors)
+
+    @property
+    def complete(self) -> bool:
+        return (
+            self.measured
+            and not self.survivors
+            and not self.order_survivors
+            and self.positions_confirmed_closed + self.positions_closed_elsewhere
+            == self.positions_requested
+            and self.orders_confirmed_cancelled + self.orders_gone_elsewhere
+            == self.orders_requested
+        )
+
+    def summary(self) -> str:
+        """One line a human can act on. Never a fixed string."""
+        if self.complete:
+            extra = ""
+            if self.positions_closed_elsewhere:
+                extra = f" ({self.positions_closed_elsewhere} closed elsewhere)"
+            return (
+                f"flattened {self.positions_confirmed_closed}/{self.positions_requested} "
+                f"positions{extra}, cancelled "
+                f"{self.orders_confirmed_cancelled}/{self.orders_requested} orders; halted."
+            )
+        bits = [f"FLATTEN INCOMPLETE: {self.survivor_count} still open"]
+        if self.survivors:
+            bits.append("(" + ", ".join(f"#{t}" for t in self.survivors) + ")")
+        bits.append(
+            f"positions requested={self.positions_requested} "
+            f"confirmed_closed={self.positions_confirmed_closed}."
+        )
+        if self.residual:
+            bits.append(
+                "partial fill left residual volume on "
+                + ", ".join(f"#{t}" for t in self.residual)
+                + "."
+            )
+        if self.order_survivors:
+            bits.append(
+                f"{len(self.order_survivors)} working order(s) not cancelled: "
+                + ", ".join(f"#{t}" for t in self.order_survivors)
+                + "."
+            )
+        if not self.measured:
+            bits.append("COULD NOT MEASURE the post-sweep state; treated as incomplete.")
+        bits.append("HALTED; no new entries. Check the terminal.")
+        return " ".join(bits)
+
+
+@dataclass(frozen=True)
 class Signal:
     kind: SignalKind
     symbol: str

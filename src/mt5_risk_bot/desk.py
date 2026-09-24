@@ -596,10 +596,15 @@ class Desk:
     def _halt(self) -> str:
         self._clear_pending("confirm_cancel")
         self.engine.risk.write_halt_file("telegram")
-        self.engine.flatten("telegram")
-        acct = self.engine.broker.account()
-        self.engine._emit("halt", reason="telegram", equity=acct.equity)
-        return "flattened and halted. /resume clears the operator HALT file."
+        report = self.engine.flatten("telegram")
+        # The equity read must never swallow the sweep result: the operator asked
+        # what happened to their positions, not what the account balance is.
+        try:
+            acct = self.engine.broker.account()
+            self.engine._emit("halt", reason="telegram", equity=acct.equity)
+        except (RuntimeError, OSError, ValueError) as exc:
+            self.engine._emit("halt", reason="telegram", equity=0.0, error=str(exc))
+        return f"{report.summary()} /resume clears the operator HALT file."
 
     def _resume(self) -> str:
         leftover = self.engine.risk.clear_operator_halt()

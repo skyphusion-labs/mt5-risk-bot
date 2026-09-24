@@ -165,6 +165,10 @@ A `HALT` file does the same.
 The bot stays halted.
 The bot does not exit.
 `/resume` works without a restart.
+A flatten that does not finish says so.
+The reply and the alert both start with `FLATTEN INCOMPLETE`.
+They give the number of positions still open.
+The bot stays halted either way.
 
 CAUTION
 Two `run --loop` on the same journal cannot run together.
@@ -271,9 +275,21 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
    The bot drops the staged confirm.
    The bot stops sending.
    The bot stays up.
-3. To resume an operator halt, remove the file and send `/resume`.
+3. Read the reply, or the Telegram alert.
+   A clean sweep reads `flattened 2/2 positions, cancelled 1/1 orders; halted.`
+   A bad sweep reads `FLATTEN INCOMPLETE: 1 still open (#123).`
+   The alert also names the reason and the ticket.
+   You cannot turn this alert off with `notify_events`.
+4. If you see `FLATTEN INCOMPLETE`, open the terminal now.
+   Close the named tickets by hand.
+   The bot is halted and sends nothing new.
+   But the named tickets still carry risk.
+   `COULD NOT MEASURE` means the bot could not read the book.
+   Then the count is the worst case, not a fact.
+   Check every ticket the bot asked to close.
+5. To resume an operator halt, remove the file and send `/resume`.
    `/resume` only clears the operator file.
-4. Daily-loss halt self-clears at the next UTC midnight.
+6. Daily-loss halt self-clears at the next UTC midnight.
    Drawdown halt does not.
    Inspect and restart for drawdown.
    Daily-loss and max-drawdown cannot be cleared from Telegram.
@@ -441,6 +457,7 @@ Bare `/cancel` drops a staged confirm.
 It drops the confirm.
 It cancels working orders.
 It flattens positions.
+The reply gives the counts, not a fixed sentence.
 `/resume` only clears that file.
 Daily-loss and max-drawdown cannot be cleared from Telegram.
 
@@ -488,7 +505,13 @@ A pending fill writes `open` with `fill=true`.
 A vanished ticket writes `close` with `fill=true`.
 The venue holds the live book. It is not the fill log.
 
-JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `live_on`, `live_off`, `live_not_restored`, `risk_state_error`, `stop`.
+JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `live_on`, `live_off`, `live_not_restored`, `risk_state_error`, `flatten`, `flatten_incomplete`, `close_failed`, `close_partial`, `cancel_failed`, `positions_read_failed`, `orders_read_failed`, `stop`.
+`flatten` is one record per sweep.
+It carries `requested`, `confirmed_closed`, `closed_elsewhere`, `survivor_count`, and `measured`.
+`flatten_incomplete` is the same record, written again, when the sweep left risk open.
+Grep `flatten_incomplete` after any halt.
+`close_partial` means the broker filled less volume than asked.
+That is residual risk, not a close.
 Grep `reject` if it never trades.
 `outside_session` and `no_regime` are the usual reasons.
 `reconnect` is an MT5 IPC drop then `initialize`.

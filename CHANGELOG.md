@@ -4,6 +4,17 @@ NOTE: Operator docs from 1.0.0 use 8th-grade Simplified Technical English.
 Do not treat older changelog wording as the operator contract.
 See README.md and docs/CONTRACT.md.
 
+## 1.1.4
+
+- `flatten` can fail loudly. It counts positions requested, positions confirmed closed, positions closed elsewhere, and survivors, and returns a `FlattenReport`. Every count goes to `journal.jsonl` as `flatten`.
+- A sweep that leaves risk open also writes `flatten_incomplete` and alerts `FLATTEN INCOMPLETE: n still open` with the tickets. `notify_events` cannot silence that alert (`telegram.ALWAYS_NOTIFY_EVENTS`).
+- Survivors are no longer folded into `_seen_pos`. A position that outlived a flatten alerts again instead of being marked already-seen.
+- A close is confirmed only when the filled volume covers the whole position. `RETCODE_OK` includes `DONE_PARTIAL`, so `ok=True` with residual volume now counts as a survivor, not a close. `RETCODE_OK` itself is unchanged.
+- An unreadable book on a flatten is COULD NOT MEASURE, reported as an incomplete sweep with the survivor count as an upper bound. Never a clean one.
+- `flatten` no longer raises. A broker call that fails mid sweep is journaled (`close_failed`, `cancel_failed`, `close_partial`), the sweep finishes, and `halted` is still set. Before this, an exception on one close skipped the halt entirely.
+- Cancelling working orders checks its results too. A refused cancel is a survivor.
+- `/halt` reports what happened, with counts, instead of the fixed string `flattened and halted.`
+
 ## 1.1.3
 
 Restart no longer restores the permissive state and discards the protective one (issue #7).

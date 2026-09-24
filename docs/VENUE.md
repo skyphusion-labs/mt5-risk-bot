@@ -37,6 +37,13 @@ Only `OrderResult.ok` is a send.
 Engine uses `OrderResult.unchanged` and `OrderResult.invalid_stops`.
 It does not import MT5 retcode integers.
 
+`RETCODE_OK` includes `DONE_PARTIAL`, so `ok` means the send was accepted, not
+that it filled in full. A caller that needs the whole volume gone compares
+`OrderResult.volume` against the volume it asked for. `Engine.flatten` does
+exactly that, and `FlattenReport` carries the result. Read `pos.volume` before
+the close, never after: `Position` is mutable and `PaperBroker` returns live
+references, so a partial close rewrites it in place.
+
 ## Methods
 
 | Method | Meaning |

@@ -98,7 +98,19 @@ class Mt5Config:
     server: str = ""
 
 
-DEFAULT_TG_EVENTS = ("start", "stop", "open", "close", "halt", "order_check_fail", "pending", "recap")
+DEFAULT_TG_EVENTS = (
+    "start",
+    "stop",
+    "open",
+    "close",
+    "halt",
+    "order_check_fail",
+    "pending",
+    "recap",
+    # Residual exposure after a failed flatten. Also in telegram.ALWAYS_NOTIFY_EVENTS,
+    # so removing it from a config file does not silence it.
+    "flatten_incomplete",
+)
 
 
 @dataclass

@@ -240,13 +240,30 @@ HELP = (
 )
 
 
+# Safety events an operator's notify_events list cannot silence. Every config.toml
+# written before these events existed enumerates notify_events explicitly, so a
+# filterable alert would reach nobody on any existing install. Keep this set tiny:
+# it is for residual-exposure alarms only.
+ALWAYS_NOTIFY_EVENTS = frozenset({"flatten_incomplete"})
+
+
 @dataclass
 class TelegramClient:
     token: str
     chat_id: str
     notify_events: frozenset[str] = field(
         default_factory=lambda: frozenset(
-            {"start", "stop", "open", "close", "halt", "order_check_fail", "pending", "recap"}
+            {
+                "start",
+                "stop",
+                "open",
+                "close",
+                "halt",
+                "order_check_fail",
+                "pending",
+                "recap",
+                "flatten_incomplete",
+            }
         )
     )
     transport: Transport = field(default_factory=UrlLibTransport)
@@ -374,6 +391,6 @@ class TelegramClient:
         return out
 
     def notify(self, event: str, text: str) -> bool:
-        if event not in self.notify_events:
+        if event not in self.notify_events and event not in ALWAYS_NOTIFY_EVENTS:
             return False
         return self.send(text)
