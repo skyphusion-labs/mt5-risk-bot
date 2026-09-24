@@ -145,7 +145,7 @@ def parse_allow_senders(raw: object) -> tuple[int, ...]:
     """Normalise allow_senders from a TOML list or a comma-separated env var."""
     if raw is None:
         return ()
-    items = str(raw).split(",") if isinstance(raw, str) else list(raw)  # type: ignore[arg-type]
+    items = str(raw).split(",") if isinstance(raw, str) else list(raw)  # type: ignore[call-overload]
     out: list[int] = []
     for item in items:
         text = str(item).strip()
@@ -181,7 +181,7 @@ class TelegramConfig:
 class AdviceConfig:
     provider: str = "grok"  # grok | claude | computer
     grok_model: str = "grok-4"
-    claude_model: str = "claude-sonnet-4-5"
+    claude_model: str = "claude-sonnet-5"
     grok_key: str = ""
     claude_key: str = ""
     grok_url: str = "https://api.x.ai/v1/chat/completions"
@@ -383,7 +383,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
         advice=AdviceConfig(
             provider=provider if provider in {"grok", "claude", "computer"} else "grok",
             grok_model=str(advice_s.get("grok_model", "grok-4")),
-            claude_model=str(advice_s.get("claude_model", "claude-sonnet-4-5")),
+            claude_model=str(advice_s.get("claude_model", "claude-sonnet-5")),
             grok_key=grok_key,
             claude_key=claude_key,
             grok_url=str(advice_s.get("grok_url", "https://api.x.ai/v1/chat/completions")),
