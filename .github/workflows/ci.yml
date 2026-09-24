@@ -62,6 +62,7 @@ jobs:
           fi
 
   agent:
+    if: false  # DELIBERATE DEFECT fc26 -- force agent-typecheck to be SKIPPED, not failed, to prove the ci aggregator catches a skipped upstream too
     name: agent-typecheck
     runs-on: ubuntu-latest
     timeout-minutes: 10
