@@ -6,17 +6,15 @@ See README.md and docs/CONTRACT.md.
 
 ## 1.4.0
 
-An MT4 market order can no longer be left open with no stop while the desk is told the send failed (issue #23).
-
-- An MT4 market send is two calls: `OrderSend` with no stop, then `OrderModify`. If the second call failed, the Expert attempted one unchecked `OrderClose` and reported a plain failure either way. If that close also failed, or if the Expert could not even SELECT the ticket, the position stayed open with no stop and the desk was told the send failed. Nothing on either side reconciled that state.
-- The rollback is now verified against the book rather than against a return value. The Expert re-reads the ticket and only reports a clean failure when `OrderCloseTime()` confirms it is gone. A failed `OrderSelect` now rolls back instead of abandoning the ticket.
-- When the rollback cannot be verified, the reply carries `survivor_ticket=<ticket>` and `error=sl_modify_failed_position_live`. `Fail()` had no ticket field at all, so the wire previously could not express this state even in principle.
-- `OrderResult.survivor_ticket`: `0` nothing survived, a positive ticket is live exposure the desk was told did not exist, `None` is COULD NOT MEASURE. Venues that attach the stop with the entry, including MT5, have no such window and report `0`.
-- An Expert older than 1.2.0 does not send the field. That reads as `None`, never as `0`. An unanswered question is not an all clear.
-- Two journal events: `unmanaged_position` and `survivor_unknown`. Both are also sent to Telegram in words, because a live unstopped position the desk does not know about is not a journal-only condition.
-- Working orders get the same treatment, with `OrderDelete` and `sl_modify_failed_order_live`.
-- `OnInit` scans the book at startup and prints every position that is open with no stop. New `ReconcileMagic` input filters the scan; `0` reports all. The Expert reports these and does not adopt them.
-- `docs/MT4.md` documented the two-step entry as an ECN feature and stated that the Expert closes the ticket on a modify failure. It did not close it reliably. The section now states the three outcomes and which one leaves money at risk.
+- Every refusal on the desk and advice paths is now a structured journal record. Before this, `reject` was written on the auto/EMA leg only, so a refusal of anything a human or the model initiated left no machine-readable trace and could only be read as the English reply `refused: <reason>`. Asserting a gate on that string is asserting on prose.
+- One event name for every gate that says no, on every path: `reject`, carrying the NAMED `reason` plus `source` (`auto`, `telegram`, `advice`) and `stage` (`signal`, `stage`, `stage_close`, `confirm`, `reverse`, `confirm_reverse`, `reverse_after_close`, `approve`). `symbol`, `kind`, `rr`, `ticket`, and `command` ride along when the refused request had them. The auto leg now carries `source` and `stage` too, so the discriminator is total instead of being read from an absent field.
+- A refusal is journaled and is never echoed back into the chat that triggered it. It goes through `journal.write`, never `Engine._emit`, which is the chat broadcast path.
+- With no journal configured a refusal still prints to stderr. A control that goes silent because a file is missing cannot report that it was exercised.
+- The advice turn itself is now recorded: `advice_turn` with `provider`, `session`, `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, and `staged`. The question and the model reply are never journaled, so the redaction surface does not grow and `advice_history` stays free of prose.
+- `advice_circuit_block` records the circuit refusing to let the model stage at all. That gate decided whether the model could trade and wrote nothing.
+- `advice_stage_failed` carries `measured=false` for an advice action that could not be turned into an order at all. COULD NOT MEASURE is not REFUSED and is deliberately not a `reject`, so a refusal-reason count cannot absorb an unmeasured outcome.
+- `/auto on` and `/auto off` write `auto_on` and `auto_off`. `/live` and `/approve` were both audited and arming the autonomous trader was not.
+- No behaviour changes. Every refusal returns the same reply it did before; the records are additive.
 
 
 ## 1.3.0
@@ -32,15 +30,17 @@ Sender-level authorization for Telegram commands (GHSA-9fg6-2x5f-3jvp).
 
 ## 1.2.0
 
-- Every refusal on the desk and advice paths is now a structured journal record. Before this, `reject` was written on the auto/EMA leg only, so a refusal of anything a human or the model initiated left no machine-readable trace and could only be read as the English reply `refused: <reason>`. Asserting a gate on that string is asserting on prose.
-- One event name for every gate that says no, on every path: `reject`, carrying the NAMED `reason` plus `source` (`auto`, `telegram`, `advice`) and `stage` (`signal`, `stage`, `stage_close`, `confirm`, `reverse`, `confirm_reverse`, `reverse_after_close`, `approve`). `symbol`, `kind`, `rr`, `ticket`, and `command` ride along when the refused request had them. The auto leg now carries `source` and `stage` too, so the discriminator is total instead of being read from an absent field.
-- A refusal is journaled and is never echoed back into the chat that triggered it. It goes through `journal.write`, never `Engine._emit`, which is the chat broadcast path.
-- With no journal configured a refusal still prints to stderr. A control that goes silent because a file is missing cannot report that it was exercised.
-- The advice turn itself is now recorded: `advice_turn` with `provider`, `session`, `action`, `symbol`, `sl`, `tp`, `limit`, `stop`, `ticket`, and `staged`. The question and the model reply are never journaled, so the redaction surface does not grow and `advice_history` stays free of prose.
-- `advice_circuit_block` records the circuit refusing to let the model stage at all. That gate decided whether the model could trade and wrote nothing.
-- `advice_stage_failed` carries `measured=false` for an advice action that could not be turned into an order at all. COULD NOT MEASURE is not REFUSED and is deliberately not a `reject`, so a refusal-reason count cannot absorb an unmeasured outcome.
-- `/auto on` and `/auto off` write `auto_on` and `auto_off`. `/live` and `/approve` were both audited and arming the autonomous trader was not.
-- No behaviour changes. Every refusal returns the same reply it did before; the records are additive.
+An MT4 market order can no longer be left open with no stop while the desk is told the send failed (issue #23).
+
+- An MT4 market send is two calls: `OrderSend` with no stop, then `OrderModify`. If the second call failed, the Expert attempted one unchecked `OrderClose` and reported a plain failure either way. If that close also failed, or if the Expert could not even SELECT the ticket, the position stayed open with no stop and the desk was told the send failed. Nothing on either side reconciled that state.
+- The rollback is now verified against the book rather than against a return value. The Expert re-reads the ticket and only reports a clean failure when `OrderCloseTime()` confirms it is gone. A failed `OrderSelect` now rolls back instead of abandoning the ticket.
+- When the rollback cannot be verified, the reply carries `survivor_ticket=<ticket>` and `error=sl_modify_failed_position_live`. `Fail()` had no ticket field at all, so the wire previously could not express this state even in principle.
+- `OrderResult.survivor_ticket`: `0` nothing survived, a positive ticket is live exposure the desk was told did not exist, `None` is COULD NOT MEASURE. Venues that attach the stop with the entry, including MT5, have no such window and report `0`.
+- An Expert older than 1.2.0 does not send the field. That reads as `None`, never as `0`. An unanswered question is not an all clear.
+- Two journal events: `unmanaged_position` and `survivor_unknown`. Both are also sent to Telegram in words, because a live unstopped position the desk does not know about is not a journal-only condition.
+- Working orders get the same treatment, with `OrderDelete` and `sl_modify_failed_order_live`.
+- `OnInit` scans the book at startup and prints every position that is open with no stop. New `ReconcileMagic` input filters the scan; `0` reports all. The Expert reports these and does not adopt them.
+- `docs/MT4.md` documented the two-step entry as an ECN feature and stated that the Expert closes the ticket on a modify failure. It did not close it reliably. The section now states the three outcomes and which one leaves money at risk.
 
 
 ## 1.1.5
