@@ -83,6 +83,22 @@ def resolve_mt4_files_dir(raw: str, *, platform: str | None = None) -> str:
     return ""
 
 
+def resolve_state_path(raw: str, *, base_dir: Path) -> str:
+    """Anchor a relative journal_path/halt_file to an explicit base (fc34).
+
+    `base_dir` is the config file's own directory when --config was given,
+    else the process working directory -- both documented, explicit bases.
+    What this refuses is the alternative: a relative path resolving
+    implicitly against wherever the process happens to be started from.
+    Under Windows Task Scheduler that working directory is not the repo,
+    so the journal, the instance lock, and the emergency HALT file must
+    not depend on it. An absolute path (already pinned by the operator)
+    passes through unchanged.
+    """
+    p = Path(raw)
+    return str(p if p.is_absolute() else base_dir / p)
+
+
 @dataclass
 class Mt4Config:
     files_dir: str = ""
@@ -209,6 +225,11 @@ def _hhmm(s: str) -> str:
 
 def load_config(path: str | Path | None = None) -> BotConfig:
     data: dict = {}
+    # Explicit, documented base for resolve_state_path(): the config
+    # file's own directory when one was given, else the process working
+    # directory. Both are named; neither is "wherever we happened to
+    # start" by accident.
+    base_dir = Path(path).resolve().parent if path is not None else Path.cwd()
     if path is not None:
         raw = Path(path).read_bytes()
         parsed = tomllib.loads(raw.decode("utf-8"))
@@ -255,7 +276,9 @@ def load_config(path: str | Path | None = None) -> BotConfig:
         symbols=names,
         poll_seconds=int(os.environ.get("POLL_SECONDS", engine_s.get("poll_seconds", 15))),
         comment=str(engine_s.get("comment", "mt5-risk-bot")),
-        journal_path=str(engine_s.get("journal_path", "journal.jsonl")),
+        journal_path=resolve_state_path(
+            str(engine_s.get("journal_path", "journal.jsonl")), base_dir=base_dir
+        ),
         risk=RiskConfig(
             risk_pct=float(risk_s.get("risk_pct", 0.005)),
             daily_loss_pct=float(risk_s.get("daily_loss_pct", 0.02)),
@@ -266,7 +289,9 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             max_spread_atr_frac=float(risk_s.get("max_spread_atr_frac", 0.15)),
             min_free_margin_pct=float(risk_s.get("min_free_margin_pct", 0.50)),
             magic=int(risk_s.get("magic", 20260909)),
-            halt_file=str(risk_s.get("halt_file", "HALT")),
+            halt_file=resolve_state_path(
+                str(risk_s.get("halt_file", "HALT")), base_dir=base_dir
+            ),
             max_risk_multiple=float(risk_s.get("max_risk_multiple", 1.0)),
             deviation_points=int(risk_s.get("deviation_points", 20)),
         ),
