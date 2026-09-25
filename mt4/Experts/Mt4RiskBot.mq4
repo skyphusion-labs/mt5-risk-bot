@@ -4,8 +4,68 @@
 
 input int Slippage = 30;
 input int ReconcileMagic = 0;   // 0 = report every position that has no stop
+input int SingletonStaleSeconds = 15;  // age at which a crashed instance's claim is taken over
+input int MailboxStaleSeconds = 60;    // age at which a wedged mailbox mutex is taken over
+
+// Terminal-wide named locks. GlobalVariableSetOnCondition is the ONLY primitive
+// MQL4 documents as atomic, and it documents this exact use: "Function provides
+// atomic access to the global variable, so it can be used for providing of a
+// mutex at interaction of several Expert Advisors working simultaneously within
+// one client terminal." Both locks below are built on it and on nothing else.
+// FileMove's atomicity is NOT documented, so it is used as a second barrier and
+// never as the guarantee.
+#define SE_SINGLETON_LOCK "straightedge_mt4_singleton"
+#define SE_MAILBOX_LOCK   "straightedge_mt4_mailbox"
 
 bool gBusy = false;
+bool gHoldsSingleton = false;
+bool gHoldsMailbox = false;
+string gClaimPath = "";
+
+// A lock is held as a TIMESTAMP that the holder refreshes. A lock whose stamp
+// has not moved for staleSecs is taken over with a compare-and-set against the
+// exact stale value, so if several instances see it stale at the same moment
+// only one wins the swap. GlobalVariableTemp creates the variable; temporary
+// globals "exist only while the client terminal is running", so a terminal crash
+// cannot leave one behind on disk to block a legitimate restart. Its initial
+// value is undocumented, which is why a non-zero fresh variable still falls
+// through to the stale path instead of being assumed free.
+bool LockAcquire(string name, int staleSecs)
+{
+   double now = (double)TimeLocal();
+   if(now <= 0)
+      now = 1;
+   // Create it if absent. If creation fails AND it still does not exist, refuse
+   // rather than fall through and treat an unreadable lock as a free one.
+   if(!GlobalVariableCheck(name) && !GlobalVariableTemp(name) && !GlobalVariableCheck(name))
+      return false;
+   if(GlobalVariableSetOnCondition(name, now, 0.0))
+      return true;
+   double held = GlobalVariableGet(name);
+   if(held == 0.0)
+      return GlobalVariableSetOnCondition(name, now, 0.0);
+   if(now - held > staleSecs)
+      return GlobalVariableSetOnCondition(name, now, held);
+   return false;
+}
+
+void LockRefresh(string name)
+{
+   GlobalVariableSet(name, (double)TimeLocal());
+}
+
+void LockRelease(string name)
+{
+   GlobalVariableSet(name, 0.0);
+}
+
+double LockAge(string name)
+{
+   double held = GlobalVariableGet(name);
+   if(held == 0.0)
+      return 0;
+   return (double)TimeLocal() - held;
+}
 
 // Report every position that is open with no stop loss. A position that
 // predates this session is NOT adopted: this Expert only reports it, so a
@@ -41,8 +101,26 @@ void ReportUnmanaged()
 
 int OnInit()
 {
+   // LAYER 2, visibility. Exactly one straightedge Expert per terminal. A second
+   // instance refuses to initialise rather than quietly competing for the
+   // mailbox, because two instances would both send the same order.
+   if(!LockAcquire(SE_SINGLETON_LOCK, SingletonStaleSeconds))
+   {
+      Print("mt4riskbot REFUSING TO START: another straightedge Expert is already",
+            " running in this terminal and owns the mt4_risk_bot mailbox (holder",
+            " last seen ", DoubleToString(LockAge(SE_SINGLETON_LOCK), 0), "s ago).",
+            " Attach this Expert to exactly ONE chart. Two instances would both",
+            " send the same order, so this one is stopping.");
+      return(INIT_FAILED);
+   }
+   gHoldsSingleton = true;
+   // Per-instance claim path. Only this chart ever writes it, so an orphan left
+   // by a crash is this chart's own to overwrite on its next claim.
+   gClaimPath = "mt4_risk_bot.req.claim." + IntegerToString((int)ChartID());
    if(!EventSetMillisecondTimer(100))
       EventSetTimer(1);
+   Print("mt4riskbot singleton acquired chart=", IntegerToString((int)ChartID()),
+         " claim=", gClaimPath);
    ReportUnmanaged();
    return(INIT_SUCCEEDED);
 }
@@ -50,6 +128,19 @@ int OnInit()
 void OnDeinit(const int reason)
 {
    EventKillTimer();
+   // Release ONLY what this instance actually holds. OnDeinit also runs after
+   // OnInit returns INIT_FAILED, and a refusing instance that released the lock
+   // would hand the mailbox to itself on the next attach.
+   if(gHoldsMailbox)
+   {
+      LockRelease(SE_MAILBOX_LOCK);
+      gHoldsMailbox = false;
+   }
+   if(gHoldsSingleton)
+   {
+      LockRelease(SE_SINGLETON_LOCK);
+      gHoldsSingleton = false;
+   }
 }
 
 void OnTimer()
@@ -64,15 +155,54 @@ void OnTick()
 
 void Process()
 {
+   // Heartbeat. Refreshed from the timer AND from ticks, so a terminal where
+   // EventSetMillisecondTimer failed still keeps this instance's claim fresh.
+   if(gHoldsSingleton)
+      LockRefresh(SE_SINGLETON_LOCK);
    if(gBusy)
       return;
    if(!FileIsExist("mt4_risk_bot.req", FILE_COMMON))
       return;
    gBusy = true;
+
+   // LAYER 1a, correctness. The documented atomic mutex. Nothing below this line
+   // runs in two instances of this Expert in the same terminal at once.
+   if(!LockAcquire(SE_MAILBOX_LOCK, MailboxStaleSeconds))
+   {
+      gBusy = false;
+      return;
+   }
+   gHoldsMailbox = true;
+
+   // LAYER 1b, correctness. Claim by rename. The shared name is GONE before a
+   // single byte of the body is read, and the body is read from a path only this
+   // instance writes. A loser's FileMove fails because the source no longer
+   // exists, and it returns without reading a request another instance is about
+   // to execute. The old sequence read the shared name FIRST and deleted it
+   // afterwards, so both readers got the whole body and both sent the order.
+   if(!FileMove("mt4_risk_bot.req", FILE_COMMON, gClaimPath, FILE_COMMON|FILE_REWRITE))
+   {
+      Print("mt4riskbot claim lost: mt4_risk_bot.req was gone before this instance",
+            " could rename it err=", GetLastError(), ". Nothing executed. If this",
+            " repeats, a second Expert is claiming the mailbox.");
+      LockRelease(SE_MAILBOX_LOCK);
+      gHoldsMailbox = false;
+      gBusy = false;
+      return;
+   }
+
    int share = FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE;
-   int h = FileOpen("mt4_risk_bot.req", share);
+   int h = FileOpen(gClaimPath, share);
    if(h == INVALID_HANDLE)
    {
+      // Claimed and unreadable. The request is DROPPED, never put back: the
+      // adapter times out and reports no result, which is the safe answer. A
+      // request that is replayed after a restart is a duplicate order.
+      Print("mt4riskbot claimed request unreadable path=", gClaimPath,
+            " err=", GetLastError(), ". Dropped, not replayed.");
+      FileDelete(gClaimPath, FILE_COMMON);
+      LockRelease(SE_MAILBOX_LOCK);
+      gHoldsMailbox = false;
       gBusy = false;
       return;
    }
@@ -80,7 +210,7 @@ void Process()
    while(!FileIsEnding(h))
       body = body + FileReadString(h) + "\n";
    FileClose(h);
-   FileDelete("mt4_risk_bot.req", FILE_COMMON);
+   FileDelete(gClaimPath, FILE_COMMON);
    string reply = Handle(body);
    int w = FileOpen("mt4_risk_bot.res.tmp", FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
    if(w != INVALID_HANDLE)
@@ -91,6 +221,8 @@ void Process()
       FileDelete("mt4_risk_bot.res", FILE_COMMON);
       FileMove("mt4_risk_bot.res.tmp", FILE_COMMON, "mt4_risk_bot.res", FILE_COMMON);
    }
+   LockRelease(SE_MAILBOX_LOCK);
+   gHoldsMailbox = false;
    gBusy = false;
 }
 

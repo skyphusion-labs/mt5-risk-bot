@@ -5,9 +5,20 @@ stopped testing anything; `reason == (the name)` can, so every case
 here compares the reason string, and the desk cases compare the structured
 journal record from #29 rather than the prose the chat gets back.
 
-REASONS is the denominator. It is asserted against the literals actually
+REASONS is the denominator. It is asserted against the reasons actually
 present in risk.py, so adding a reason to the module without adding a case
 here fails the suite instead of quietly lowering the count.
+
+That assertion USED to read risk.py as text with a regex that required a
+closing quote, and issue #61 recorded what it therefore could not see: a reason
+built by concatenation, `reason="spec_not_measured:" + join(...)`. The roster
+read green while the module carried a reason no case covered, which is the
+denominator quietly ceasing to be one. It is now read from the AST by
+tests/refusal_scan.py, which also FAILS on any site it cannot resolve rather
+than skipping it, and the count went 22 -> 24 the moment it could see: the
+missing two were `spec_not_measured` (the reason #61 named) and
+`deviation_below_spread` (added with the gate, in the same shape, deliberately,
+because the fix has to be proven against the form that broke it). #61 closed.
 
 One reason cannot be produced by RiskManager at all, and that is a finding,
 not a gap to paper over. It is pinned by a test that FAILS if it ever becomes
@@ -39,8 +50,8 @@ tests/test_size_guard.py.
 
 from __future__ import annotations
 
-import re
 from datetime import datetime, timezone
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -55,6 +66,8 @@ from straightedge.synthetic import generate_bars
 from straightedge.telegram import TgCommand
 from straightedge.engine import Engine
 
+from refusal_scan import scan_reasons
+
 
 MAGIC = BotConfig().risk.magic
 WED_NOON = datetime(2024, 1, 3, 12, 0, tzinfo=timezone.utc)
@@ -64,6 +77,8 @@ WED_EARLY = datetime(2024, 1, 3, 5, 0, tzinfo=timezone.utc)  # before 07:00 UTC
 # by test_roster_covers_every_reason_in_the_module, so the denominator is
 # measured and not carried forward from an issue body.
 REASONS = (
+    "spec_not_measured",
+    "deviation_below_spread",
     "state_unreadable",
     "state_unwritable",
     "halt_file",
@@ -90,6 +105,23 @@ REASONS = (
 
 # Not reachable through any public RiskManager call. See the module docstring.
 UNREACHABLE = ("halted", "exposure_unmeasured")
+
+# Reasons whose literal is only the HEAD of the runtime string: a payload is
+# appended, so a case asserts startswith and the payload separately. Pinned
+# against the scanner, so a reason that BECOMES prefix-shaped (or stops being)
+# cannot slip past a suite full of equality assertions.
+PREFIX_REASONS = ("spec_not_measured", "deviation_below_spread")
+
+# Sites in risk.py that pass a reason through rather than naming one, exactly as
+# the scanner unparses them. Pinned, not ignored: a scanner with a silent ignore
+# list is the #61 defect again. A NEW forwarding expression fails here and gets
+# looked at, which is the point.
+FORWARDED_REASON_EXPRESSIONS = (
+    "reason",
+    "self._halt_reason",
+    "self._state_integrity_reason",
+    "sticky",
+)
 
 
 def _acct(equity: float = 10_000, **kw) -> Account:
@@ -153,13 +185,25 @@ def test_roster_covers_every_reason_in_the_module() -> None:
     snapshot of the day it was written.
     """
     src = Path(__file__).resolve().parents[1] / "src" / "straightedge" / "risk.py"
-    text = src.read_text(encoding="utf-8")
-    found = set(re.findall(r"reason=\"([a-z_]+)\"", text))
-    found |= set(re.findall(r"_halt\(\"([a-z_]+)\"", text))
-    found |= set(re.findall(r"_halt_reason = \"([a-z_]+)\"", text))
-    found |= set(re.findall(r"return \"([a-z_]+)\"", text))
-    found |= set(re.findall(r"or \"([a-z_]+)\"", text))
+    scan = scan_reasons(src.read_text(encoding="utf-8"))
+    # FIRST, before any comparison: did the scanner manage to read every site?
+    # A reason it could not resolve is not a passed check, and a denominator
+    # built on a partial read is the #61 defect wearing an AST.
+    assert not scan.unresolved, (
+        "the reason scanner could not read these sites in risk.py, so the "
+        "roster below is not a denominator: " + repr(list(scan.unresolved))
+    )
+    assert scan.forwarded == FORWARDED_REASON_EXPRESSIONS, (
+        "risk.py forwards a reason through an expression this file has not "
+        f"pinned: found {scan.forwarded!r}, pinned "
+        f"{FORWARDED_REASON_EXPRESSIONS!r}"
+    )
+    found = set(scan.names)
     found.discard("ok")
+    assert set(PREFIX_REASONS) == scan.prefixes, (
+        "prefix-shaped reasons changed: risk.py has "
+        f"{sorted(scan.prefixes)}, this file pins {sorted(PREFIX_REASONS)}"
+    )
     missing = found - set(REASONS)
     assert not missing, "risk.py names refusal reasons with no case here: " + repr(sorted(missing))
     stale = set(REASONS) - found
@@ -426,7 +470,54 @@ def test_spread_gate_is_skipped_when_atr_is_unknown(tmp_path: Path) -> None:
     """atr=0 means no yardstick, so the spread gate must not fire on a guess."""
     rm = RiskManager(_cfg(tmp_path), halt_dir=tmp_path)
     wide = _tick(bid=1.0990, ask=1.1010)
-    assert _gate(rm, signal=_sig(atr=0.0), tick=wide).reason == "ok"
+    # The tick is deliberately WIDE, because that is what would trip
+    # spread_too_wide if the gate guessed at the missing ATR. It is also 200
+    # points against the 20-point default deviation, which cannot fill at all,
+    # and deviation_below_spread says so WITHOUT an ATR: the spread against the
+    # tolerance is arithmetic, not a guess. So this names the gate that had to
+    # abstain, rather than asserting a blanket ok that a second, unrelated gate
+    # can invalidate.
+    assert _gate(rm, signal=_sig(atr=0.0), tick=wide).reason != "spread_too_wide"
+    # Same missing ATR, a spread the default deviation covers twice over (10
+    # points, which is what the paper broker's own EURUSD spec quotes): the
+    # whole chain reaches ok.
+    narrow = _tick(bid=1.09995, ask=1.10005)
+    assert _gate(rm, signal=_sig(atr=0.0), tick=narrow).reason == "ok"
+
+
+def test_spec_not_measured_names_the_reason(tmp_path: Path) -> None:
+    """A prefix reason, and the one issue #61 was about.
+
+    It is in the roster now only because the scanner reads the tree. The payload
+    lists the fields the venue did not send, so the assertion is startswith plus
+    the payload, never equality.
+    """
+    rm = RiskManager(_cfg(tmp_path), halt_dir=tmp_path)
+    spec = default_spec("EURUSD")
+    blind = replace(spec, point=0.0, unmeasured=frozenset({"point"}))
+    decision = _gate(rm, spec=blind)
+    assert decision.allowed is False
+    assert decision.reason.startswith("spec_not_measured:")
+    assert decision.reason.split(":", 1)[1] == "point"
+
+
+def test_deviation_below_spread_names_the_reason(tmp_path: Path) -> None:
+    """The configured slippage cannot cross the spread, so the send would reject.
+
+    Roster case only. The measured gold numbers, the per-symbol resolution, the
+    boundary and the no-regression proof on FX are in tests/test_deviation.py.
+    """
+    cfg = _cfg(tmp_path)
+    cfg.risk.deviation_points = 4  # against the 10 points default_spec quotes
+    rm = RiskManager(cfg, halt_dir=tmp_path)
+    spec = default_spec("EURUSD")
+    half = (spec.spread * spec.point) / 2.0
+    tick = Tick(time=0, bid=1.10 - half, ask=1.10 + half)
+    decision = _gate(rm, spec=spec, tick=tick, signal=_sig(entry=1.10, sl=1.095, tp=1.1125))
+    assert decision.allowed is False
+    assert decision.reason.startswith("deviation_below_spread:")
+    assert "spread=10pt" in decision.reason
+    assert "set=risk.symbol_deviation_points.EURUSD>=30" in decision.reason
 
 
 def test_margin_buffer_names_the_reason(tmp_path: Path) -> None:

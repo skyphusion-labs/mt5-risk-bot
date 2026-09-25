@@ -149,6 +149,24 @@ class SymbolSpec:
     def min_stop_distance(self) -> float:
         return self.trade_stops_level * self.point
 
+    def points(self, price_distance: float) -> float:
+        """A price distance expressed in venue POINTS.
+
+        This is the unit conversion that makes an instrument-specific number
+        comparable across instruments. 0.0002 on a 5-digit EURUSD (point
+        0.00001) is 20 points; 0.45 on XAUUSD (point 0.01) is 45 points. A
+        limit configured in points can therefore be compared against the live
+        market without the gate knowing which symbol it holds.
+
+        0.0 when `point` is not a measurement. A caller must not read that as
+        a small distance: every gate that needs points runs AFTER the
+        `spec_not_measured` refusal, which names `point` (it is in
+        SPEC_SIZING_FIELDS) and stops before any such gate is reached.
+        """
+        if self.point <= 0:
+            return 0.0
+        return price_distance / self.point
+
 
 @dataclass(frozen=True)
 class PendingOrder:

@@ -28,13 +28,62 @@ on the same Windows host. `journal.lock` uses `msvcrt.locking` there.
 | `mt4_risk_bot.res` | Expert | Python |
 
 Python writes `.req.tmp` and replaces it onto `.req`.
-The Expert deletes `.req` after a full read.
+The Expert CLAIMS `.req` by renaming it to `mt4_risk_bot.req.claim.<chart id>`
+before it reads a byte, and reads the body from the claimed path.
 The Expert writes `.res` in one open/write/flush/close.
 Python accepts `.res` only when `id` matches the request.
 
-One Expert on one chart is enough.
 The mailbox is global under Common Files.
 Do not run two bots against one mailbox.
+
+### One Expert, enforced
+
+"Attach to one chart" used to be a rule the operator had to remember, on the
+order-execution path. It is now what the software enforces, in two layers.
+
+**The claim.** `Process()` never reads the shared name. It takes a terminal-wide
+mutex (`GlobalVariableSetOnCondition`, the one primitive MQL4 documents as
+atomic, and documents for exactly this: "a mutex at interaction of several
+Expert Advisors working simultaneously within one client terminal"), then renames
+`mt4_risk_bot.req` to `mt4_risk_bot.req.claim.<chart id>` and reads the body from
+there. A second Expert reaching the same point finds the source gone, logs
+`claim lost`, and executes nothing. Before this, the Expert read the whole body
+from the shared name and deleted it AFTERWARDS, so two instances both got the
+full request and both called `OrderSend`: one requested trade, two positions,
+double the sized risk, and only one of the two in the journal, which corrupts
+every drawdown and exposure figure derived from it.
+
+**The singleton.** `OnInit()` takes a second terminal-wide lock and returns
+`INIT_FAILED` when another instance holds it, so a duplicate attach fails loudly
+instead of running:
+
+```
+mt4riskbot REFUSING TO START: another straightedge Expert is already running in
+this terminal and owns the mt4_risk_bot mailbox (holder last seen 0s ago).
+Attach this Expert to exactly ONE chart. Two instances would both send the same
+order, so this one is stopping.
+```
+
+So if you do attach a second chart: the second Expert does not start, the line
+above appears in the Experts log, the first Expert keeps trading, and no order is
+duplicated. The holder refreshes its lock on every timer tick and every market
+tick and releases it in `OnDeinit`, so a crashed instance frees it after
+`SingletonStaleSeconds` (default 15) and a legitimate restart is never blocked.
+Both locks are temporary globals, which MT4 deletes at terminal shutdown, so a
+terminal crash cannot leave one behind on disk.
+
+**Scope, stated plainly.** MQL4's atomic guarantee is per TERMINAL. Two separate
+MT4 terminals on one host share Common Files and would contend for the same
+mailbox; there the rename is the only barrier, and MQL4 does not document
+`FileMove` as atomic. Run one terminal against one mailbox.
+
+**Orphans.** A crash between the rename and the reply leaves
+`mt4_risk_bot.req.claim.<chart id>` behind. That file is not the mailbox, so it
+blocks nothing and no other instance waits on it; the same chart overwrites it on
+its next claim (`FILE_REWRITE`). The orphaned request is deliberately NOT
+replayed. The adapter times out and reports no result, which is the safe answer;
+replaying a claimed order after a restart is how you get back the duplicate this
+change removed.
 
 ## Line format
 
@@ -334,7 +383,8 @@ Two checks in there are worth knowing about before editing either side:
    `0 error(s), 0 warning(s)`. Record that line in the handover checklist. CI
    cannot do this step: there is no MQL4 compiler on any runner, so a green CI
    run says nothing about whether the Expert builds.
-2. Attach it to one chart.
+2. Attach it to one chart. A second attach refuses to initialise and prints
+   `REFUSING TO START` in the Experts log; see "One Expert, enforced".
 3. Enable AutoTrading. Allow live trading on the Expert.
 4. Set `account.mode = "mt4"` and `mt4.files_dir`.
 5. `doctor --connect` must print `venue=mt4` and exit 0.

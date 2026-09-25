@@ -1,0 +1,222 @@
+"""Extract every refusal reason `risk.py` can NAME, from the AST (issue #61).
+
+The roster in `test_refusal_reasons.py` is a DENOMINATOR: it asserts that every
+reason literal in `risk.py` is named by a test, so the count cannot silently
+drift. The first version scanned the module as TEXT with a regex that required a
+closing quote, so it matched `reason="max_positions"` and could not see
+
+    reason="spec_not_measured:" + ",".join(sorted(not_measured))
+
+A reason the scanner cannot see is silently dropped, and the roster then reads
+GREEN while `risk.py` carries a reason nothing covers. That is the failure this
+repo keeps finding: an instrument that stops being able to measure its subject
+and reports the reassuring answer instead of saying so.
+
+Two things fix it, and only together:
+
+1. Read the module as a TREE, not as text. A concatenation, an f-string and a
+   module constant all resolve, because the shape of the expression stops
+   mattering.
+
+2. **Fail on a site that cannot be read.** This is the real fix, whatever the
+   matching strategy: every site is classified, and anything the scanner cannot
+   resolve lands in `unresolved`, which the caller asserts is empty. A scanner
+   that skips a line it does not understand is back to the original defect in a
+   more sophisticated costume.
+
+`forwarded` is the other half of (2). Some sites genuinely do not name a reason,
+they pass one along: `RiskDecision(reason=self._halt_reason)` reports a reason
+named somewhere else in the same module, which this scanner reads at that other
+site. Those cannot be treated as findings, and they must not become a silent
+ignore list either, so they are RETURNED and the caller pins the exact set. A
+new forwarding form has to be looked at by a person rather than quietly joining
+the set of things not measured.
+"""
+
+from __future__ import annotations
+
+import ast
+from dataclasses import dataclass
+
+#: The keyword argument every `RiskDecision` carries its reason in.
+REASON_KEYWORD = "reason"
+#: `self._halt("daily_loss")` names its reason positionally.
+HALT_METHOD = "_halt"
+#: `self._halt_reason = "state_unreadable"` names one by assignment.
+HALT_ATTR = "_halt_reason"
+
+
+@dataclass(frozen=True)
+class ReasonScan:
+    """What one pass over a module found.
+
+    names        every reason the module can name, base name only
+    prefixes     the subset whose literal is a PREFIX with a payload appended
+                 at runtime (`spec_not_measured:point`), so a test knows to
+                 assert `startswith` rather than equality
+    forwarded    source expressions that pass a reason through from elsewhere.
+                 Not findings; pinned by the caller so a NEW one is loud.
+    unresolved   sites the scanner could not read at all. Never empty by
+                 design: the caller asserts on it, because this is the list
+                 that says the instrument has stopped measuring.
+    """
+
+    names: frozenset[str]
+    prefixes: frozenset[str]
+    forwarded: tuple[str, ...]
+    unresolved: tuple[str, ...]
+
+
+def _module_string_constants(tree: ast.Module) -> dict[str, str]:
+    """Module-level `NAME = "literal"`, so `reason=SOME_CONSTANT` resolves.
+
+    Without this a constant would look like a local variable and be filed as
+    forwarding, which is how a named reason would go missing while every
+    assertion here still passed.
+    """
+    out: dict[str, str] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign):
+            value = node.value
+            if not (isinstance(value, ast.Constant) and isinstance(value.value, str)):
+                continue
+            for target in node.targets:
+                if isinstance(target, ast.Name):
+                    out[target.id] = value.value
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name):
+            value = node.value
+            if isinstance(value, ast.Constant) and isinstance(value.value, str):
+                out[node.target.id] = value.value
+    return out
+
+
+def _is_self_method_call(node: ast.Call, name: str) -> bool:
+    func = node.func
+    return (
+        isinstance(func, ast.Attribute)
+        and func.attr == name
+        and isinstance(func.value, ast.Name)
+        and func.value.id == "self"
+    )
+
+
+def _returns_str(fn: ast.FunctionDef | ast.AsyncFunctionDef) -> bool:
+    ann = fn.returns
+    return isinstance(ann, ast.Name) and ann.id == "str"
+
+
+class _Collector:
+    """Resolve one expression into literals, prefixes, forwards or unresolved."""
+
+    def __init__(self, consts: dict[str, str]) -> None:
+        self.consts = consts
+        self.names: set[str] = set()
+        self.prefixes: set[str] = set()
+        self.forwarded: set[str] = set()
+        self.unresolved: set[str] = set()
+
+    def visit(self, expr: ast.expr, *, prefix: bool = False) -> None:
+        # A plain literal: the whole reason, unless a caller upstream has told
+        # us it is only the head of one.
+        if isinstance(expr, ast.Constant) and isinstance(expr.value, str):
+            self._record(expr.value, prefix=prefix)
+            return
+        # A module constant resolves to its literal; anything else named is a
+        # local or a parameter, so the reason is named wherever it was set.
+        if isinstance(expr, ast.Name):
+            if expr.id in self.consts:
+                self._record(self.consts[expr.id], prefix=prefix)
+            else:
+                self.forwarded.add(ast.unparse(expr))
+            return
+        if isinstance(expr, (ast.Attribute, ast.Call)):
+            self.forwarded.add(ast.unparse(expr))
+            return
+        # `A + B`: the reason is whatever A is, with a payload appended. Only
+        # the LEFT side can name it, so a concatenation whose left side cannot
+        # be read is unresolved rather than ignored.
+        if isinstance(expr, ast.BinOp) and isinstance(expr.op, ast.Add):
+            self.visit(expr.left, prefix=True)
+            return
+        # An f-string names a reason only if it opens with a literal.
+        if isinstance(expr, ast.JoinedStr):
+            head = expr.values[0] if expr.values else None
+            if isinstance(head, ast.Constant) and isinstance(head.value, str):
+                self._record(head.value, prefix=True)
+            else:
+                self._unresolved(expr)
+            return
+        # `x or "halted"` and `a if c else b` each name every branch.
+        if isinstance(expr, ast.BoolOp):
+            for value in expr.values:
+                self.visit(value, prefix=prefix)
+            return
+        if isinstance(expr, ast.IfExp):
+            self.visit(expr.body, prefix=prefix)
+            self.visit(expr.orelse, prefix=prefix)
+            return
+        self._unresolved(expr)
+
+    def _record(self, value: str, *, prefix: bool) -> None:
+        base = value.rstrip(":") if prefix else value
+        if not base:
+            return  # `reason = ""` clears a reason, it does not name one
+        self.names.add(base)
+        if prefix:
+            self.prefixes.add(base)
+
+    def _unresolved(self, expr: ast.expr) -> None:
+        line = getattr(expr, "lineno", 0)
+        self.unresolved.add(f"line {line}: {ast.unparse(expr)}")
+
+
+def scan_reasons(source: str, *, class_name: str = "RiskManager") -> ReasonScan:
+    """Every refusal reason `source` can name, and every site it could not read.
+
+    Sites examined:
+      - any `reason=` keyword argument, at any call
+      - `self._halt(<reason>)`, which names its reason positionally
+      - any assignment to `self._halt_reason`
+      - every `return` in a `-> str` method of `class_name`, which is how
+        `circuit_reason` and `clear_operator_halt` report one
+    """
+    tree = ast.parse(source)
+    collector = _Collector(_module_string_constants(tree))
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Call):
+            for kw in node.keywords:
+                if kw.arg == REASON_KEYWORD:
+                    collector.visit(kw.value)
+            if _is_self_method_call(node, HALT_METHOD) and node.args:
+                collector.visit(node.args[0])
+        elif isinstance(node, ast.Assign):
+            for target in node.targets:
+                if isinstance(target, ast.Attribute) and target.attr == HALT_ATTR:
+                    collector.visit(node.value)
+        elif isinstance(node, ast.AnnAssign):
+            target = node.target
+            if (
+                isinstance(target, ast.Attribute)
+                and target.attr == HALT_ATTR
+                and node.value is not None
+            ):
+                collector.visit(node.value)
+
+    for node in ast.walk(tree):
+        if isinstance(node, ast.ClassDef) and node.name == class_name:
+            for fn in ast.walk(node):
+                if not isinstance(fn, (ast.FunctionDef, ast.AsyncFunctionDef)):
+                    continue
+                if not _returns_str(fn):
+                    continue
+                for ret in ast.walk(fn):
+                    if isinstance(ret, ast.Return) and ret.value is not None:
+                        collector.visit(ret.value)
+
+    return ReasonScan(
+        names=frozenset(collector.names),
+        prefixes=frozenset(collector.prefixes),
+        forwarded=tuple(sorted(collector.forwarded)),
+        unresolved=tuple(sorted(collector.unresolved)),
+    )
