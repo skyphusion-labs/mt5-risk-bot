@@ -78,6 +78,21 @@ said no" from "we never asked".
 
 MT5 integers and `order_send` dicts stay inside `broker/mt5_live.py` and
 `broker/paper.py` as private translation.
+
+## Two optional things a venue may declare about history
+
+Both are read by `straightedge/history.py` and neither is on the `Broker`
+Protocol, because only some venues have anything to say and a venue that says
+nothing must read as silent rather than as zero.
+
+| Name | Meaning |
+| --- | --- |
+| `history_async = True` | This venue can answer "no bars" now and serve them a moment later, because the terminal fetches history from the broker in the background. The preflight then waits, bounded. MT4 and MT5 set it. A venue that answers from memory must not: `run_backtest` seeds one bar per symbol on purpose and streams the rest, so a wait there is pure latency. |
+| `history_probe(symbol, timeframe, count)` | Returns a `HistoryProbe`: the bars, plus `bars_total`, `selected` and `history_error` when the venue reports them. A venue without this method is read through `rates()` and those three fields stay `None`. |
+
+`None` in any of those three fields means NOT REPORTED. It is never substituted
+with 0, for the same reason `survivor_ticket` is not: a zero that stands in for
+an unanswered question turns "nobody asked" into "no problem".
 The MT5 adapter maps timeframe names with `timeframe_code`.
 MT4 integers stay inside `broker/mt4_live.py` and the Expert.
 

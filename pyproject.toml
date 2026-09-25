@@ -58,6 +58,10 @@ exclude_lines = [
 # Per-file floors. Set from measurement, not aspiration: see tests/conftest.py
 # for why a package-wide --cov-fail-under cannot go red for one file.
 "src/straightedge/broker/mt4_live.py" = 97
+# 99% measured. This file is the instrument that tells an operator a symbol
+# cannot trade; an instrument nobody exercises is where the next silent
+# degradation hides.
+"src/straightedge/history.py" = 98
 
 [tool.ruff]
 target-version = "py312"

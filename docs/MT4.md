@@ -127,7 +127,7 @@ it is read and the retry helpers read it first. Recompile and reattach
 | `account` | Balance, equity, `trade_mode` (`0` demo / `2` real), `trade_allowed`. |
 | `symbol` | Spec for one name. |
 | `tick` | Bid and ask. |
-| `rates` | Bars. `timeframe` is `H1`, not an MT5 integer. Oldest first. |
+| `rates` | Bars, oldest first. `timeframe` is `H1`, not an MT5 integer. Also selects the symbol, asks the terminal to fetch the series if it is short, and reports `bars_total`, `selected` and `history_error`. See History below. |
 | `select` | `SymbolSelect`. |
 | `positions` / `orders` | Open positions or working orders. `magic=0` means all. |
 | `check_market` / `market` | Immediate buy or sell. Check does not send. |
@@ -139,6 +139,61 @@ it is read and the retry helpers read it first. Recompile and reattach
 | `close_by` | `OrderCloseBy`. Hedge accounts only. |
 
 MT4 has no `OrderCheck`. `check_*` is the Expert validating volume and stops.
+
+## History is per symbol AND timeframe
+
+MT4 keeps a separate price series for every symbol/timeframe pair, and it builds
+one only when something asks for it. A terminal with H4 charts open and a desk
+configured for H1 therefore has H1 history for nothing. Measured on the rig:
+
+```
+EURUSD  bars=0    ATR=nan
+USDJPY  bars=0    ATR=nan
+XAUUSD  bars=200  ATR=17.2188
+```
+
+XAUUSD was the only symbol with an H1 chart. Nothing failed: `step_symbol` asked
+for bars, got none, and returned, so two configured symbols were untradeable and
+nothing said so.
+
+**The operator opens no charts.** The desk asks for every configured symbol's
+series at startup, which is what makes the terminal request it from the server,
+and waits up to ten attempts one second apart. The ask is the fix.
+
+`RatesReply` is what makes that possible, and it does three things the earlier
+version did not:
+
+- It calls `SymbolSelect` itself. A symbol absent from Market Watch has no series
+  to serve, and `rates` previously depended on `Engine.start()` having selected
+  it first, which is call order rather than a guarantee.
+- When it holds fewer bars than were asked for, it touches the series (`iClose`
+  on bar 0) before deciding there is nothing to send. Under the old code
+  `iBars() == 0` set the row count to zero, so the loop never ran and no
+  price-series function was reached at all; `iBars` alone is not the documented
+  download trigger.
+- It reports the state of the series on every reply, healthy or not:
+
+| field | Meaning |
+| --- | --- |
+| `bars_total` | Bars the terminal holds for this symbol/timeframe, which can exceed `n`. |
+| `selected` | `1` if `SymbolSelect` succeeded. `0` means the symbol is not in Market Watch. |
+| `history_error` | `GetLastError()` after the touch. `4066` `ERR_HISTORY_WILL_UPDATED` means the download is in flight; `4073` `ERR_NO_HISTORY_DATA` means the terminal has none and is not fetching; `0` means it reported no error. |
+
+Without `history_error`, `ok=1 n=0` meant three different things at once
+(downloading now, not served under this name, genuinely empty) and the desk could
+only read the reassuring one. It now tells "wait" apart from "the symbol name is
+wrong", which is the difference between a nine-second startup pause and a run
+that must not begin.
+
+There is no `Sleep` in the handler and there must not be. `Process()` is a
+single-threaded mailbox behind `gBusy` and the adapter's bridge times out at
+5 seconds, so a wait in there would stall every other op. The wait lives in
+`straightedge/history.py`.
+
+An Expert older than this emits `n=` and the rows only. The adapter reports the
+three fields as `None` in that case, never as zeros, so "the Expert cannot
+answer" stays distinct from "the Expert answered zero". Recompile and reattach
+`Mt4RiskBot.mq4` to get the fields.
 
 ## Two-step entry, and what happens when step two fails
 

@@ -9,6 +9,7 @@ from typing import Any
 from straightedge.broker.base import Broker
 from straightedge.config import BotConfig
 from straightedge.desk import Desk
+from straightedge.history import HistoryReport, preflight
 from straightedge.indicators import adx, ema, last_closed
 from straightedge.indicators import atr as atr_bars
 from straightedge.journal import Journal, redact_text
@@ -86,6 +87,10 @@ class Engine:
             self.advisor = Advisor(cfg.advice, persist_path=persist)
         self.desk = Desk(self, self.advisor)
         self._seen_pos: set[int] | None = None
+        #: Filled by start(). None means the preflight has not run, which is
+        #: NOT the same as "every symbol is fine": a caller that reads this
+        #: before start() must see the difference.
+        self.history: HistoryReport | None = None
         self._opened_this_step: set[int] = set()
         self._closed_this_step: set[int] = set()
         self._scale_outs: dict[int, tuple[float, float]] = {}
@@ -158,11 +163,55 @@ class Engine:
             approve_always_allowed=self.cfg.telegram.allow_approve_always,
             auto_allowed=self.cfg.telegram.allow_auto,
         )
+        # Ask the venue for every configured symbol's series before anything
+        # relies on it. On MT4 the ask IS the fix: a series exists per symbol AND
+        # timeframe and the terminal builds one only when something requests it,
+        # so a cold symbol becomes warm here without the operator opening
+        # anything. What cannot be fixed is NAMED, here, at startup. It used to
+        # surface as step_symbol() returning on an empty bar list with no record
+        # (engine.py:466-468) -- a symbol that never traded and never said why.
+        self.history = self.warm_history()
         self._seen_pos = {
             p.ticket for p in self.broker.positions(magic=self.cfg.risk.magic)
         }
         self.desk.restore_from_journal(self.journal)
         self.advisor.load()
+
+    def warm_history(self, symbols: list[str] | None = None) -> HistoryReport:
+        """Warm and measure the configured symbols, then journal the result.
+
+        Two records on purpose, modelled on flatten / flatten_incomplete:
+        `history_preflight` is journal-only and carries every symbol's numbers
+        whether they are good or not, because the healthy denominator is what
+        makes a later regression visible. `history_unavailable` is the loud one
+        and fires only when a symbol cannot trade, so the chat gets a named
+        failure and never a routine all-clear.
+        """
+        report = preflight(
+            self.broker,
+            self.cfg.symbols if symbols is None else symbols,
+            timeframe=self.cfg.strategy.timeframe,
+            needed=self.strategy.needed_bars(),
+            atr_period=self.cfg.strategy.atr_period,
+        )
+        self._emit(
+            "history_preflight",
+            timeframe=report.timeframe,
+            needed=report.needed,
+            attempts=report.attempts,
+            measured=len(report.symbols),
+            unusable=report.names(),
+            symbols=report.rows(),
+        )
+        if not report.ok:
+            self._emit(
+                "history_unavailable",
+                timeframe=report.timeframe,
+                unusable=report.names(),
+                measured=len(report.symbols),
+                text=report.text(),
+            )
+        return report
 
     def stop(self) -> None:
         self._emit("stop")
@@ -823,7 +872,15 @@ class Engine:
         if not self.broker.select_symbol(name):
             return f"broker rejected {name}"
         self.cfg.symbols.append(name)
-        return f"added {name}\n{self.symbols_text()}"
+        # A symbol added mid-run is as cold as one added to the config, and it
+        # misses the startup warm entirely. Warm it now and answer with what was
+        # measured: "added" on its own would report a symbol that cannot trade
+        # as a success, which is the same silence this whole path exists to end.
+        added = self.warm_history([name])
+        head = f"added {name}"
+        if not added.ok:
+            head = f"{added.text()}\nadded {name} anyway"
+        return f"{head}\n{self.symbols_text()}"
 
     def remove_symbol(self, name: str) -> str:
         name = name.upper()
@@ -1432,6 +1489,11 @@ def _format_event(event: str, fields: dict[str, Any]) -> str:
         )
         tail = str(fields.get("tail") or "")
         return f"{head}\n{tail}".strip()
+    if event == "history_preflight":
+        # Journal-only. The all-clear is a denominator, not news.
+        return ""
+    if event == "history_unavailable":
+        return str(fields.get("text") or "")
     if event == "unmanaged_position":
         return (
             f"UNMANAGED POSITION #{fields.get('ticket')} {fields.get('symbol')}: the send "
