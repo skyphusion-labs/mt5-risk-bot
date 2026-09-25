@@ -184,6 +184,16 @@ def resolve_state_path(raw: str, *, base_dir: Path) -> str:
 class Mt4Config:
     files_dir: str = ""
     timeout_ms: int = 5000
+    #: Seconds `Mt4Broker.startup_connect()` waits for the Expert at startup.
+    #:
+    #: `None` means the operator did not set it, and the adapter's own
+    #: `DEFAULT_STARTUP_WAIT_SEC` applies. It is None rather than a copy of
+    #: that number so the default has exactly ONE declaration, in the module
+    #: that implements the wait; a second copy here would drift silently and
+    #: the config would start reporting a budget the adapter does not use.
+    #: `config.py` cannot import the constant, because
+    #: `straightedge.broker.__init__` imports `straightedge.config`.
+    startup_wait_sec: float | None = None
 
 
 @dataclass
@@ -583,6 +593,12 @@ def load_config(path: str | Path | None = None) -> BotConfig:
                 os.environ.get("MT4_FILES_DIR", str(mt4_s.get("files_dir", "") or ""))
             ),
             timeout_ms=int(mt4_s.get("timeout_ms", 5000)),
+            # Absent is not zero. Zero is a real operator choice ("one ping, do
+            # not wait"), so an unset key must stay None and defer to the
+            # adapter rather than collapse into the same value as a configured 0.
+            startup_wait_sec=(
+                float(mt4_s["startup_wait_sec"]) if "startup_wait_sec" in mt4_s else None
+            ),
         ),
         telegram=TelegramConfig(
             token=tg_token,
