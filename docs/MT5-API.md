@@ -83,7 +83,7 @@ Dict mapped onto `MqlTradeRequest`:
 | `type` | ORDER_TYPE_BUY=0, SELL=1, plus pending types 2-7 |
 | `price` | Required for instant/request execution. Optional for market execution. |
 | `sl` / `tp` | Absolute prices. The bot requires SL. |
-| `deviation` | Max slippage in points |
+| `deviation` | Max slippage in points. Per symbol from `[risk.symbol_deviation_points]`, else `[risk] deviation_points`. Journaled with `deviation_source`. |
 | `type_filling` | FOK=0, IOC=1, RETURN=2. Must match `SYMBOL_FILLING_MODE` bits |
 | `type_time` | GTC=0, DAY=1, SPECIFIED=2 |
 | `comment` | Keep short. Terminals truncate around 31 chars. |

@@ -12,6 +12,27 @@ from pathlib import Path
 from straightedge.constants import TIMEFRAME_BY_NAME, TIMEFRAME_H1
 
 
+#: Where an effective deviation came from. Reported on every send, because a
+#: number whose ORIGIN is invisible cannot be debugged: 20 points read in a
+#: journal says nothing about whether the per-symbol map was consulted, missed,
+#: or never written.
+DEVIATION_FROM_SYMBOL = "symbol"
+DEVIATION_FROM_DEFAULT = "default"
+
+
+@dataclass(frozen=True)
+class DeviationResolution:
+    """Which deviation applied to one send, and where it came from.
+
+    Returned as one value rather than read from two calls, so the number and
+    its provenance cannot be reported out of step with each other.
+    """
+
+    symbol: str
+    points: int
+    source: str
+
+
 @dataclass
 class RiskConfig:
     risk_pct: float = 0.005
@@ -25,13 +46,67 @@ class RiskConfig:
     magic: int = 20260909
     halt_file: str = "HALT"
     max_risk_multiple: float = 1.0
+    #: Maximum tolerated slippage on a send, in POINTS, for any symbol NOT
+    #: listed in `symbol_deviation_points`. A point is instrument-specific, so
+    #: this single number cannot be right everywhere: see the override below.
     deviation_points: int = 20
+    #: Per-symbol override of `deviation_points`, keyed by the symbol name the
+    #: BROKER uses. 20 points is 2 pips on a 5-digit EURUSD and 20 cents on
+    #: XAUUSD, and gold was measured quoting a 45-point spread, so one global
+    #: number is a value that is correct on FX and below one spread on metals.
+    #: Matching is case-insensitive and otherwise exact: a venue that calls
+    #: gold `XAUUSD.m` must be keyed `XAUUSD.m`, because stripping a decoration
+    #: would mean guessing which decorations mean the same instrument. A miss
+    #: falls back to `deviation_points` and is then caught by the
+    #: `deviation_below_spread` gate, which is what makes a mis-keyed entry
+    #: loud instead of silent.
+    symbol_deviation_points: dict[str, int] = field(default_factory=dict)
+    #: How many times the live spread the effective deviation must cover before
+    #: a send is allowed. The default is 1.0 because that is the only multiple
+    #: that can be PROVEN rather than guessed: a market order must cross the
+    #: bid/ask gap to fill at all, so a tolerance smaller than the spread can
+    #: only ever be rejected, on any instrument, with no measurement required.
+    #:
+    #: A higher default was tried first and is wrong. At 3.0 this gate refuses
+    #: the repo's own paper broker, whose EURUSD carries a 10-point spread
+    #: against the 20-point default: a 2x ratio, which is ordinary retail FX
+    #: and fills routinely. The evidence available bounds the true boundary
+    #: between 0.44x (gold at 20 points against a 45-point spread, measured
+    #: rejecting on the live MT4 rig 2026-09-24) and 2.0x (working), and does
+    #: not locate it. Shipping 3.0 would encode a guess about where the
+    #: boundary sits as though it had been measured, and would refuse trades on
+    #: the strength of it.
+    #:
+    #: An operator who wants margin raises this; `DEVIATION_HEADROOM_MULTIPLE`
+    #: is what the refusal RECOMMENDS they set the deviation to, which is a
+    #: separate and larger number on purpose. `validate()` refuses anything
+    #: below 1.0, so the gate cannot be configured below the floor it exists to
+    #: enforce, and there is no value that switches it off.
+    min_deviation_spread_multiple: float = 1.0
     #: Opening sends allowed per UTC day, across auto, telegram and advice.
     #: 0 disables the cap. Counts OPENS only: a close must never be capped,
     #: because a control that can stop you reducing exposure is not a risk
     #: control. `daily_loss_pct` only fires after the money is gone; this is
     #: the one that bounds churn before it.
     max_trades_per_day: int = 0
+
+    def resolve_deviation(self, symbol: str) -> DeviationResolution:
+        """The deviation for this symbol: its own entry, else the global default.
+
+        Symbol-specific first, then the default, and the answer says which one
+        it was. The lookup upper-cases both sides and compares the whole name;
+        `validate()` refuses a map whose keys collide once upper-cased, so this
+        scan cannot silently pick one of two entries for the same symbol.
+        """
+        key = symbol.upper()
+        for name, value in self.symbol_deviation_points.items():
+            if str(name).upper() == key:
+                return DeviationResolution(
+                    symbol=symbol, points=int(value), source=DEVIATION_FROM_SYMBOL
+                )
+        return DeviationResolution(
+            symbol=symbol, points=int(self.deviation_points), source=DEVIATION_FROM_DEFAULT
+        )
 
 
 @dataclass
@@ -284,6 +359,28 @@ class BotConfig:
             raise ValueError("max_positions must be >= 1")
         if r.max_trades_per_day < 0:
             raise ValueError("max_trades_per_day must be >= 0 (0 disables)")
+        if r.min_deviation_spread_multiple < 1.0:
+            raise ValueError(
+                "risk.min_deviation_spread_multiple must be >= 1.0: a deviation "
+                "below one full spread can only produce broker rejections, so "
+                "this gate must not be configurable below the floor it enforces"
+            )
+        seen: dict[str, str] = {}
+        for name, value in r.symbol_deviation_points.items():
+            key = str(name).strip()
+            if not key:
+                raise ValueError("risk.symbol_deviation_points has an empty symbol key")
+            if int(value) <= 0:
+                raise ValueError(
+                    f"risk.symbol_deviation_points.{key} must be > 0 points"
+                )
+            upper = key.upper()
+            if upper in seen:
+                raise ValueError(
+                    "risk.symbol_deviation_points has two entries for the same "
+                    f"symbol once upper-cased: {seen[upper]!r} and {key!r}"
+                )
+            seen[upper] = key
         if self.advice.max_turns_per_day < 0:
             raise ValueError("advice.max_turns_per_day must be >= 0 (0 disables)")
         s = self.strategy
@@ -305,6 +402,36 @@ class BotConfig:
                 "telegram.chat_id is a shared chat: set telegram.allow_senders "
                 "(or TELEGRAM_ALLOW_SENDERS) to the operator sender ids"
             )
+
+
+def parse_symbol_deviation_points(raw: object) -> dict[str, int]:
+    """Normalise `[risk.symbol_deviation_points]` into {symbol: points}.
+
+    A value that is present but not a table RAISES rather than being dropped.
+    An override an operator wrote and the loader ignored is the worst of the
+    three outcomes: the send goes out on the global default, the config says
+    otherwise, and nothing reports the disagreement.
+    """
+    if raw is None:
+        return {}
+    if not isinstance(raw, dict):
+        raise ValueError(
+            "risk.symbol_deviation_points must be a table of symbol = points, "
+            "for example [risk.symbol_deviation_points] with XAUUSD = 150"
+        )
+    out: dict[str, int] = {}
+    for name, value in raw.items():
+        key = str(name).strip()
+        if isinstance(value, bool) or not isinstance(value, (int, float)):
+            raise ValueError(
+                f"risk.symbol_deviation_points.{key} must be a number of points"
+            )
+        if float(value) != int(value):
+            raise ValueError(
+                f"risk.symbol_deviation_points.{key} must be a whole number of points"
+            )
+        out[key] = int(value)
+    return out
 
 
 def _section(data: dict, name: str) -> dict:
@@ -406,6 +533,21 @@ def load_config(path: str | Path | None = None) -> BotConfig:
             ),
             max_risk_multiple=float(risk_s.get("max_risk_multiple", 1.0)),
             deviation_points=int(risk_s.get("deviation_points", 20)),
+            symbol_deviation_points=parse_symbol_deviation_points(
+                risk_s.get("symbol_deviation_points")
+            ),
+            # The fallback is READ FROM the dataclass, not restated as a
+            # literal. Writing 3.0 here while the field said 1.0 is exactly
+            # what this line did on its first draft, and a config file that
+            # omits the key then got a different number from one that spells
+            # out the default: two places holding one number, disagreeing
+            # silently. An existing test caught it. Never restate it.
+            min_deviation_spread_multiple=float(
+                risk_s.get(
+                    "min_deviation_spread_multiple",
+                    RiskConfig.min_deviation_spread_multiple,
+                )
+            ),
             max_trades_per_day=int(risk_s.get("max_trades_per_day", 0)),
         ),
         strategy=StrategyConfig(

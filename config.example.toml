@@ -33,7 +33,41 @@ max_spread_atr_frac = 0.15
 min_free_margin_pct = 0.50
 magic = 20260909
 halt_file = "HALT"          # create this file to flatten immediately
-deviation_points = 20
+deviation_points = 20       # max tolerated slippage in POINTS, for any symbol
+                            # NOT listed below. A point is instrument-specific,
+                            # so this number cannot be right everywhere.
+
+# Minimum multiple of the LIVE spread the effective deviation must cover, or the
+# send is refused as `deviation_below_spread` before it reaches the broker.
+# Default 1.0, which is the only multiple that needs no measurement: a market
+# order crosses the bid/ask gap, so a tolerance smaller than the spread can only
+# be rejected. Raise it if you want margin; it cannot be set below 1.0, because
+# there is no value that switches the gate off.
+# min_deviation_spread_multiple = 1.0
+
+# Per-symbol slippage tolerance, in POINTS. Keep this table LAST in [risk]: in
+# TOML every bare key after a subtable header belongs to the subtable, so a
+# `[risk]` key written below this line would land here instead.
+#
+# Keyed by the name YOUR BROKER uses, case-insensitive but otherwise exact. If
+# your venue calls gold XAUUSD.m, write XAUUSD.m: a near-miss falls back to
+# deviation_points above and is then refused as `deviation_below_spread`, which
+# names the symbol and the value to set.
+#
+# MEASURED on the live MT4 rig 2026-09-24:
+#   XAUUSD  point 0.01, spread 45 points ($0.45), ATR(14) H1 $17.22
+#   EURUSD  point 0.00001, spread 1 point
+# At the 20-point global default, gold was offering the venue $0.20 of tolerance
+# against $0.45 of spread, i.e. less than half of one spread, on an instrument
+# moving about $17 an hour. OrderSend rejected intermittently and the log named
+# no cause. 150 points is $1.50, a little over three spreads.
+#
+# XAGUSD carries the same SHAPE (a metal quoted in cents, spread an order of
+# magnitude wider in points than FX) and has NOT been measured. Treat 150 as a
+# starting point for it, not as a reading.
+[risk.symbol_deviation_points]
+XAUUSD = 150
+XAGUSD = 150
 
 [strategy]
 auto = false                # The desk is Telegram chat commands. /auto on enables the EMA regime.

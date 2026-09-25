@@ -344,6 +344,11 @@ class Engine:
     def _close(self, pos: Position, reason: str, volume: float | None = None) -> OrderResult:
         tick = self.broker.tick(pos.symbol)
         vol = pos.volume if volume is None else volume
+        # Per symbol, same as an open. A close is never GATED on the deviation
+        # (a control that can stop you reducing exposure is not a risk control),
+        # but it still has to be sendable, and gold needs the same tolerance on
+        # the way out as on the way in.
+        dev = self.cfg.risk.resolve_deviation(pos.symbol)
         result = self.broker.close_position(
             pos.ticket,
             symbol=pos.symbol,
@@ -352,7 +357,7 @@ class Engine:
             price=tick.bid if pos.side.value == "buy" else tick.ask,
             comment=reason[:31],
             magic=self.cfg.risk.magic,
-            deviation=self.cfg.risk.deviation_points,
+            deviation=dev.points,
         )
         self._closed_this_step.add(pos.ticket)
         if result.ok:
@@ -368,6 +373,8 @@ class Engine:
             price=result.price,
             volume=vol,
             side=pos.side.value,
+            deviation=dev.points,
+            deviation_source=dev.source,
         )
         return result
 
@@ -421,6 +428,11 @@ class Engine:
     def _open(self, signal: Signal, volume: float) -> OrderResult:
         side = signal.side
         assert side is not None
+        # Which deviation applied, and whether it came from the per-symbol map
+        # or the global default, is journaled on every send. The number alone
+        # cannot tell an operator whether their override was consulted, missed
+        # on a decorated broker symbol, or never written.
+        dev = self.cfg.risk.resolve_deviation(signal.symbol)
         order = MarketOrder(
             symbol=signal.symbol,
             side=side,
@@ -429,7 +441,7 @@ class Engine:
             tp=signal.tp,
             comment=self.cfg.comment[:31],
             magic=self.cfg.risk.magic,
-            deviation=self.cfg.risk.deviation_points,
+            deviation=dev.points,
         )
         check = self.broker.check_market(order)
         if not self._pretrade_ok(check, signal.symbol):
@@ -456,6 +468,8 @@ class Engine:
             reason=signal.reason,
             adx=signal.adx,
             atr=signal.atr,
+            deviation=dev.points,
+            deviation_source=dev.source,
         )
         return result
 
