@@ -587,6 +587,35 @@ string SelectReply(string id, string sym)
    return Ok(id);
 }
 
+// A price series exists per symbol AND timeframe, and MT4 builds one only once
+// something asks for it. A terminal with H4 charts open and a desk configured
+// for H1 therefore has H1 history for nothing, which was measured on the live
+// rig as EURUSD bars=0 / ATR=nan while XAUUSD, the one charted symbol, read
+// bars=200. Three things this handler did not do, each of which left a cold
+// symbol permanently untradeable with nothing said anywhere:
+//
+//  1. It never selected the symbol. Every other symbol-scoped handler does
+//     (SymbolReply, SelectReply). `rates` worked only because Engine.start()
+//     happens to call `select` for each configured symbol first, which is call
+//     order, not a guarantee this handler made for itself.
+//  2. At iBars()==0 it set n=0, so the row loop never executed and NO
+//     price-series function was reached at all: no iTime, iOpen, iClose,
+//     iVolume, no ArrayCopyRates. iBars alone is not the documented download
+//     trigger; the iXXX series access is, and it reports 4066
+//     ERR_HISTORY_WILL_UPDATED while the request is in flight. The handler
+//     early-returned on exactly the series it needed to ask for, so the desk
+//     could not warm a symbol no matter how many times it asked.
+//  3. It discarded GetLastError() and emitted only `n=`. That made `ok=1 n=0`
+//     one wire value for three different worlds: downloading right now, not
+//     served by this broker under this name, and genuinely empty. A desk
+//     cannot choose between "wait" and "name it and stop" from a value that
+//     cannot tell those apart, and n=0 is the reassuring reading of the three.
+//
+// No Sleep here. This handler IS the mailbox (Process(), single threaded behind
+// gBusy) and the adapter's bridge times out at 5 s, so a retry loop in here
+// would stall every other op and blow that timeout. This end triggers the
+// fetch once and reports what happened; the desk owns the bounded wait
+// (straightedge/history.py:preflight).
 string RatesReply(string id, string sym, string tfName, string countStr)
 {
    if(sym == "")
@@ -594,7 +623,21 @@ string RatesReply(string id, string sym, string tfName, string countStr)
    int tf = Tf(tfName);
    int want = (int)StringToInteger(countStr);
    if(want <= 0) want = 1;
+   bool selected = SymbolSelect(sym, true);
+   ResetLastError();
    int total = iBars(sym, tf);
+   int history_error = 0;
+   if(total < want)
+   {
+      ResetLastError();
+      double first = iClose(sym, tf, 0);
+      history_error = GetLastError();
+      ResetLastError();
+      total = iBars(sym, tf);
+      if(total <= 0 && first != 0.0)
+         Print("mt4riskbot rates ", sym, " ", tfName,
+               " served a close with zero bars; history state is inconsistent");
+   }
    int n = want;
    if(n > total) n = total;
    string rows = "";
@@ -611,7 +654,16 @@ string RatesReply(string id, string sym, string tfName, string countStr)
       rows = rows + "row" + IntegerToString(written) + "=" + line + "\n";
       written++;
    }
-   return Ok(id) + "n=" + IntegerToString(written) + "\n" + rows;
+   // bars_total, selected and history_error are emitted on EVERY rates reply,
+   // including the healthy one. A field present only on failure cannot be told
+   // from an Expert too old to emit it at all, which is the partition
+   // survivor_ticket exists for above.
+   return Ok(id)
+      + "n=" + IntegerToString(written) + "\n"
+      + "bars_total=" + IntegerToString(total) + "\n"
+      + "selected=" + IntegerToString(selected ? 1 : 0) + "\n"
+      + "history_error=" + IntegerToString(history_error) + "\n"
+      + rows;
 }
 
 string BookReply(string id, string magicStr, bool pending)

@@ -85,6 +85,14 @@ def _order_kind(type_code: int) -> str:
 
 
 class Mt5Broker:
+    #: This venue can answer "no bars" now and serve them a moment later,
+    #: because the terminal fetches history from the broker in the background.
+    #: `history.preflight` reads this to decide whether a bounded wait could
+    #: change the answer. A venue that answers from memory must NOT set it: a
+    #: wait there is pure latency, and `run_backtest` seeds one bar on purpose
+    #: and streams the rest.
+    history_async = True
+
     def __init__(
         self,
         *,

@@ -6,6 +6,51 @@ See README.md and docs/CONTRACT.md.
 
 ## Unreleased
 
+### A symbol with no price series is named, not silently untradeable (issue #33)
+
+MT4 keeps a price series per symbol AND timeframe and builds one only when
+something asks for it. With H4 charts open and the desk on H1, the rig measured
+`EURUSD bars=0 ATR=nan`, `USDJPY bars=0 ATR=nan`, `XAUUSD bars=200 ATR=17.2188`;
+XAUUSD was the only charted symbol. Nothing crashed. `step_symbol` asked for
+bars, got none, and returned with no journal record, so two configured symbols
+were untradeable and the operator-visible symptom was "the bot will not trade
+EURUSD" with no cause anywhere. (The spread gate is not what refused:
+`risk.py:523` reads `signal.atr > 0`, which is False for nan.)
+
+- **The operator opens no charts.** The desk asks the terminal for every
+  configured symbol's series at startup, which is what makes MT4 request it from
+  the server, and waits up to ten attempts one second apart. The ask is the fix,
+  so the ordinary cold start is repaired rather than reported.
+- `Mt4RiskBot.mq4` `RatesReply` now selects the symbol itself, touches the series
+  when it is short of the requested count, and reports `bars_total`, `selected`
+  and `history_error` on every reply. Previously `iBars() == 0` set the row count
+  to zero, the row loop never ran, and no price-series function was reached at
+  all, so no amount of asking could warm a cold symbol. **Recompile and reattach
+  the Expert.** An older Expert still works; its three fields read as `None`,
+  which is reported as COULD NOT MEASURE rather than as zeros.
+- `doctor --connect` prints bars and ATR per symbol and exits non-zero when any
+  configured symbol cannot produce a signal. Plain `doctor` prints
+  `history: NOT MEASURED`, because an absent check reads exactly like a passed
+  one. #33 B1 makes `doctor` exit 0 part of the pass condition before a run, and
+  `[symbols] names` is the scan list, so a name in it is a symbol the desk will
+  try to trade.
+- `run` refuses to start when a symbol is still unusable after the warm-up. It
+  names every such symbol on stderr and exits 2. Ordered preference is
+  it-just-works first and a named failure second; a silent non-trade is on
+  neither list.
+- `history_error` separates two worlds the wire could not tell apart: `4066`
+  `ERR_HISTORY_WILL_UPDATED` (downloading, wait) from `4073`
+  `ERR_NO_HISTORY_DATA` and from `0` (the terminal is not fetching, so the symbol
+  name or the broker is the problem). `ok=1 n=0` used to mean all three at once.
+- Partial history is called out separately. `Strategy.signal` returns FLAT
+  `warmup` below `needed_bars()`, so a half-downloaded series produces an ATR,
+  looks alive, and never trades.
+- **Nothing is filled in.** A missing series gets no synthetic bar, no default
+  ATR and nothing borrowed from another symbol; a missing ATR is `None`, not 0.0
+  and not nan. `broker/mt4_live.py:294-308` is what that cost last time.
+- `/symbols add` warms and measures the new name, and answers with the result
+  instead of a bare `added`.
+
 Advice-staged symbols are whitelisted, and there are daily caps on sends and on advice turns (issue #13).
 
 ### The model no longer picks the instrument unchecked

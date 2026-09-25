@@ -8,7 +8,19 @@ import pytest
 from straightedge.__main__ import build_parser, main, paper_round_trip, run_loop, telegram_ping
 from straightedge.config import BotConfig, TelegramConfig
 from straightedge.journal import InstanceLock, InstanceLockError, Journal, lock_path_for
+from straightedge.synthetic import generate_bars
 from straightedge.telegram import TelegramClient, offset_path_for
+
+
+def _healthy_rates(_name, _timeframe, count):
+    """Bars a terminal with warm history would serve.
+
+    `doctor --connect` measures per-symbol history since #33, so a fake terminal
+    that serves nothing is a terminal with NO history and doctor is right to go
+    red on it. Every fake that asserts a green doctor therefore has to serve a
+    series long enough for the strategy (needed_bars() is 60 on the defaults).
+    """
+    return generate_bars(max(int(count), 80), drift=0.0002, seed=7)
 
 
 class _FakeTg:
@@ -51,6 +63,10 @@ class _FakeConnectBroker:
                 "trade_mode": 0,
             },
         )()
+
+    def rates(self, name, timeframe, count):
+        self.calls.append("rates")
+        return _healthy_rates(name, timeframe, count)
 
 
 def test_doctor(capsys, monkeypatch) -> None:
@@ -102,6 +118,10 @@ def test_doctor_connect_mt4(capsys, monkeypatch, tmp_path) -> None:
                 },
             )()
 
+        def rates(self, name, timeframe, count):
+            self.calls.append("rates")
+            return _healthy_rates(name, timeframe, count)
+
     monkeypatch.setattr("straightedge.broker.mt4_live.Mt4Broker", FakeMt4Broker)
     assert main(["doctor", "--connect"]) == 0
     out = capsys.readouterr().out
@@ -109,6 +129,11 @@ def test_doctor_connect_mt4(capsys, monkeypatch, tmp_path) -> None:
     assert created[0].calls[0] == "connect"
     assert "connected venue=mt4 login=42" in out
     assert "trade_mode=0" in out
+    # The history check ran, named every configured symbol, and printed a
+    # measured ATR rather than the word "unavailable".
+    assert "4 of 4 usable" in out
+    for name in BotConfig().symbols:
+        assert f"{name}: 80 bars (need 60), ATR=" in out
 
 
 @pytest.mark.skipif(sys.platform == "win32", reason="Windows defaults files_dir to Common Files")
@@ -243,6 +268,10 @@ def test_doctor_connect_falls_back_to_connect(capsys, monkeypatch) -> None:
                 },
             )()
 
+        def rates(self, name, timeframe, count):
+            self.calls.append("rates")
+            return _healthy_rates(name, timeframe, count)
+
     monkeypatch.setattr("straightedge.broker.mt5_live.load_mt5_module", lambda: object())
     monkeypatch.setattr("straightedge.broker.mt5_live.Mt5Broker", NoEnsure)
     assert main(["doctor", "--connect"]) == 0
@@ -277,6 +306,9 @@ def test_doctor_connect_disconnect_error_still_ok(capsys, monkeypatch) -> None:
                     "trade_mode": 0,
                 },
             )()
+
+        def rates(self, name, timeframe, count):
+            return _healthy_rates(name, timeframe, count)
 
         def disconnect(self) -> None:
             raise RuntimeError("shutdown")
@@ -551,6 +583,10 @@ class _OneTickEngine:
         self.started = False
         self.stopped = False
         self.halted = False
+        #: A real Engine sets this in start(); a double does not measure, so it
+        #: reports None and cmd_run says NOT MEASURED instead of inventing a
+        #: clean bill of health.
+        self.history = None
         self.journal = type("J", (), {"write": staticmethod(lambda *a, **k: None)})()
 
     def start(self) -> None:

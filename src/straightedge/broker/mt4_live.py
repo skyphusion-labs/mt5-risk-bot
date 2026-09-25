@@ -27,6 +27,7 @@ from straightedge.constants import (
     TRADE_RETCODE_REJECT,
     TRADE_RETCODE_TRADE_DISABLED,
 )
+from straightedge.history import HistoryProbe
 from straightedge.models import (
     Account,
     Bar,
@@ -152,6 +153,29 @@ def _survivor_ticket(d: dict[str, Any], ok: bool) -> int | None:
     return 0 if ok else None
 
 
+def _reported_int(d: dict[str, Any], key: str) -> int | None:
+    """An int the Expert may or may not have sent. Absence reads as None.
+
+    Same partition as `_survivor_ticket` above and for the same reason: a
+    `history_error` of 0 is the Expert saying it looked and found no error,
+    while a missing `history_error` is an Expert that predates the field and
+    cannot answer. Collapsing the second into 0 would turn "nobody asked" into
+    "no problem", which is what made a cold symbol read as a healthy one.
+    """
+    if key not in d:
+        return None
+    try:
+        return int(d[key])
+    except (TypeError, ValueError):
+        return None
+
+
+def _reported_bool(d: dict[str, Any], key: str) -> bool | None:
+    if key not in d:
+        return None
+    return _truthy(d[key])
+
+
 def parse_rows(data: dict[str, Any], fields: tuple[str, ...], *, nested: str = "") -> list[dict[str, Any]]:
     raw = data.get(nested) if nested else None
     if isinstance(raw, list):
@@ -255,6 +279,14 @@ class FileBridge:
 
 
 class Mt4Broker:
+    #: This venue can answer "no bars" now and serve them a moment later,
+    #: because the terminal fetches history from the broker in the background.
+    #: `history.preflight` reads this to decide whether a bounded wait could
+    #: change the answer. A venue that answers from memory must NOT set it: a
+    #: wait there is pure latency, and `run_backtest` seeds one bar on purpose
+    #: and streams the rest.
+    history_async = True
+
     def __init__(self, call: Call, *, magic: int = 0) -> None:
         self._call = call
         self._magic = magic
@@ -409,6 +441,21 @@ class Mt4Broker:
         )
 
     def rates(self, name: str, timeframe: str | int, count: int) -> list[Bar]:
+        return self.history_probe(name, timeframe, count).bars
+
+    def history_probe(self, name: str, timeframe: str | int, count: int) -> HistoryProbe:
+        """`rates`, plus what the Expert says about the state of the series.
+
+        Why a separate method rather than a wider `rates()`: the `Broker`
+        Protocol (`broker/base.py`) is venue-neutral, every venue returns bars,
+        and only MT4 has a history-download state to report. `history.preflight`
+        duck-types on this method and reads any other venue through `rates()`,
+        whose optional fields then stay None -- the honest reading, rather than a
+        zero that would look like a measurement.
+
+        `rates()` is implemented in terms of this so the wire is parsed in
+        exactly one place. There is no second path that could drift.
+        """
         tf = str(timeframe).upper() if not isinstance(timeframe, str) else timeframe
         d = self._require("rates", {"symbol": name.upper(), "timeframe": tf, "count": int(count)})
         out: list[Bar] = []
@@ -423,7 +470,12 @@ class Mt4Broker:
                     tick_volume=int(row.get("volume", row.get("tick_volume", 0)) or 0),
                 )
             )
-        return out
+        return HistoryProbe(
+            bars=out,
+            bars_total=_reported_int(d, "bars_total"),
+            selected=_reported_bool(d, "selected"),
+            history_error=_reported_int(d, "history_error"),
+        )
 
     def positions(self, magic: int | None = None) -> list[Position]:
         want = magic if magic is not None else 0

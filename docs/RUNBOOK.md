@@ -32,6 +32,45 @@ No live terminal is used.
 Do not start a long run until doctor exits 0.
 Do not go live until doctor exits 0.
 
+Plain `doctor` does not measure per-symbol history.
+It prints `history: NOT MEASURED`.
+That needs a live terminal.
+Use `doctor --connect` for it.
+
+## Per-symbol history
+
+`doctor --connect` prints one line for each symbol in `[symbols] names`.
+Each line gives the bars available and the ATR.
+
+```
+history: H1, need 60 bars, 1 of 2 usable
+  EURUSD: 0 bars (need 60), ATR unavailable -- the terminal served nothing ...
+  XAUUSD: 200 bars (need 60), ATR=17.218800
+```
+
+`doctor --connect` is non-zero if any symbol is not usable.
+A symbol in `[symbols] names` is a symbol the desk will try to trade.
+A symbol you do not trade must not be in that list.
+Advice-only names go in `[advice] symbols`.
+
+The desk fetches the history itself.
+You do not open any charts.
+It asks the terminal ten times, one second apart.
+This happens at startup and on `/symbols add`.
+
+A symbol can still fail after that.
+Then `run` prints the symbol name and stops.
+It does not start.
+Check two things.
+First, the symbol name must match the broker spelling.
+Many brokers use a suffix, for example `EURUSD.m`.
+Second, the broker must serve your timeframe for that symbol.
+
+`ERR_HISTORY_WILL_UPDATED` in the message means the download is still running.
+Run `doctor --connect` again.
+`NO HISTORY DATA` means the terminal has none and is not fetching it.
+That is a symbol name or a broker problem.
+
 On the seeded trend generator, equity must finish above start.
 On the seeded range generator, the account must not be ruined.
 If either check fails on your machine, do not go live.

@@ -20,7 +20,12 @@ string did it put there?". A field the Expert never emits is *absent*, and the
 value the adapter reports for it is its own default, not a measurement. Tests
 assert that partition explicitly instead of trusting a stub to reproduce it.
 
-Expert line citations are to `mt4/Experts/Mt4RiskBot.mq4` at 69a8219.
+Expert line citations are to `mt4/Experts/Mt4RiskBot.mq4` at 69a8219, and they
+are pinned to that sha rather than maintained. One handler has changed shape
+since: `RatesReply` now selects the symbol, touches the series to make the
+terminal fetch it, and emits `bars_total`, `selected` and `history_error`
+alongside the bars (#33). Read that handler by name, not by the line numbers
+below.
 """
 
 from __future__ import annotations
@@ -30,6 +35,7 @@ import threading
 import time
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 from straightedge.broker.mt4_live import REQ_NAME, RES_NAME
 
@@ -171,10 +177,44 @@ def ea_row(order: tuple[str, ...], values: dict[str, object]) -> str:
 
 
 def ea_rows_reply(order: tuple[str, ...], rows: list[dict[str, object]]) -> str:
-    """`BookReply` / `RatesReply` shape: `n=` then `row0=`.. (:357, :411)."""
+    """`BookReply` shape: `n=` then `row0=`.. (:411)."""
     lines = ["n=" + str(len(rows))]
     for i, row in enumerate(rows):
         lines.append("row" + str(i) + "=" + ea_row(order, row))
+    return ea_ok(*lines)
+
+
+#: The history-state fields `RatesReply` emits alongside the bars, in emit
+#: order. They are on EVERY rates reply, the healthy one included, because a
+#: field that appears only on failure is indistinguishable from an Expert too
+#: old to emit it at all -- the partition `survivor_ticket` exists for.
+EA_RATES_STATE = ("bars_total", "selected", "history_error")
+
+
+def ea_rates_reply(
+    rows: list[dict[str, object]],
+    *,
+    bars_total: int | None = None,
+    selected: bool = True,
+    history_error: int = 0,
+    state: bool = True,
+) -> str:
+    """`RatesReply` shape: `n=`, the three state fields, then `row0=`..
+
+    `state=False` reproduces the Expert as it shipped before #33, which emitted
+    `n=` and the rows and said nothing about the series. That version is still
+    attachable in a terminal, so the adapter has to read it as "did not answer"
+    rather than as zeros, and only a transcript without the fields can prove it
+    does.
+    """
+    total = len(rows) if bars_total is None else bars_total
+    lines = ["n=" + str(len(rows))]
+    if state:
+        lines.append("bars_total=" + str(total))
+        lines.append("selected=" + ("1" if selected else "0"))
+        lines.append("history_error=" + str(history_error))
+    for i, row in enumerate(rows):
+        lines.append("row" + str(i) + "=" + ea_row(EA_BAR_EMIT, row))
     return ea_ok(*lines)
 
 
@@ -359,12 +399,69 @@ BARS_EURUSD_H1 = [
 ]
 
 
-def t_rates(rows: list[dict[str, object]] | None = None) -> Transcript:
+def bar_rows(
+    count: int,
+    *,
+    start: int = 1758693600,
+    step: int = 3600,
+    base: float = 1.10000,
+    digits: int = DIGITS_EURUSD,
+) -> list[dict[str, object]]:
+    """`count` plausible H1 rows, formatted the way the Expert formats them.
+
+    Each bar has a real range and a real gap from the previous close, so Wilder
+    ATR over them is finite and non-zero. A flat series would make "ATR could
+    not be computed" and "ATR is zero" the same observation, and those are the
+    two things this module is here to keep apart.
+    """
+    out: list[dict[str, object]] = []
+    price = base
+    for i in range(count):
+        close = price + 0.00040
+        out.append(
+            {
+                "time": start + i * step,
+                "open": d(price, digits),
+                "high": d(price + 0.00120, digits),
+                "low": d(price - 0.00090, digits),
+                "close": d(close, digits),
+                "volume": 5000 + i,
+            }
+        )
+        price = close
+    return out
+
+
+def t_rates(
+    rows: list[dict[str, object]] | None = None,
+    *,
+    bars_total: int | None = None,
+    selected: bool = True,
+    history_error: int = 0,
+    state: bool = True,
+) -> Transcript:
     return Transcript(
         "rates",
-        ea_rows_reply(EA_BAR_EMIT, BARS_EURUSD_H1 if rows is None else rows),
-        "Mt4RiskBot.mq4:336-361",
+        ea_rates_reply(
+            BARS_EURUSD_H1 if rows is None else rows,
+            bars_total=bars_total,
+            selected=selected,
+            history_error=history_error,
+            state=state,
+        ),
+        "Mt4RiskBot.mq4 RatesReply",
     )
+
+
+def t_rates_cold(*, history_error: int = 0, selected: bool = True) -> Transcript:
+    """The defect's own shape: `ok=1`, `n=0`, no rows.
+
+    This is what the live rig answered for EURUSD and USDJPY while XAUUSD, the
+    one charted symbol, answered 200 bars. Before #33 it was the whole reply, so
+    `ok=1 n=0` meant "downloading now", "not served under this name" and
+    "genuinely empty" at once, and the desk could only read the reassuring one.
+    """
+    return t_rates([], bars_total=0, selected=selected, history_error=history_error)
 
 
 def pos_row(
@@ -570,6 +667,12 @@ class TranscriptExpert:
     force_id: int | None = None
     #: Stop answering after this many requests, to drive the timeout path.
     answer_limit: int | None = None
+    #: Choose the transcript from the request body instead of the op alone.
+    #: MT4 history is per symbol AND timeframe, so a fixture that can only vary
+    #: by op cannot express "EURUSD has none and XAUUSD has 200" -- which is the
+    #: exact state that was measured on the rig, and a test that cannot express
+    #: it would pass on a desk that treated every symbol the same.
+    route: Any = None
     seen: list[str] = field(default_factory=list)
     ops: list[str] = field(default_factory=list)
     errors: list[str] = field(default_factory=list)
@@ -616,7 +719,10 @@ class TranscriptExpert:
                 self.ops.append(op)
                 if self.answer_limit is not None and len(self.seen) > self.answer_limit:
                     continue
-                transcript = self.transcripts.get(op, t_unsupported())
+                routed = self.route(op, body) if callable(self.route) else None
+                transcript = (
+                    routed if routed is not None else self.transcripts.get(op, t_unsupported())
+                )
                 answer_id = req_id if self.force_id is None else str(self.force_id)
                 try:
                     self._publish(tmp, res, transcript.render(int(answer_id)))

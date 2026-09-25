@@ -21,8 +21,10 @@ from straightedge.broker import broker_for
 from straightedge.broker.paper import PaperBroker
 from straightedge.config import BotConfig, load_config
 from straightedge.engine import Engine, run_backtest
+from straightedge.history import preflight
 from straightedge.journal import InstanceLock, InstanceLockError, redact_text
 from straightedge.models import Bar
+from straightedge.strategy import TrendStrategy
 from straightedge.synthetic import generate_bars, generate_ranging
 from straightedge.telegram import TelegramClient, TgCommand, offset_path_for
 
@@ -56,6 +58,52 @@ def telegram_ping(cfg: BotConfig, *, transport=None) -> str:
     except (ValueError, RuntimeError, OSError) as exc:
         return f"fail ({exc})"
     return "ok" if ok else "fail"
+
+
+def history_check(cfg: BotConfig, broker: object) -> int:
+    """Per-symbol bars and ATR against a live terminal. Returns an exit code.
+
+    Why this is here at all. A price series on MT4 exists per symbol AND
+    timeframe, and the terminal builds one only when something asks for it, so a
+    config on H1 in a terminal with H4 charts has H1 history for nothing. That
+    was measured on the live rig as EURUSD bars=0 / ATR=nan, and nothing in the
+    whole toolchain said so: `doctor` reported nothing about history, and the
+    desk answered by not trading. This is the instrument that makes it a
+    statement.
+
+    Why it exits NON-ZERO. `doctor`'s own help calls it the pre-run gate, and
+    #33 B1 makes `exit 0` part of the pass condition before any run. A
+    configured symbol that cannot produce a signal is a run-affecting condition,
+    so exit 0 would be doctor clearing a run while a named instrument is dead.
+    The "annoying red for a symbol I never trade" case does not exist here:
+    `[symbols] names` is the SCAN list that drives the loop and /quote
+    (`config.py:247-253`), so a name in it IS a symbol the desk will try to
+    trade. Advice-only names have their own key, `advice.symbols`. A red here is
+    therefore either a dead instrument or a misconfigured list, and both should
+    stop a run.
+
+    It never fabricates. A symbol with no series is reported with no series; no
+    default ATR, no synthetic bar, nothing borrowed from another symbol
+    (`broker/mt4_live.py:294-308` is what that cost last time).
+    """
+    needed = TrendStrategy(cfg.strategy).needed_bars()
+    report = preflight(
+        broker,
+        cfg.symbols,
+        timeframe=cfg.strategy.timeframe,
+        needed=needed,
+        atr_period=cfg.strategy.atr_period,
+    )
+    print(
+        f"history: {cfg.strategy.timeframe}, need {needed} bars, "
+        f"{len(report.symbols) - len(report.unusable)} of {len(report.symbols)} usable"
+    )
+    for text in report.lines():
+        print(f"  {text}")
+    if report.ok:
+        return 0
+    print(report.text())
+    return 1
 
 
 def paper_round_trip() -> str:
@@ -137,6 +185,13 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     rc = 0
     if ping.startswith("fail") or paper != "ok":
         rc = 1
+    if not args.connect:
+        # An absent check reads exactly like a passed one, so say it was not
+        # run. Per-symbol history can only be measured against a live terminal.
+        print(
+            f"history: NOT MEASURED for {len(cfg.symbols)} configured symbol(s); "
+            "needs --connect and a live terminal"
+        )
     if args.connect:
         cfg = _cfg(args) if args.config else load_config()
         if cfg.mode == "mt4":
@@ -149,6 +204,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     f"connected venue=mt4 login={acct.login} server={acct.server} "
                     f"equity={acct.equity:.2f} {acct.currency} trade_mode={acct.trade_mode}"
                 )
+                if history_check(cfg, broker):
+                    rc = 1
             except (RuntimeError, OSError, ValueError) as exc:
                 print(f"connect: fail ({redact_text(str(exc))})")
                 rc = 1
@@ -174,6 +231,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                 f"connected login={acct.login} server={acct.server} "
                 f"equity={acct.equity:.2f} {acct.currency} trade_mode={acct.trade_mode}"
             )
+            if history_check(cfg, broker):
+                rc = 1
         except (RuntimeError, OSError, ValueError) as exc:
             print(f"connect: fail ({redact_text(str(exc))})")
             rc = 1
@@ -283,6 +342,21 @@ def _cmd_run_locked(args: argparse.Namespace, cfg: BotConfig) -> int:
         return 2
     engine = Engine(cfg, broker, halt_dir=halt_dir, telegram=tg)
     engine.start()
+    # `start()` already asked the venue for every configured symbol's series,
+    # which on MT4 is what makes the terminal fetch it. Anything still unusable
+    # here will never produce a signal, so the run does not begin pretending it
+    # will: the symbols are named on stderr and the process exits non-zero.
+    # Ordered preference is it-just-works first and a named failure second; a
+    # silent non-trade is not on the list at all.
+    report = engine.history
+    if report is None:
+        # `start()` always measures, so this is reachable only from a test
+        # double. Unmeasured is reported as unmeasured, never as healthy.
+        print("history: NOT MEASURED (engine reported no preflight)", file=sys.stderr)
+    elif not report.ok:
+        print(report.text(), file=sys.stderr)
+        engine.stop()
+        return 2
     try:
         run_loop(engine, loop=bool(args.loop), keep_on_halt=True)
     except KeyboardInterrupt:
