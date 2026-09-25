@@ -220,8 +220,23 @@ Unix: `flock`. Windows: `msvcrt.locking`. Same fail (`already running`, exit 2).
 A second `run --loop` prints `already running` to stderr and exits non-zero.
 The lock is released on exit or crash.
 Each `step_all` that reaches `account` writes `journal.heartbeat`.
-The file is an ISO timestamp, chmod 0600, atomic replace.
+Line 1 is an ISO timestamp, and that has not changed since 1.0.0.
+After it, one `key=value` per line: `blocked=`, `mode=`, `stale_after_s=`,
+`tick_budget_s=`, `tick_gap_max_s=`, `over_budget=`.
+`blocked=` is the reason `RiskManager.circuit_reason` gave for the same account
+at the same instant, and it is EMPTY when the desk would trade. It is not a
+second copy of the gate; it is the gate's own answer, so a heartbeat cannot
+claim the desk is armed when a send would be refused.
+`stale_after_s` is derived from `engine.poll_seconds`, the Telegram retry
+ceiling and the venue `timeout_ms` of the mode in use. A reader that finds it
+missing or unreadable reports UNKNOWN and refuses to invent a threshold.
+`over_budget=1` means an observed gap between ticks exceeded the derived budget.
+The desk reports that and does NOT widen its own threshold.
+The file is chmod 0600, atomic replace.
 A failed reconnect does not.
+`straightedge watch` reads the file. It exits 0 for `ALIVE ARMED`, 3 for
+`ALIVE NOT TRADING` (with the gate named), 4 for `STALE`, and 5 for `UNKNOWN`.
+It never calls `getUpdates` and never takes `journal.lock`.
 Before a journal write that would exceed 10 MiB, the live file is renamed to `<name>.1`.
 That replaces any previous `.1`.
 The new live file is chmod 0600.

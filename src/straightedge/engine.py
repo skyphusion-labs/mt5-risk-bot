@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import os
+import time
 from datetime import datetime, timezone
 from typing import Any
 
@@ -30,6 +31,7 @@ from straightedge.sizing import money_per_lot_at_stop, normalize_volume
 from straightedge.state import snapshot_path_for
 from straightedge.strategy import TrendStrategy
 from straightedge.telegram import TelegramClient, TgCommand
+from straightedge import watchdog
 
 _ORDER_TYPE_NAME = {
     "limit": "LIMIT",
@@ -74,6 +76,14 @@ class Engine:
         self.now_fn = now_fn or (lambda: datetime.now(timezone.utc))
         self.last_bar_time: dict[str, int] = {}
         self.halted = False
+        #: Heartbeat bookkeeping. `_hb_gap_max_s` is the largest gap between two
+        #: heartbeat writes this process has actually seen, published so the
+        #: derived staleness threshold can be checked against reality instead of
+        #: trusted. It is never used to widen the threshold: see
+        #: `straightedge.watchdog`.
+        self._hb_last_mono: float | None = None
+        self._hb_gap_max_s = 0.0
+        self._hb_over_warned = False
         self.telegram = telegram
         if self.telegram is not None and self.telegram.audit_fn is None:
             self.telegram.audit_fn = self._audit_telegram
@@ -396,14 +406,20 @@ class Engine:
             self._emit("orders_read_failed", error=str(exc))
             return [], False
 
-    def _apply_circuit(self, acct, now) -> bool:
+    def _apply_circuit(self, acct, now) -> str:
+        """The halt reason that stopped this tick, or empty when it did not.
+
+        Returns the REASON rather than a bool so the heartbeat can name it. Both
+        `if self._apply_circuit(...)` call sites read exactly as before, because
+        an empty reason is falsey and a named one is not.
+        """
         trip = self.risk.circuit(acct, now)
         if not trip.halt:
-            return False
+            return ""
         self._emit("halt", reason=trip.reason, equity=acct.equity)
         if trip.flatten:
             self.flatten(trip.reason)
-        return True
+        return trip.reason or "halted"
 
     def _close(self, pos: Position, reason: str, volume: float | None = None) -> OrderResult:
         tick = self.broker.tick(pos.symbol)
@@ -1390,11 +1406,45 @@ class Engine:
             self.journal.write("reconnect", ok=False, error=str(exc)[:200])
             return False
 
-    def _write_heartbeat(self, now: datetime | None = None) -> None:
-        dest = self.journal.path.with_name(self.journal.path.stem + ".heartbeat")
+    def _write_heartbeat(self, now: datetime | None = None, *, blocked: str = "") -> None:
+        """Publish liveness AND whether this desk would trade.
+
+        `blocked` is the gate's own named reason, passed in from the one place
+        that already evaluated it. The file carried a timestamp ALONE from 1.0.0
+        until the watchdog landed, which made a desk that came back DISARMED
+        after a restart indistinguishable from one that was trading: the
+        operator saw a fresh timestamp either way. Line one is still that
+        timestamp, byte for byte.
+        """
+        dest = watchdog.heartbeat_path_for(self.journal.path)
         tmp = dest.with_name(dest.name + ".tmp")
-        ts = (now or self.now_fn()).isoformat()
-        tmp.write_text(ts + "\n", encoding="utf-8")
+        ts = now or self.now_fn()
+        mono = time.monotonic()
+        if self._hb_last_mono is not None:
+            self._hb_gap_max_s = max(self._hb_gap_max_s, mono - self._hb_last_mono)
+        self._hb_last_mono = mono
+        budget = watchdog.tick_budget_seconds(self.cfg)
+        if self._hb_gap_max_s > budget and not self._hb_over_warned:
+            # The threshold is derived from config and this measurement says the
+            # derivation is too tight for this book. Report it; do NOT widen it.
+            self._hb_over_warned = True
+            print(
+                f"heartbeat: a gap of {self._hb_gap_max_s:.1f}s between ticks "
+                f"exceeds the derived budget of {budget}s, so the watchdog "
+                "threshold can produce a false STALE. It was not widened.",
+                flush=True,
+            )
+        tmp.write_text(
+            watchdog.render(
+                ts,
+                blocked=blocked,
+                mode=self.cfg.mode,
+                stale_after_s=watchdog.stale_after_seconds(self.cfg),
+                tick_budget_s=budget,
+                tick_gap_max_s=self._hb_gap_max_s,
+            ),
+            encoding="utf-8",
+        )
         os.chmod(tmp, 0o600)
         tmp.replace(dest)
 
@@ -1415,10 +1465,11 @@ class Engine:
         now = self.now_fn()
         self._maybe_daily_recap(acct, now)
         if self.halted:
-            self._write_heartbeat(now)
+            self._write_heartbeat(now, blocked=self.risk.halt_reason or "halted")
             return
-        if self._apply_circuit(acct, now):
-            self._write_heartbeat(now)
+        tripped = self._apply_circuit(acct, now)
+        if tripped:
+            self._write_heartbeat(now, blocked=tripped)
             return
         self._opened_this_step.clear()
         self._closed_this_step.clear()
@@ -1432,7 +1483,14 @@ class Engine:
                     break
                 self.step_symbol(symbol)
         self._detect_fills()
-        self._write_heartbeat(now)
+        # Reaching here does NOT mean the desk would trade. `circuit()` returns
+        # not-allowed-WITHOUT-halt for `live_not_accepted` and
+        # `trade_not_allowed`, so `_apply_circuit` above let the tick through
+        # while a send would still be refused. Asking the gate itself is what
+        # separates "ticking and armed" from "ticking, and disarmed by the
+        # restart that fc34 requires". It re-observes the same acct at the same
+        # `now`, so the snapshot cannot move and nothing is persisted twice.
+        self._write_heartbeat(now, blocked=self.risk.circuit_reason(acct, now))
 
 
 def _format_event(event: str, fields: dict[str, Any]) -> str:

@@ -6,6 +6,81 @@ See README.md and docs/CONTRACT.md.
 
 ## Unreleased
 
+### The heartbeat has a reader, and it distinguishes three states (issue #38)
+
+`journal.heartbeat` has been written on every successful `step_all` since 1.0.0,
+`docs/RUNBOOK.md` named it as the watchdog target in two places, and NOTHING in
+this repo ever read it. A desk that died on Tuesday was discovered on Friday, and
+every indicator an operator could see read healthy in between. `docs/MT4.md`
+already said the honest half out loud: an in-process startup wait "does not cover
+MT4 taking longer than the budget, or MT4 dying later, because a process that has
+exited cannot retry anything".
+
+- `python -m straightedge watch` reads the file in a SECOND process and names the
+  state: `ALIVE ARMED` (exit 0), `ALIVE NOT TRADING` with the gate's own reason
+  (exit 3), `STALE` (exit 4), `UNKNOWN` (exit 5). `--loop` alerts the locked chat
+  on the first check and on every change after it, and `--ok-every` confirms a
+  healthy desk on a cadence so that silence becomes a signal too. It is a
+  separate process because a desk cannot report its own death, and an in-process
+  staleness check is an instrument that fails together with its subject.
+- **Three states, because two is the defect.** Live arming is per process on
+  purpose (fc34, and `Desk.restore_from_journal` refuses to re-arm from a
+  `live_on` record), so a crash restart brings the desk back ticking and
+  DISARMED. An up-or-down watchdog calls that healthy, and it is "your bot
+  silently stopped trading", which is the exact failure an unattended week
+  produces. Nothing here makes live survive a restart and no config key was added
+  that could: the reader is read-only and holds no arming path at all.
+- `blocked=` in the heartbeat is the string `RiskManager.circuit_reason` returned
+  for that same account at that same instant, so the file cannot claim the desk is
+  armed while a send would be refused. It is not a second copy of the gate.
+  `_apply_circuit` now returns the halt reason instead of a bool so the halted
+  path can name itself too; both call sites read identically.
+- **The threshold is derived from config, never chosen.** `poll_seconds`, the
+  Telegram retry ceiling (`RETRY_TRIES` attempts at `poll_seconds` plus
+  `POLL_TIMEOUT_MARGIN_S`, with gaps up to `RETRY_CAP_S`) and two venue commands
+  at the mode's own `timeout_ms`, plus `NET_GRACE_SEC` when `mt4.mailbox_url`
+  points at a remote shim. The shipped example config derives 428s on MT4 and
+  648s on MT5; one constant could not have been right for both, which is the
+  `deviation_points` finding (#68) on the time axis. There is deliberately no
+  config key for the alarm window.
+- **The one term that is not a measurement says so, and is checked.** The work
+  after `account()` scales with the book and no config value bounds it, so the
+  budget is doubled to cover it. The desk publishes `tick_gap_max_s`, the longest
+  gap it has really observed, and sets `over_budget=1` when that passes the
+  budget. It does NOT widen its own threshold: a gate that relaxes itself until it
+  stops firing can no longer go red.
+- `STALE` is not called DEAD. A desk whose venue link is down writes nothing,
+  exactly like one that exited, and separating them needs `journal.lock`. This
+  command will not take that lock even briefly, because holding it can make a
+  restart exit `already running`, which is a watchdog that can kill the desk. The
+  alert names both readings and points at `reconnect` in the journal.
+- It never calls `getUpdates`. Two pollers on one bot token steal each other's
+  commands, so the client is built with no offset path, and a test asserts that a
+  whole watch run issues zero `getUpdates` requests.
+- **The scheduled task is documented, with the half a restart cannot fix in the
+  same breath.** `docs/RUNBOOK.md` gains "Watchdog" and "Unattended (Windows
+  scheduled task)": two tasks, a repeating trigger AS the restart-on-failure
+  (Task Scheduler does not start a second instance, and `journal.lock` is the
+  second barrier), the fc34 warning restated where the task is created, and an
+  acceptance drill that has the operator kill the desk and watch the alarm fire
+  before leaving it alone for a week.
+- Heartbeat format: LINE ONE is still the bare ISO timestamp, byte for byte. The
+  `key=value` lines come after it, so every older reader and every older doc stays
+  true. `docs/CONTRACT.md` carries the format.
+- `src/straightedge/watchdog.py` ships with a per-file coverage floor. It is the
+  only thing that tells an operator the desk is alive AND armed, and it runs in a
+  process nobody else is watching.
+
+### Found on main while doing the above: the package reported the wrong version
+
+`pyproject.toml` read `version = "1.5.0"` and `src/straightedge/__init__.py` read
+`__version__ = "1.4.2"`. `pip` reports the first and `doctor` prints the second,
+so a 1.5.0 install told its operator 1.4.2, which is the number that goes into a
+handover checklist and into any bug report the end user files. No test read either
+declaration, so one of the two was always going to be missed in a release commit.
+`__init__.py` is corrected to 1.5.0 and `tests/test_version.py` pins the two
+together.
+
 ### The desk comes off the MetaTrader 4 host (#73)
 
 Conrad ruled 2026-09-25 that the EA transport moves before the first paying

@@ -225,10 +225,187 @@ Do not load the LaunchAgent and also run `--loop` in a terminal.
 
 Each successful tick writes `journal.heartbeat` next to the journal.
 The tick must reach the account.
-The file is an ISO timestamp, chmod 0600.
+Line 1 of the file is an ISO timestamp.
+After it come `key=value` lines.
+`blocked=` is empty when the desk would trade.
+`blocked=` names the gate when it would not.
+The file is chmod 0600.
 A reconnect that fails does not update it.
+Read the file with `watch` below.
 Before a write that would exceed 10 MiB, the live journal is renamed to `journal.jsonl.1`.
 That replaces any previous `.1`.
+
+## Watchdog
+
+`watch` reads `journal.heartbeat` and tells you the state of the desk.
+Run it in a second process.
+The desk cannot report its own death.
+
+```bash
+python -m straightedge --config config.toml watch
+```
+
+One check. It prints the state and exits.
+The exit code is the state:
+
+| Exit | State | Meaning |
+| --- | --- | --- |
+| 0 | `ALIVE ARMED` | The desk is ticking. It will trade. |
+| 3 | `ALIVE NOT TRADING` | The desk is ticking. A gate refuses. The gate is named. |
+| 4 | `STALE` | No completed tick inside the threshold. |
+| 5 | `UNKNOWN` | Nothing was measured. The message says what is missing. |
+
+Exit 3 is the one an up-or-down check cannot see.
+The desk is up, and it is not trading.
+The usual reason after a restart is `live_not_accepted`.
+That means the desk came back DISARMED.
+Arming is per process. It never survives a restart.
+Send `/live on I-ACCEPT-RISK` in the locked chat to arm it again.
+The other reasons are `halt_file`, `daily_loss`, `max_drawdown`,
+`trade_not_allowed`, `state_unreadable`, and `state_unwritable`.
+Read `Halt` above for those.
+
+Alert mode:
+
+```bash
+python -m straightedge --config config.toml watch --loop --ok-every 3600
+```
+
+It alerts the locked chat on the first check.
+Then it alerts on every change of state.
+It never polls Telegram for commands.
+It cannot steal the desk's commands.
+It never takes `journal.lock`.
+It cannot stop the desk from restarting.
+
+`--ok-every 3600` sends one healthy message an hour.
+Zero is off. Zero is the default.
+Set it. Then silence is a signal too.
+Nothing on the computer can see this watcher die.
+
+### The threshold is measured, not chosen
+
+`doctor` prints the threshold on every run.
+
+```
+watchdog: /path/journal.heartbeat, stale after 428s (tick budget 214s)
+```
+
+The threshold comes from your own config.
+`engine.poll_seconds` is the Telegram long poll.
+Telegram retries that poll up to 4 times.
+Telegram can ask for a 60 second wait on each retry.
+`[mt4] timeout_ms` (or `[mt5]`) is one venue command.
+The tick spends two venue commands before it writes the file.
+The budget is the sum. The threshold is twice the budget.
+A remote MT4 shim (`mt4.mailbox_url`) adds 2 seconds per command.
+
+Do not replace this with a number you like.
+A 60 second alarm on a 15 second poll is a false alarm every flood wait.
+A false alarm gets muted, and a muted alarm is worse than none.
+The Telegram retry ceiling is most of the 428s.
+That is why a smaller `poll_seconds` does not make the alarm much faster.
+
+The desk also publishes `tick_gap_max_s`.
+That is the longest real gap between two heartbeats.
+`over_budget=1` means a real gap passed the budget.
+Then the threshold is too tight for this book.
+The desk does NOT widen it by itself.
+A gate that widens itself until it stops firing is not a gate.
+Report `over_budget=1`. Do not ignore it.
+
+### What `watch` cannot tell you
+
+`STALE` does not prove the process is gone.
+A desk that cannot reach the account writes nothing.
+A desk that exited writes nothing.
+They look the same from the file.
+To tell them apart, grep `reconnect` in `journal.jsonl`.
+Proving it needs `journal.lock`, and this command will not touch it.
+Holding that lock for one moment can make a restart exit `already running`.
+
+`watch` alerts through Telegram.
+If Telegram is down, the alert reaches stdout only.
+The line says so.
+Nothing on the computer can page you then.
+
+## Unattended (Windows scheduled task)
+
+Use this for a run of days with nobody at the computer.
+You need two tasks.
+One starts the desk. One watches it.
+
+WARNING
+Never put `--i-accept-risk` in either task (fc34).
+A scheduled task re-runs its arguments on every restart.
+That would arm real money again on every crash, with nobody there.
+The desk comes back DISARMED on purpose.
+A human arms it from the chat.
+
+1. Read the threshold.
+   `python -m straightedge --config config.toml doctor`
+   Write down the `stale after` seconds.
+2. Pick the restart interval.
+   Use whole minutes at or below that number.
+   The shipped example config gives 428s, so use 5 minutes.
+3. Create the desk task.
+
+```bat
+schtasks /create /tn straightedge-desk /sc minute /mo 5 ^
+  /tr "C:\path\to\venv\Scripts\python.exe -m straightedge --config C:\path\to\config.toml run --mode mt4 --loop" ^
+  /ru %USERNAME% /it
+```
+
+4. Create the watcher task.
+
+```bat
+schtasks /create /tn straightedge-watch /sc minute /mo 5 ^
+  /tr "C:\path\to\venv\Scripts\python.exe -m straightedge --config C:\path\to\config.toml watch --loop --ok-every 3600" ^
+  /ru %USERNAME% /it
+```
+
+5. Set the working directory for both tasks.
+   Task Scheduler calls it Start in.
+   `HALT` and the journal are relative to it.
+
+The repeating trigger IS the restart on failure.
+Task Scheduler does not start a second instance of a running task.
+So the trigger does nothing while the desk is up.
+When the desk is gone, the next trigger starts it.
+`journal.lock` is the second barrier.
+A second desk exits 2 with `already running` before it touches MT4 or Telegram.
+
+CAUTION
+MT4 is a GUI program.
+It needs a logged-in Windows session.
+`/it` runs the task in that session.
+A task set to run whether the user is logged on or not cannot see MT4.
+
+### What you will see after a crash
+
+The desk restarts inside the interval.
+The heartbeat starts moving again.
+You may never get a `STALE` alert. That is correct.
+You WILL get `ALIVE NOT TRADING (live_not_accepted)`.
+That is the desk telling you it came back disarmed.
+Send `/live on I-ACCEPT-RISK` to arm it.
+Until you do, the desk sizes and refuses. It does not trade.
+
+### Prove it works before you leave it
+
+Do this once, on the demo account.
+
+1. Start both tasks.
+2. Wait for the first `watch` message in the chat.
+3. End the desk process in Task Manager.
+4. Wait for the restart interval.
+5. Read the chat.
+   You get a state change.
+   The desk is back, and it is disarmed.
+6. Send `/live on I-ACCEPT-RISK`.
+7. Read the chat. `ALIVE ARMED`.
+
+A watchdog you have never seen fire is not a watchdog.
 
 ## Agent advice
 
@@ -447,6 +624,8 @@ Telegram token, the hazard `deploy/LIVE.md` warns about.
 
 The committed example keeps `REPLACE_ME`, `KeepAlive`, and `Umask` 63 (077).
 Watchdog: `journal.heartbeat` next to `journal_path` under `WorkingDirectory`.
+Read it with `watch`. See `Watchdog` above.
+`KeepAlive` restarts the process. The process comes back DISARMED.
 
 11. Create a log directory under `WorkingDirectory`.
     `mkdir -p logs`
@@ -469,6 +648,7 @@ launchctl bootout gui/$(id -u)/org.skyphusion.straightedge
 `Umask` 63 is 077, matching `main()`.
 Watchdog liveness is `journal.heartbeat` next to the journal (ISO ts, chmod 0600).
 Stale mtime means the loop is not ticking.
+Run `watch --loop` beside it. Nothing else reads that file for you.
 The lock is released when the bot dies.
 The new bot can acquire `journal.lock`.
 A leftover `journal.lock` file is not a held lock.
@@ -671,7 +851,11 @@ A file that cannot be written halts with reason `state_unwritable`.
 Both mean the bot could not measure. Neither is treated as a clean start.
 `journal.lock` is an exclusive lock so two loops cannot share the journal or offset.
 Unix: flock. Windows: msvcrt.locking.
-`journal.heartbeat` is an ISO timestamp rewritten each successful `step_all`.
+`journal.heartbeat` is rewritten each successful `step_all`.
+Line 1 is an ISO timestamp. Then `blocked=`, `mode=`, `stale_after_s=`,
+`tick_budget_s=`, `tick_gap_max_s=`, and `over_budget=`.
+`blocked=` carries the gate reason, from the same call that refuses a send.
+`watch` reads it. See `Watchdog`.
 Before a write that would exceed 10 MiB, the live file is renamed to `journal.jsonl.1`.
 That is one generation.
 The previous `.1` is replaced.

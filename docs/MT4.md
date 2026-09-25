@@ -437,6 +437,18 @@ process that has exited cannot retry anything. The scheduled task should also
 restart the desk on failure; the wait reduces how often that is needed, it does
 not replace it.
 
+**That scheduled task is now written down, and so is the half a restart cannot
+fix.** `docs/RUNBOOK.md`, "Unattended (Windows scheduled task)", creates the
+task and creates a second one beside it for `straightedge watch`, which reads
+`journal.heartbeat` and is the first thing in this repo that ever did. The
+reason the two tasks are not one is the reason this paragraph exists: a restart
+brings the PROCESS back, and it brings it back DISARMED, because live arming is
+per process and fc34 forbids putting `--i-accept-risk` anywhere a supervisor can
+re-run it. So the failure that costs an unattended week is not the crash, which
+heals; it is the desk sitting there ticking and refusing to trade with nobody
+told. `watch` reports that as its own state, `ALIVE NOT TRADING
+(live_not_accepted)`, with its own exit code, and a human re-arms from the chat.
+
 ## Timeframes
 
 The wire uses names: `M1`, `M5`, `M15`, `M30`, `H1`, `H4`, `D1`, `W1`, `MN1`.
