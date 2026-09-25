@@ -134,7 +134,22 @@ class Engine:
             self.telegram.notify(event, text)
 
     def start(self) -> None:
-        self.broker.connect()
+        # A venue whose terminal can take tens of seconds to become answerable
+        # says so by offering `startup_connect`, and MT4 is one: it is a GUI
+        # application that a boot-triggered scheduled task races. Every other
+        # `connect()` in this file (`_reconnect_broker`, and `ensure_connected`
+        # from `step_all`) deliberately keeps the short steady-state budget, so
+        # the long wait is spent exactly once, here, before the desk is holding
+        # anything.
+        #
+        # Duck-typed rather than added to the `Broker` Protocol for the same
+        # reason `ensure_connected` is (see `step_all`): it is one venue's own
+        # property, not something every venue must implement.
+        opener = getattr(self.broker, "startup_connect", None)
+        if callable(opener):
+            opener()
+        else:
+            self.broker.connect()
         for name in self.cfg.symbols:
             self.broker.select_symbol(name)
         acct = self.broker.account()

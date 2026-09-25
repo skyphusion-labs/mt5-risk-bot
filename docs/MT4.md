@@ -353,6 +353,73 @@ reads the spec, rather than letting sizing return zero and reporting
 small, and this says nothing was measured. If you see it, the symbol is
 probably not in Market Watch; add it there and restart.
 
+## Startup waits for the Expert. Steady state does not.
+
+MT4 is a GUI application. A desk started from a boot-triggered Windows
+scheduled task therefore races the terminal's own launch: MT4 has to start, load,
+log in to the broker and reach the Expert's first timer tick before anything can
+answer on the mailbox.
+
+Measured on a live host after its first reboot since setup: MT4 came back
+healthy, the Expert was attached, the mailbox path was right, and the desk was
+dead. `Engine.start()` sent ONE `ping` on the 5 second per-command timeout, the
+ping timed out, the process exited, and nothing retried. Every visible
+indicator read healthy and the bot was gone. An operator with no shell on that
+host has no way to notice it or fix it.
+
+`Engine.start()` now calls `Mt4Broker.startup_connect()`, which retries the
+ping with a growing gap until the Expert answers or the budget runs out.
+
+| | Budget | Set by | Used by |
+| --- | --- | --- | --- |
+| Startup | `mt4.startup_wait_sec`, default 180s | `startup_connect()` | `Engine.start()`, once |
+| Steady state | `mt4.timeout_ms`, default 5000 | `FileBridge.timeout` | every other command |
+
+**The two numbers are deliberately not one number.** `Engine.step_all()` calls
+`ensure_connected()` on every step and `Engine._reconnect_broker()` calls
+`connect()` on the trading path, and both of those keep the short budget. A
+cold-boot-sized budget leaking into either of them would turn a transient blip
+into a multi-minute stall while the desk holds live positions, which is worse
+than the startup bug it would be fixing. `doctor --connect` also keeps the
+short budget, because interactive diagnosis should fail fast.
+
+**It is bounded, and the bound is stated.** Wall clock worst case is the budget
+plus one `timeout_ms`: a new ping is only started while time remains, but a
+ping already in flight is allowed to finish. An unbounded wait would convert a
+wrong `files_dir`, a detached Expert or an absent MT4 into a process that hangs
+forever looking busy, which is not an improvement on a crash.
+
+**It says what it is doing.** Every attempt prints to stdout, flushed per line,
+so a redirected desk log shows the wait as it happens rather than as one burst
+afterwards:
+
+```
+mt4: waiting up to 180s for the Expert to answer on the mailbox
+mt4: no reply yet, attempt 1 at 5.0s of 180s (mt4 bridge timeout); retrying in 1.0s
+mt4: no reply yet, attempt 2 at 11.0s of 180s (mt4 bridge timeout); retrying in 2.0s
+mt4: Expert answered on attempt 6 after 48.3s
+```
+
+Giving up names the elapsed time and what to check:
+
+```
+mt4 bridge never answered: 21 ping(s) over 180.4s, budget 180s, last error:
+mt4 bridge timeout. Check that MetaTrader 4 is running, that
+mt4/Experts/Mt4RiskBot.mq4 is attached to exactly one chart with AutoTrading
+enabled, and that mt4.files_dir is the Terminal Common Files folder.
+```
+
+**A reply of `ok=0` is NOT retried.** That is a live Expert stating a
+diagnosis, and waiting cannot change it. The partition is a type, not a
+message: `FileBridge` raises `BridgeTimeout` (a `RuntimeError` subclass) when
+nothing answered, and only that and `OSError` are retried.
+
+**What this does not cover.** An in-process wait fixes the cold-boot race. It
+does not cover MT4 taking longer than the budget, or MT4 dying later, because a
+process that has exited cannot retry anything. The scheduled task should also
+restart the desk on failure; the wait reduces how often that is needed, it does
+not replace it.
+
 ## Timeframes
 
 The wire uses names: `M1`, `M5`, `M15`, `M30`, `H1`, `H4`, `D1`, `W1`, `MN1`.

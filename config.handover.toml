@@ -38,6 +38,14 @@ timeout_ms = 60000
 # or set MT4_FILES_DIR. %APPDATA% in this value expands.
 files_dir = ""
 timeout_ms = 5000
+# Seconds to wait for the Expert at STARTUP only, before giving up. A
+# boot-triggered task races MT4's own launch: the terminal has to start, load,
+# log in and reach the Expert's first tick, which is tens of seconds. Omit this
+# key to use the built-in 180. `0` means one ping and no wait. The wait is
+# always bounded and every attempt is logged with its elapsed time, so a wrong
+# files_dir is still reported instead of hanging. This does NOT change
+# timeout_ms, which is the per-command budget in steady state.
+#startup_wait_sec = 180
 
 [risk]
 risk_pct = 0.005            # 0.5% of equity per trade
