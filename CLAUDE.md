@@ -9,9 +9,10 @@ needs explicit gates (below).
 
 The bot = the Python process (`src/straightedge/`). The desk = Telegram chat commands. The
 agent = the Cloudflare Worker AI advisor (`agent/`, `AI_PROVIDER=computer`, routed through the
-AI Gateway `mt5-risk-bot`). `grok` and `claude` are the other two `AI_PROVIDER` values, BYOK
-straight to `api.x.ai` / `api.anthropic.com`, no gateway. The circuit = halt, daily-loss, and
-drawdown gates.
+AI Gateway named in README's Names table; `tests/test_venue_vocabulary.py` pins that literal
+gateway id, so this file points at README rather than restating it). `grok` and `claude` are
+the other two `AI_PROVIDER` values, BYOK straight to `api.x.ai` / `api.anthropic.com`, no
+gateway. The circuit = halt, daily-loss, and drawdown gates.
 
 ## Broker layer
 
@@ -20,12 +21,15 @@ drawdown gates.
 (`MarketOrder`, `WorkingOrder`) all three implement; `docs/CONTRACT.md` is the behaviour the
 test suite enforces.
 
-**MT5** uses the official `MetaTrader5` package (Windows) or `mt5-mac` (macOS via a running
-MT5 terminal); needs a live terminal.
+**MT5** needs a live terminal; README's Live MT5 section has the Windows/macOS package
+choice (`tests/test_venue_vocabulary.py` pins those exact package names, so this file points
+at README rather than restating them).
 
 **MT4 is a file mailbox, not a network call.** `mt4/Experts/Mt4RiskBot.mq4` and
-`mt4_live.py` talk only through `FileOpen` / `FileWriteString` / `FileDelete` on
-`mt4_risk_bot.req` / `mt4_risk_bot.res` in MT4's Common Files dir (`docs/MT4.md` is the ICD).
+`mt4_live.py` talk only through `FileOpen` / `FileWriteString` / `FileDelete` on the two
+mailbox basenames `docs/MT4.md` names as the ICD (that doc, and
+`tests/test_venue_vocabulary.py`, pin the exact filenames; this file points at the ICD
+rather than restating them).
 Zero `WebRequest`, zero sockets. That is why the bot currently has to run on the same Windows
 box as the MT4 terminal, and it is the open decision in **straightedge#73**: the file mailbox
 is the only thing a customer ever installs, so changing its transport (e.g. to a `WebRequest`
