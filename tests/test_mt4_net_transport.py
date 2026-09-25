@@ -383,8 +383,22 @@ class TestTheErrorPartitionSurvivesTheHop:
     def test_a_shim_that_is_not_listening_is_retried(self, tmp_path: Path) -> None:
         """Connection refused is an `OSError`, and at boot that is ordinary.
 
-        The shim may not be up yet, exactly as the terminal may not be. This
-        must be retried, and it must still give up bounded.
+        The shim may not be up yet, exactly as the terminal may not be, so this
+        must take the RETRY path and must still give up bounded.
+
+        What is asserted, and what deliberately is not. The gate is the presence
+        of a `retrying in` line: `startup_connect()` emits that only when it has
+        decided to loop again, so it separates "retried" from the pre-#74
+        behaviour of raising on the first failure. The gate is NOT a COUNT of
+        attempts, because the count depends on how long one failed connect takes
+        and that is platform-specific: a refused loopback connect returns
+        instantly on macOS and Linux, and takes about 2 seconds on Windows
+        (`WinError 10061`), which consumed this whole budget in one attempt and
+        failed a `>= 2` assertion on both Windows CI legs. Sizing the budget up
+        to accommodate that would have bought a latency measurement dressed as a
+        behaviour test. That more than one REAL attempt happens is proven by
+        `test_a_504_IS_retried_until_the_expert_appears`, where the shim answers
+        in milliseconds on every platform.
         """
         del tmp_path
         log: list[str] = []
@@ -395,8 +409,15 @@ class TestTheErrorPartitionSurvivesTheHop:
             br.startup_connect()
         elapsed = time.monotonic() - started
         attempts = [line for line in log if "no reply yet" in line]
-        print(f"connection refused retried {len(attempts)} time(s) over {elapsed:.2f}s")
-        assert len(attempts) >= 2, f"only {len(attempts)} attempt(s): {log}"
+        retrying = [line for line in log if "retrying in" in line]
+        print(
+            f"connection refused: {len(attempts)} attempt(s), {len(retrying)} of "
+            f"them electing to retry, over {elapsed:.2f}s of a 2.5s budget"
+        )
+        assert retrying, (
+            "a refused connection raised without electing to retry, so the shim "
+            f"not being up yet is fatal instead of transient: {log}"
+        )
         assert not isinstance(exc.value, BridgeTimeout)
         assert elapsed < 20.0, f"the bounded wait ran {elapsed:.2f}s"
 
@@ -645,7 +666,12 @@ class TestItRefusesToExistMisconfigured:
         means this process cannot be the thing that does it.
         """
         assert not issubclass(_ShimServer, socketserver.ThreadingMixIn)
-        assert not issubclass(_ShimServer, socketserver.ForkingMixIn)
+        # `ForkingMixIn` does not exist on Windows, which has no `fork`, so it is
+        # looked up rather than imported. Naming it directly made both Windows CI
+        # legs fail with AttributeError.
+        forking = getattr(socketserver, "ForkingMixIn", None)
+        if forking is not None:
+            assert not issubclass(_ShimServer, forking)
 
 
 # ---------------------------------------------------------------------------
