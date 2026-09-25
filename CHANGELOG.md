@@ -79,6 +79,37 @@ required by MT4 itself and which no transport choice changes. And off-box, a
 network partition is a new way for the desk to be unable to flatten: what
 protects a position in that window is the broker-side stop the Expert attaches
 on every entry, not the desk. `docs/TRANSPORT.md` states all of it.
+### Crypto pairs count toward the currency-exposure limit (issue #66)
+
+`max_currency_exposure` applied only when BOTH halves of a symbol resolved to a
+recognised code, and the recognised set was ISO 4217 plus the four metal codes
+ISO assigns. Crypto codes are not in ISO 4217, so `BTCUSD` did not resolve, the
+limit DID NOT APPLY, and the USD leg of a crypto position did not count. Holding
+`BTCUSD`, `ETHUSD` and `EURUSD` showed the limit one USD leg where three
+existed. Conrad ruled: add the crypto pairs.
+
+- The recognised table now carries the crypto majors
+  (`ADA BCH BNB BTC DOT EOS ETC ETH LTC SOL TRX XBT XLM XMR XRP XTZ ZEC`),
+  the same way it already carries `XAU` and `XAG`. One table, one code path.
+- **A crypto code shares the ONE bucket per code.** A buy of `BTCUSD` is +BTC
+  and -USD, so its USD leg is counted identically to that of `EURUSD` and
+  `XAUUSD`, and its BTC leg caps `BTCUSD` against `BTCJPY`. The gate counts
+  TICKETS, never money, so crypto volatility differing from FX volatility is not
+  what it compares; per-unit risk is equalised by sizing and by the daily-loss
+  and drawdown gates. A separate crypto bucket was rejected because it would let
+  a fourth short-USD ticket in unseen.
+- **Behaviour change for a crypto book.** A crypto position now consumes
+  currency exposure against FX positions, so a book that stacked several long
+  crypto pairs against USD will start seeing `currency_exposure` refusals, and
+  `currency_limit_not_applicable` is no longer journaled for a crypto symbol.
+- No venue spelling is hardcoded: `BTCUSD`, `BTCUSDT`, `XBTUSD`, `BTC/USD`,
+  `BTCUSD.m` and `#BTCUSD` all resolve through the existing first-six rule.
+  `BTCUSDT` folds the Tether leg into USD, which is the intended reading.
+- KNOWN LIMIT, documented rather than implied: the resolver splits the first six
+  alphabetic characters 3 and 3, so only a three-character ticker can resolve.
+  `DOGEUSD`, `AVAXUSD`, `LINKUSD`, `MATICUSD` and `SHIBUSD` remain
+  allowed-and-recorded. Widening the split changes how every symbol resolves and
+  belongs in its own unit.
 
 ### The desk survives a reboot (MT4 startup wait)
 
