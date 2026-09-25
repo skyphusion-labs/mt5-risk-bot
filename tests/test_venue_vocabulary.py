@@ -68,19 +68,20 @@ VENUE_SET_FORM_IN_SRC = 4
 REAL_MONEY_GATE_IN_RISK = 2
 #: the legality check in `config.py`, a different question from "is this a live venue".
 LEGAL_MODE_SET_IN_SRC = 1
-#: TOML section headers across the tracked tree. The mt4 header is 4, not 2: the two
-#: example configs, one inline TOML fixture in tests/test_mt4_adapter.py, and the
-#: CHANGELOG line naming the `[mt4] startup_wait_sec` key.
+#: TOML section headers across the tracked tree. The mt4 header is 7, not 2: the two
+#: example configs, one inline TOML fixture in tests/test_mt4_adapter.py, the CHANGELOG
+#: line naming the `[mt4] startup_wait_sec` key, and three inline TOML fixtures in
+#: tests/test_mt4_startup_wait.py that pin set / unset / zero for that key.
 CONFIG_SECTION_MT5 = 2
-CONFIG_SECTION_MT4 = 4
+CONFIG_SECTION_MT4 = 7
 #: the `[mt5]` section keys, and `timeout_ms` which both venue sections share.
-#: timeout_ms went 18 -> 23 with the MT4 startup wait: the two example configs each
-#: explain that startup_wait_sec is NOT timeout_ms, and docs/MT4.md plus the CHANGELOG
-#: state the budget table and the "budget plus one timeout_ms" bound. Every one of those
-#: is prose ABOUT the steady-state key, which is why the count grew without a new
-#: config site.
+#: timeout_ms went 18 -> 24 with the MT4 startup wait. Only ONE of the six is a new
+#: config site (a fixture in tests/test_mt4_startup_wait.py asserting that an absent
+#: startup_wait_sec stays unset); the other five are prose ABOUT the steady-state key:
+#: both example configs explain that startup_wait_sec is NOT timeout_ms, and docs/MT4.md
+#: plus the CHANGELOG state the budget table and the "budget plus one timeout_ms" bound.
 KEY_TERMINAL_PATH = 6
-KEY_TIMEOUT_MS = 23
+KEY_TIMEOUT_MS = 24
 #: the official Windows pip package, named in the extra, the adapter import, the doctor
 #: advice and the mypy override.
 METATRADER5 = 21
@@ -107,6 +108,15 @@ def _tracked() -> list[Path]:
 
     A missing git is a hard failure, never a skip: a vocabulary gate that quietly
     measures nothing is indistinguishable from one that passed.
+
+    **`git ls-files`, so a NEW file is invisible until it is staged**, and that
+    reads as a pass rather than as an error. A local run against an untracked
+    new test file scans a smaller tree, counts fewer tokens, and goes GREEN on
+    constants that CI will then reject; measured on the MT4 startup-wait branch,
+    108 files locally against 109 in CI, four tokens apart. Run this gate after
+    `git add`, not before. The enumerator is still the right one -- the tracked
+    tree IS what ships -- but its denominator is a state the working tree can
+    disagree with.
     """
     try:
         out = subprocess.run(
