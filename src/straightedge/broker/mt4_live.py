@@ -316,18 +316,42 @@ class FileBridge:
 
     def call(self, op: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            return self._call(op, payload)
+            self._n += 1
+            req_id = self._n
+            return decode(self._exchange(encode(op, payload, req_id), req_id))
 
-    def _call(self, op: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def exchange(self, body: str, req_id: int) -> str:
+        """One mailbox round trip for a body the CALLER already encoded.
+
+        This is what `straightedge.broker.mt4_net` serves a remote desk with, and
+        it differs from `call()` in exactly two ways, both deliberate.
+
+        The request id is the CALLER's, not this bridge's. The desk that built the
+        body owns the id end to end, so the reply the desk finally reads carries
+        the id the desk sent. A shim that generated its own id would have to
+        translate the reply's id back, and a translation is a place to drift.
+
+        The RAW reply text is returned, not a decoded dict. `decode` coerces
+        types, so re-encoding a decoded reply is not the identity; returning the
+        text means the bytes the Expert wrote are the bytes the desk reads, and
+        the golden transcripts in `tests/mt4_transcripts.py` still describe what
+        crosses the network.
+
+        `self._n` is deliberately NOT advanced here. One `FileBridge` therefore
+        must not be driven through `call()` and `exchange()` at the same time, or
+        the two id spaces collide. The shim only ever uses `exchange()`.
+        """
+        with self._lock:
+            return self._exchange(body, req_id)
+
+    def _exchange(self, body: str, req_id: int) -> str:
         self.dir.mkdir(parents=True, exist_ok=True)
-        self._n += 1
-        req_id = self._n
         req = self.dir / REQ_NAME
         res = self.dir / RES_NAME
         deadline = time.monotonic() + self.timeout
         _retry_unlink(res, deadline)
         _retry_unlink(req, deadline)
-        _atomic_write(req, encode(op, payload, req_id), deadline)
+        _atomic_write(req, body, deadline)
         enc = _mailbox_encoding()
         while time.monotonic() < deadline:
             if res.exists():
@@ -336,11 +360,10 @@ class FileBridge:
                 except OSError:
                     time.sleep(0.02)
                     continue
-                data = decode(text)
-                if int(data.get("id", 0) or 0) == req_id:
+                if int(decode(text).get("id", 0) or 0) == req_id:
                     _retry_unlink(res, deadline)
                     _retry_unlink(req, deadline)
-                    return data
+                    return text
             time.sleep(0.02)
         raise BridgeTimeout("mt4 bridge timeout")
 

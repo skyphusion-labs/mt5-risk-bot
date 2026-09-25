@@ -28,6 +28,15 @@ timeout_ms = 5000
 # files_dir is still reported instead of hanging. This does NOT change
 # timeout_ms, which is the per-command budget in steady state.
 #startup_wait_sec = 180
+# Run the desk somewhere OTHER than the MetaTrader 4 host (#73). Set this to the
+# `straightedge mt4-shim` endpoint on the MT4 box and the desk stops needing to
+# see files_dir at all; leave it empty for a co-located desk, which is still
+# fully supported. It is checked BEFORE files_dir, because on Windows files_dir
+# resolves to Common Files even when nobody set it. See docs/TRANSPORT.md.
+#mailbox_url = "https://mt4-host.example.org/mt4/call"
+# The shared bearer token has NO key here on purpose. It goes in the environment,
+# as MT4_MAILBOX_TOKEN, on the desk AND on the shim. Minimum 32 characters, and
+# there is no unauthenticated mode: this endpoint places orders.
 
 [risk]
 risk_pct = 0.005            # 0.5% of equity per trade

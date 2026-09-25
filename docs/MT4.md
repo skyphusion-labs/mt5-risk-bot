@@ -8,6 +8,22 @@ The Expert is `mt4/Experts/Mt4RiskBot.mq4`.
 Python is `straightedge.broker.mt4_live`.
 Engine still sends `MarketOrder` and `WorkingOrder` only.
 
+## Two transports, one ICD
+
+Everything below describes what travels. **Who carries it is now a choice**, and
+`docs/TRANSPORT.md` is the decision record (#73).
+
+| `mt4.mailbox_url` | Transport | The desk runs |
+| --- | --- | --- |
+| unset | the file mailbox described below | on the MetaTrader 4 host |
+| set | HTTPS to `straightedge mt4-shim` on the MT4 host | anywhere |
+
+The Expert is **byte-for-byte the same file either way**: it issues no
+`WebRequest` and knows nothing about the network. The shim runs beside the
+terminal, owns this mailbox, and turns one authenticated `POST /mt4/call` into
+one round trip through it. The body on the wire is the same `key=value` block
+this document specifies, carried opaquely, so every line below still applies.
+
 ## Files
 
 Directory: `mt4.files_dir` or `MT4_FILES_DIR`.
@@ -19,8 +35,9 @@ Windows default if the key is empty:
 %APPDATA%\MetaQuotes\Terminal\Common\Files
 ```
 
-`%APPDATA%` in a configured path expands. The bot and the terminal must run
-on the same Windows host. `journal.lock` uses `msvcrt.locking` there.
+`%APPDATA%` in a configured path expands. `journal.lock` uses `msvcrt.locking`
+there. With no `mt4.mailbox_url`, the bot and the terminal must run on the same
+Windows host; with one, only the shim does.
 
 | File | Writer | Reader |
 | --- | --- | --- |
@@ -455,6 +472,11 @@ Two checks in there are worth knowing about before editing either side:
 3. Enable AutoTrading. Allow live trading on the Expert.
 4. Set `account.mode = "mt4"` and `mt4.files_dir`.
 5. `doctor --connect` must print `venue=mt4` and exit 0.
+
+For a desk that is NOT on this host, steps 1 to 3 are unchanged, and step 4
+becomes: set `MT4_MAILBOX_TOKEN` on both machines, run
+`straightedge mt4-shim` here, and set `mt4.mailbox_url` on the desk. See
+`docs/TRANSPORT.md`.
 
 Real money (`trade_mode=2`) still needs `--i-accept-risk` or `/live on I-ACCEPT-RISK`.
 Paper P/L is not live P/L.

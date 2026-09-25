@@ -68,20 +68,36 @@ VENUE_SET_FORM_IN_SRC = 4
 REAL_MONEY_GATE_IN_RISK = 2
 #: the legality check in `config.py`, a different question from "is this a live venue".
 LEGAL_MODE_SET_IN_SRC = 1
-#: TOML section headers across the tracked tree. The mt4 header is 7, not 2: the two
+#: TOML section headers across the tracked tree. The mt4 header is 9, not 2: the two
 #: example configs, one inline TOML fixture in tests/test_mt4_adapter.py, the CHANGELOG
-#: line naming the `[mt4] startup_wait_sec` key, and three inline TOML fixtures in
-#: tests/test_mt4_startup_wait.py that pin set / unset / zero for that key.
+#: line naming the `[mt4] startup_wait_sec` key, three inline TOML fixtures in
+#: tests/test_mt4_startup_wait.py that pin set / unset / zero for that key, and TWO in
+#: tests/test_mt4_net_transport.py. Those last two went 7 -> 9 with the network
+#: transport (#73) and they are load-bearing rather than incidental: both write a
+#: `[mt4] mailbox_token` into a config FILE and assert the loader does not read it,
+#: because that token is environment-only and a TOML key for it would put a
+#: trade-placing secret in a file people commit.
 CONFIG_SECTION_MT5 = 2
-CONFIG_SECTION_MT4 = 7
+CONFIG_SECTION_MT4 = 9
 #: the `[mt5]` section keys, and `timeout_ms` which both venue sections share.
-#: timeout_ms went 18 -> 24 with the MT4 startup wait. Only ONE of the six is a new
+#: timeout_ms went 18 -> 24 with the MT4 startup wait. Only ONE of those six was a new
 #: config site (a fixture in tests/test_mt4_startup_wait.py asserting that an absent
 #: startup_wait_sec stays unset); the other five are prose ABOUT the steady-state key:
 #: both example configs explain that startup_wait_sec is NOT timeout_ms, and docs/MT4.md
 #: plus the CHANGELOG state the budget table and the "budget plus one timeout_ms" bound.
+#:
+#: It went 24 -> 30 with the network transport (#73), and this key is the reason that
+#: change is worth reading rather than rubber-stamping: the shim REUSES `timeout_ms` as
+#: its own mailbox budget instead of introducing a second number, and the desk allows
+#: that plus a 2 second network grace so the shim is the end that gives up first. The
+#: six new sites are exactly that statement, in the places an operator or a reviewer
+#: looks: one code site (`cmd_mt4_shim` in src/straightedge/__main__.py, which computes
+#: the shim's budget from it), two in docs/TRANSPORT.md (the failure table and the
+#: budget-ordering paragraph), one in docs/CONTRACT.md, one in the CHANGELOG, and one in
+#: tests/test_mt4_net_transport.py. If this number drops back toward 24, the most likely
+#: cause is the shim growing a budget of its own, which is the drift this pin catches.
 KEY_TERMINAL_PATH = 6
-KEY_TIMEOUT_MS = 24
+KEY_TIMEOUT_MS = 30
 #: the official Windows pip package, named in the extra, the adapter import, the doctor
 #: advice and the mypy override.
 METATRADER5 = 21

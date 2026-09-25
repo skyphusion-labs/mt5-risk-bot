@@ -1,7 +1,10 @@
 # MT4 Expert
 
 MetaTrader 4 has no official Python API.
-The bot talks to this Expert through a file mailbox in Common Files.
+The bot talks to this Expert through a file mailbox in Common Files. The
+Expert issues no `WebRequest` and is the same file whether the bot is on this
+host or reaches the mailbox through `straightedge mt4-shim`; see
+`docs/TRANSPORT.md`.
 
 ## Install
 

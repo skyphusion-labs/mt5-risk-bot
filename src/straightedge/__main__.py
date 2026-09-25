@@ -18,6 +18,12 @@ from tempfile import TemporaryDirectory
 
 from straightedge import __version__
 from straightedge.broker import broker_for
+from straightedge.broker.mt4_net import (
+    DEFAULT_SHIM_PORT,
+    TOKEN_ENV,
+    make_shim,
+    serve,
+)
 from straightedge.broker.paper import PaperBroker
 from straightedge.config import BotConfig, load_config
 from straightedge.engine import Engine, run_backtest
@@ -43,6 +49,47 @@ def _posture_line(cfg: BotConfig) -> str:
     approve = "allowed" if cfg.telegram.allow_approve_always else "disabled"
     auto = "allowed" if cfg.telegram.allow_auto else "disabled"
     return f"approve always: {approve}\nauto: {auto}"
+
+
+def mt4_transport_line(cfg: BotConfig) -> str:
+    """Which transport THIS config will use, and whether its secret is present.
+
+    Two configs can differ only in an environment variable here, and an operator
+    reading `doctor` has to be able to tell a co-located desk from a remote one
+    without inspecting the process environment by hand. `mailbox_url` wins over
+    `files_dir` in `broker_for`, so this reports the one that will actually be
+    used rather than both. The token is presence-checked and never printed.
+    """
+    if cfg.mt4.mailbox_url:
+        token = "SET" if cfg.mt4.mailbox_token else "unset"
+        return (
+            f"mt4 transport: network shim {cfg.mt4.mailbox_url} "
+            f"({TOKEN_ENV}: {token})"
+        )
+    return f"mt4 transport: file mailbox, files_dir: {cfg.mt4.files_dir or 'unset'}"
+
+
+def cmd_mt4_shim(args: argparse.Namespace) -> int:
+    """Serve this host's MT4 mailbox to a remote desk. See docs/TRANSPORT.md.
+
+    Runs ON the MetaTrader 4 host, beside the terminal, and is the only thing of
+    ours that has to. It holds no risk logic, no prompts, no model keys and no
+    journal, so a bug fix to any of those does not touch the customer's box.
+    """
+    cfg = load_config(args.config) if args.config else load_config()
+    try:
+        server = make_shim(
+            files_dir=cfg.mt4.files_dir,
+            token=cfg.mt4.mailbox_token,
+            host=args.host,
+            port=args.port,
+            timeout_sec=max(1.0, cfg.mt4.timeout_ms / 1000.0),
+            allow_plaintext_exposure=args.i_understand_plaintext,
+        )
+    except (RuntimeError, OSError) as exc:
+        print(redact_text(str(exc)), file=sys.stderr)
+        return 2
+    return serve(server)
 
 
 def telegram_ping(cfg: BotConfig, *, transport=None) -> str:
@@ -171,7 +218,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("MT4: attach mt4/Experts/Mt4RiskBot.mq4. files_dir is Common Files.")
     print("Windows default: %APPDATA%\\MetaQuotes\\Terminal\\Common\\Files")
     if cfg.mode == "mt4":
-        print(f"mt4 files_dir: {cfg.mt4.files_dir or 'unset'}")
+        print(mt4_transport_line(cfg))
     print("Homebrew has no MetaTrader cask; Python is enough for paper/backtest.")
     print("telegram token:", "SET" if os.environ.get("TELEGRAM_BOT_TOKEN") else "unset")
     print("telegram chat:", "SET" if os.environ.get("TELEGRAM_CHAT_ID") else "unset")
@@ -430,6 +477,26 @@ def build_parser() -> argparse.ArgumentParser:
         help="required to send orders on a real (trade_mode=2) account",
     )
     r.set_defaults(func=cmd_run)
+
+    s = sub.add_parser(
+        "mt4-shim",
+        help="serve THIS host's MT4 mailbox to a remote desk (run it on the MT4 box)",
+    )
+    s.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="listen address. Non-loopback needs --i-understand-plaintext",
+    )
+    s.add_argument("--port", type=int, default=DEFAULT_SHIM_PORT)
+    s.add_argument(
+        "--i-understand-plaintext",
+        action="store_true",
+        help=(
+            "bind a routable address with no TLS. The supported exposure is a "
+            "Cloudflare Tunnel, which needs no inbound port at all"
+        ),
+    )
+    s.set_defaults(func=cmd_mt4_shim)
 
     t = sub.add_parser("telegram", help="send a test message to the configured chat")
     t.add_argument("--message", default="straightedge ping")

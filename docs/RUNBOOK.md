@@ -166,6 +166,10 @@ On Windows, omit it. Default:
 ```
 
 The Python bot runs on that same Windows host. `fcntl` is not used there.
+To run the desk elsewhere instead, run `straightedge mt4-shim` on this host
+(loopback plus a Cloudflare Tunnel) and set `mt4.mailbox_url` plus
+`MT4_MAILBOX_TOKEN` on the desk. `docs/TRANSPORT.md` is the decision record and
+carries the failure table.
 
 `doctor --connect` is the gate (mailbox ping, `account`, `trade_mode`).
 It is non-zero if the Expert is missing, the folder is wrong, or the ping times out.

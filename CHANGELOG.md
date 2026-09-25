@@ -6,6 +6,80 @@ See README.md and docs/CONTRACT.md.
 
 ## Unreleased
 
+### The desk comes off the MetaTrader 4 host (#73)
+
+Conrad ruled 2026-09-25 that the EA transport moves before the first paying
+customer. It has moved, and the decision record is **`docs/TRANSPORT.md`**.
+
+The desk had to run on the customer's Windows box because the only transport was
+MT4's `FILE_COMMON` mailbox, which the desk read directly. That is why the
+reboot on 2026-09-25 could kill it: two processes had to be co-resident and
+correctly ordered on a machine we do not own.
+
+**What was chosen, and what was rejected.** Three shapes were weighed, not two.
+The EA calling `WebRequest` for its own decisions is rejected outright: MQL4's
+`WebRequest` is synchronous, so it would put our risk engine and our model call
+inside a blocking call on the customer's chart thread, and it would move the
+halt, approve, auto and live gates behind their terminal's polling. A gate that
+is only enforced while the customer is polling is not a gate. Making the EA a
+dumb transport client is the right destination and is deferred: that code lands
+in the one artifact a customer installs, no CI runner has an MQL4 compiler, and
+it needs a rendezvous service and a manual per-terminal allowed-URL whitelist
+first. What shipped is the reversible, verifiable step in that direction.
+
+- **`straightedge mt4-shim`** runs on the MT4 host and serves that host's
+  mailbox over one authenticated `POST /mt4/call`. It holds no risk logic, no
+  prompts, no model keys and no journal.
+- **`mt4.mailbox_url`** on the desk switches the transport. `Mt4Broker` already
+  took a `call` seam, so this is another implementation of it: the engine, the
+  risk gates and `mt4/Experts/Mt4RiskBot.mq4` are unchanged. The Expert is
+  **byte-for-byte the same file** and still issues zero `WebRequest` calls, so
+  the synchronous-WebRequest problem is not solved here, it is not incurred.
+- **Nothing inverts.** The desk is still the initiator, so `HALT`, daily loss,
+  drawdown, currency exposure, sizing, `approve always`, `/auto` and the
+  real-money fuse all stay in the desk's process and on the desk's clock. The
+  inbound listener is on the CUSTOMER's host; the desk binds nothing.
+- **One wire format.** The HTTP body is the same `key=value` mailbox block
+  `docs/MT4.md` specifies, carried opaquely and never re-serialized, so the
+  golden transcripts still describe the bytes that cross the network and the
+  desk's request id travels end to end untranslated.
+- **Auth is `MT4_MAILBOX_TOKEN` on both ends, environment-only, minimum 32
+  characters, with no off switch.** The shim checks it before the path, before
+  the method and before the body; every unauthenticated request gets `401`
+  whatever it asked for, so the surface is not mappable, and the tests assert
+  the strong property: after a refusal the mailbox directory is EMPTY. The
+  listener binds `127.0.0.1` and refuses a routable address without
+  `--i-understand-plaintext`, because `http.server` has no TLS; the supported
+  exposure is a Cloudflare Tunnel, which opens no inbound port at all.
+- **The `startup_connect()` partition survives the hop, and the standard
+  library's default would have broken it.** `urllib.error.HTTPError` subclasses
+  `OSError`, which `startup_connect()` retries, so a `401` would have been
+  retried in silence for the whole 180 second budget: the same defect class as
+  the boot bug #74 fixed. The shim answers `504` / `503` for "the Expert has not
+  replied" and "the mailbox is not writable", the desk turns those back into
+  `BridgeTimeout`, and every other status is a `RuntimeError` that is never
+  retried. The shim's mailbox budget is `mt4.timeout_ms` and the desk allows
+  that plus 2 seconds, so the shim gives up first and the desk learns which end
+  did.
+- **Both gates were driven red on purpose.** Deleting the `HTTPError` arm makes
+  a `401` burn the full 8 second test budget across 5 retries; deleting the
+  `do_*` catch-all in the handler makes an unauthenticated `PROPFIND` leak a
+  501 page naming the method before auth runs.
+- `FileBridge` gained `exchange(body, req_id)`, the raw round trip the shim
+  serves. It returns the Expert's own bytes rather than a decoded dict, because
+  `decode` coerces types and a round trip through it is not the identity.
+- `doctor` now prints which transport the config will use and presence-checks
+  the token without printing it. `journal.py` redacts `mailbox_token` by name,
+  because the existing match is exact-key and `token` alone would not catch it.
+
+**What this does not do.** It does not remove Python from the customer's host,
+only the risk engine, the model access, the prompts, the secrets and the
+journal. It does not remove auto-logon, the Windows box or MT4, which are
+required by MT4 itself and which no transport choice changes. And off-box, a
+network partition is a new way for the desk to be unable to flatten: what
+protects a position in that window is the broker-side stop the Expert attaches
+on every entry, not the desk. `docs/TRANSPORT.md` states all of it.
+
 ### The desk survives a reboot (MT4 startup wait)
 
 The Windows host was rebooted for the first time since setup. MT4 came back
