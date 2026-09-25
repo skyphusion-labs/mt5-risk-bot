@@ -33,6 +33,7 @@ tolerance LOOSER than the sizer's own, which is why nothing could reach it.
 
 from __future__ import annotations
 
+import math
 import os
 from datetime import datetime, timezone
 from pathlib import Path
@@ -63,6 +64,30 @@ from straightedge.state import (
 SYMBOL_FX = "fx"
 SYMBOL_NOT_FX = "not_fx"
 FX_ALPHA = 6
+
+#: Refusal reason for an effective deviation the current spread cannot fit
+#: inside. Prefix-shaped: the payload carries the measurement AND the config key
+#: to change, because this string reaches the operator verbatim (desk.py answers
+#: `refused: <reason>`) and "slippage too small" without the number to set is
+#: not an actionable refusal.
+DEVIATION_BELOW_SPREAD = "deviation_below_spread"
+
+#: Multiple of the live spread the refusal RECOMMENDS as the deviation to set,
+#: which is deliberately larger than the floor the gate ENFORCES
+#: (`min_deviation_spread_multiple`, 1.0 by default).
+#:
+#: They are two different kinds of claim and they are kept apart on purpose.
+#: The floor is arithmetic: below one spread a market order cannot fill, so it
+#: may refuse. The recommendation is judgement: an operator who fixes the
+#: config to the exact floor is rejected again by the first tick that widens
+#: the spread by one point, so the advice has to carry headroom. Judgement is
+#: allowed to shape ADVICE and is not allowed to refuse anyone's trade, so this
+#: number appears only inside the reason string and never in the comparison.
+#:
+#: 3.0 is the figure under which the one measured instrument works out: gold at
+#: a 45-point spread is advised to 135, and the 150 seeded in
+#: `config.example.toml` clears both that and the floor.
+DEVIATION_HEADROOM_MULTIPLE = 3.0
 
 
 
@@ -522,6 +547,64 @@ class RiskManager:
 
         if signal.atr > 0 and tick.spread > r.max_spread_atr_frac * signal.atr:
             return RiskDecision(allowed=False, reason="spread_too_wide")
+
+        # The operator's slippage tolerance against the live market, in POINTS.
+        #
+        # `deviation` is the maximum slippage the venue may apply to the fill,
+        # and a point is instrument-specific: 20 points is 2 pips on a 5-digit
+        # EURUSD and 20 cents on XAUUSD. Measured on the live MT4 rig
+        # 2026-09-24, gold quoted a 45-point (45 cent) spread against the
+        # global default of 20, so every gold send offered the venue less than
+        # half of one spread of tolerance. OrderSend rejects that
+        # intermittently, and nothing in the log named the cause: the symptom
+        # reaching the operator was "trades randomly do not go through".
+        #
+        # Both sides are converted to points before comparing, so one multiple
+        # is correct on every instrument and the gate never needs to know which
+        # symbol it is holding.
+        #
+        # It refuses; it does NOT raise the deviation to a workable number.
+        # Silently overriding an operator's risk figure is worse than refusing:
+        # the number in force would then be neither what they set nor anything
+        # they can read, and the next person to open the config would be
+        # reading a fiction.
+        #
+        # The spread is read HERE, at evaluate time, from the same tick the
+        # stop and sizing gates used. Not `spec.spread` (a venue-reported
+        # figure the MT4 bridge does not populate) and not a configured
+        # typical: a spread from a minute ago is not the one the send will
+        # meet. That makes this gate as transient as the market, which is why
+        # `spread_too_wide` runs FIRST -- a temporary blowout is named as a
+        # wide spread, and only a spread the instrument carries under normal
+        # conditions reaches here and is named as a misconfiguration.
+        #
+        # A spread of zero or less is a broken or crossed tick, not a free
+        # pass: there is nothing to compare against, so this gate ABSTAINS and
+        # says so here rather than reporting a pass it did not measure. No gate
+        # currently owns a crossed tick; that is a separate finding, not
+        # something this one should absorb quietly.
+        dev = r.resolve_deviation(signal.symbol)
+        spread_points = spec.points(tick.spread)
+        floor_points = r.min_deviation_spread_multiple * spread_points
+        if spread_points > 0 and dev.points < floor_points - 1e-9:
+            # `floor` is what this gate demanded; `set` is what to actually
+            # write, and it is larger. See DEVIATION_HEADROOM_MULTIPLE: fixing
+            # the config to the exact floor is rejected again by the next tick
+            # that widens the spread.
+            floor = math.ceil(floor_points - 1e-9)
+            advised = math.ceil(DEVIATION_HEADROOM_MULTIPLE * spread_points - 1e-9)
+            return RiskDecision(
+                allowed=False,
+                reason=(
+                    DEVIATION_BELOW_SPREAD
+                    + f":{signal.symbol}"
+                    + f",deviation={dev.points}"
+                    + f",source={dev.source}"
+                    + f",spread={spread_points:.0f}pt"
+                    + f",floor={floor}pt"
+                    + f",set=risk.symbol_deviation_points.{signal.symbol}>={advised}"
+                ),
+            )
 
         if account.equity > 0:
             free_frac = account.margin_free / account.equity if account.equity else 0

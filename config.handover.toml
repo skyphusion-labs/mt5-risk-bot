@@ -50,7 +50,26 @@ max_spread_atr_frac = 0.15
 min_free_margin_pct = 0.50
 magic = 20260909
 halt_file = "HALT"          # create this file to flatten immediately
-deviation_points = 20
+deviation_points = 20       # max tolerated slippage in POINTS, for any symbol
+                            # NOT listed at the end of this section.
+
+# Per-symbol slippage tolerance, in POINTS. Keep this table LAST in [risk]: in
+# TOML a bare key written below a subtable header belongs to the subtable.
+# Keyed by the name YOUR BROKER uses, case-insensitive but otherwise exact.
+#
+# MEASURED on the live MT4 rig 2026-09-24: XAUUSD point 0.01, spread 45 points
+# ($0.45), ATR(14) H1 $17.22. At the 20-point global default gold was offering
+# $0.20 of tolerance against $0.45 of spread, so OrderSend rejected
+# intermittently with nothing in the log naming the cause. 150 points is $1.50.
+#
+# If your venue decorates the symbol (XAUUSD.m, GOLD), change the key to match,
+# or the send is refused as `deviation_below_spread` and the refusal will tell
+# you the symbol it actually saw.
+#
+# XAGUSD has the same shape and has NOT been measured. 150 is a starting point.
+[risk.symbol_deviation_points]
+XAUUSD = 150
+XAGUSD = 150
 
 [strategy]
 auto = false                # /auto on is refused; see [telegram] below.
