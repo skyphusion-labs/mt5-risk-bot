@@ -17,4 +17,4 @@ ENV PYTHONPATH=/app/src
 HEALTHCHECK --interval=30s --timeout=5s --start-period=20s --retries=3 \
   CMD python -c "from pathlib import Path; p=Path('/data/journal.heartbeat'); raise SystemExit(0 if p.exists() else 1)"
 
-CMD ["python", "-m", "mt5_risk_bot", "run", "--mode", "paper", "--loop"]
+CMD ["python", "-m", "straightedge", "run", "--mode", "paper", "--loop"]

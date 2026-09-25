@@ -45,15 +45,15 @@ from pathlib import Path
 
 import pytest
 
-from mt5_risk_bot.broker.paper import PaperBroker, default_spec
-from mt5_risk_bot.config import BotConfig
-from mt5_risk_bot.models import Account, Position, Side, Signal, SignalKind, Tick
-from mt5_risk_bot.risk import RiskManager, day_key
-from mt5_risk_bot.sizing import lots_for_risk
-from mt5_risk_bot.state import snapshot_path_for
-from mt5_risk_bot.synthetic import generate_bars
-from mt5_risk_bot.telegram import TgCommand
-from mt5_risk_bot.engine import Engine
+from straightedge.broker.paper import PaperBroker, default_spec
+from straightedge.config import BotConfig
+from straightedge.models import Account, Position, Side, Signal, SignalKind, Tick
+from straightedge.risk import RiskManager, day_key
+from straightedge.sizing import lots_for_risk
+from straightedge.state import snapshot_path_for
+from straightedge.synthetic import generate_bars
+from straightedge.telegram import TgCommand
+from straightedge.engine import Engine
 
 
 MAGIC = BotConfig().risk.magic
@@ -152,7 +152,7 @@ def test_roster_covers_every_reason_in_the_module() -> None:
     the only way a per-reason suite stays a denominator instead of becoming a
     snapshot of the day it was written.
     """
-    src = Path(__file__).resolve().parents[1] / "src" / "mt5_risk_bot" / "risk.py"
+    src = Path(__file__).resolve().parents[1] / "src" / "straightedge" / "risk.py"
     text = src.read_text(encoding="utf-8")
     found = set(re.findall(r"reason=\"([a-z_]+)\"", text))
     found |= set(re.findall(r"_halt\(\"([a-z_]+)\"", text))
@@ -195,7 +195,7 @@ def test_state_unwritable_names_the_reason(tmp_path: Path, monkeypatch) -> None:
     def boom(*_a, **_k):
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr("mt5_risk_bot.state.os.replace", boom)
+    monkeypatch.setattr("straightedge.state.os.replace", boom)
     assert _gate(rm).reason == "state_unwritable"
 
 
@@ -542,7 +542,7 @@ def test_size_exceeds_risk_has_exactly_one_live_site() -> None:
     run. So the literal stays where it is and attribution is asserted: two
     sites, one of them pinned dead above, and a third appearance fails here.
     """
-    src = Path(__file__).resolve().parents[1] / "src" / "mt5_risk_bot"
+    src = Path(__file__).resolve().parents[1] / "src" / "straightedge"
     sites = {
         p.name: (p.read_text(encoding="utf-8").count("size_exceeds_risk"))
         for p in sorted(src.glob("*.py"))
@@ -868,7 +868,7 @@ def test_exposure_unmeasured_is_a_tripwire_not_a_gate(tmp_path: Path) -> None:
     non-FX position ever tripped this, one open index would block every
     subsequent trade.
     """
-    from mt5_risk_bot.risk import UnclassifiedSymbol, currency_exposure
+    from straightedge.risk import UnclassifiedSymbol, currency_exposure
 
     with pytest.raises(UnclassifiedSymbol):
         currency_exposure([], extra=("US30", Side.BUY))

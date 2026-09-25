@@ -4,10 +4,10 @@ from __future__ import annotations
 
 import pytest
 
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import BotConfig, TelegramConfig, load_config
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.telegram import TelegramClient
+from straightedge.broker.paper import PaperBroker
+from straightedge.config import BotConfig, TelegramConfig, load_config
+from straightedge.engine import Engine
+from straightedge.telegram import TelegramClient
 
 
 class FakeTransport:
@@ -163,7 +163,7 @@ def test_allow_senders_rejects_non_numeric(tmp_path) -> None:
 def test_pre_fix_single_operator_config_needs_no_edit(tmp_path) -> None:
     from datetime import datetime, timezone
 
-    from mt5_risk_bot.synthetic import generate_bars
+    from straightedge.synthetic import generate_bars
 
     path = _write_cfg(
         tmp_path,

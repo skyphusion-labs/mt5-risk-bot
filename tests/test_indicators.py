@@ -1,5 +1,5 @@
-from mt5_risk_bot.indicators import adx, atr, ema
-from mt5_risk_bot.synthetic import generate_bars, generate_ranging
+from straightedge.indicators import adx, atr, ema
+from straightedge.synthetic import generate_bars, generate_ranging
 
 
 def test_ema_follows_uptrend() -> None:

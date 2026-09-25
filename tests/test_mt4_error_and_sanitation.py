@@ -26,8 +26,8 @@ from pathlib import Path
 import pytest
 from mt4_transcripts import EA_POS_EMIT, Transcript, ea_rows_reply, pos_row
 
-from mt5_risk_bot.broker.mt4_live import Mt4Broker, _wire
-from mt5_risk_bot.models import Side
+from straightedge.broker.mt4_live import Mt4Broker, _wire
+from straightedge.models import Side
 
 EA_PATH = Path(__file__).resolve().parents[1] / "mt4" / "Experts" / "Mt4RiskBot.mq4"
 
@@ -72,7 +72,7 @@ def _function_body(src: str, signature: str) -> str:
 def ea_sanitize(s: str) -> str:
     """Faithful port of the Expert's `Wire()`.
 
-    Deliberately a port rather than a call to `mt5_risk_bot`'s `_wire`: the
+    Deliberately a port rather than a call to `straightedge`'s `_wire`: the
     point is that the two ends agree on a rule, and asserting the port against
     `_wire` is what proves it. Testing `_wire` against itself would prove
     nothing.
@@ -159,7 +159,7 @@ def test_a_failure_that_does_carry_a_reason_still_maps_to_it(tmp_path: Path) -> 
     """The positive control. If this also went unknown, the change above would
     have measured the instrument rather than the defect."""
     from mt4_transcripts import TranscriptExpert
-    from mt5_risk_bot.constants import TRADE_RETCODE_NO_MONEY
+    from straightedge.constants import TRADE_RETCODE_NO_MONEY
 
     no_money = Transcript("market", "id={id}\nok=0\nretcode=134\nerror=OrderSend\n")
     with TranscriptExpert(tmp_path, {"market": no_money}):
@@ -273,13 +273,13 @@ def test_an_unsanitised_row_is_what_breaks_the_book(tmp_path: Path) -> None:
 
 
 def _broker(tmp_path: Path) -> Mt4Broker:
-    from mt5_risk_bot.broker.mt4_live import FileBridge
+    from straightedge.broker.mt4_live import FileBridge
 
     return Mt4Broker(FileBridge(tmp_path, timeout_sec=5.0).call, magic=770077)
 
 
 def _order():
-    from mt5_risk_bot.models import MarketOrder
+    from straightedge.models import MarketOrder
 
     return MarketOrder(
         symbol="EURUSD", side=Side.BUY, volume=0.17, sl=1.09815, tp=1.10415, magic=770077

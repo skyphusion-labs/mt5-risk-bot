@@ -5,7 +5,7 @@ The bot does not load a DLL into the terminal.
 The owned interface is a file mailbox in Common Files.
 
 The Expert is `mt4/Experts/Mt4RiskBot.mq4`.
-Python is `mt5_risk_bot.broker.mt4_live`.
+Python is `straightedge.broker.mt4_live`.
 Engine still sends `MarketOrder` and `WorkingOrder` only.
 
 ## Files
@@ -80,7 +80,7 @@ side=buy
 volume=0.1
 sl=1.09000
 tp=1.12000
-comment=mt5-risk-bot
+comment=straightedge
 magic=20260909
 deviation=20
 ```
@@ -271,7 +271,7 @@ Two checks in there are worth knowing about before editing either side:
   tests can tell a measured value from a defaulted one.
 
 `broker/mt4_live.py` carries a per-file coverage floor declared in
-`pyproject.toml` under `[tool.mt5_risk_bot.coverage_floors]`.
+`pyproject.toml` under `[tool.straightedge.coverage_floors]`.
 
 ## Attach
 

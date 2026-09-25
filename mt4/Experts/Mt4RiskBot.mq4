@@ -1,6 +1,6 @@
 #property strict
 #property copyright "skyphusion"
-#property description "File mailbox for mt5-risk-bot MT4 adapter. FILE_COMMON."
+#property description "File mailbox for straightedge MT4 adapter. FILE_COMMON."
 
 input int Slippage = 30;
 input int ReconcileMagic = 0;   // 0 = report every position that has no stop

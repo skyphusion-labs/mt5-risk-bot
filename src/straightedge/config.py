@@ -9,7 +9,7 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mt5_risk_bot.constants import TIMEFRAME_BY_NAME, TIMEFRAME_H1
+from straightedge.constants import TIMEFRAME_BY_NAME, TIMEFRAME_H1
 
 
 @dataclass
@@ -266,7 +266,7 @@ class BotConfig:
     telegram: TelegramConfig = field(default_factory=TelegramConfig)
     advice: AdviceConfig = field(default_factory=AdviceConfig)
     poll_seconds: int = 15
-    comment: str = "mt5-risk-bot"
+    comment: str = "straightedge"
     journal_path: str = "journal.jsonl"
     live_accepted: bool = False
 
@@ -387,7 +387,7 @@ def load_config(path: str | Path | None = None) -> BotConfig:
         symbols=names,
         advice_symbols=[str(x).upper() for x in advice_names],
         poll_seconds=int(os.environ.get("POLL_SECONDS", engine_s.get("poll_seconds", 15))),
-        comment=str(engine_s.get("comment", "mt5-risk-bot")),
+        comment=str(engine_s.get("comment", "straightedge")),
         journal_path=resolve_state_path(
             str(engine_s.get("journal_path", "journal.jsonl")), base_dir=base_dir
         ),

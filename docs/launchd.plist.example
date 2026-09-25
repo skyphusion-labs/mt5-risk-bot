@@ -8,14 +8,14 @@
      chmod 600. Never commit real tokens. -->
 <dict>
   <key>Label</key>
-  <string>org.skyphusion.mt5-risk-bot</string>
+  <string>org.skyphusion.straightedge</string>
   <key>WorkingDirectory</key>
-  <string>/ABS/PATH/TO/mt5-risk-bot</string>
+  <string>/ABS/PATH/TO/straightedge</string>
   <key>ProgramArguments</key>
   <array>
-    <string>/ABS/PATH/TO/mt5-risk-bot/.venv/bin/python</string>
+    <string>/ABS/PATH/TO/straightedge/.venv/bin/python</string>
     <string>-m</string>
-    <string>mt5_risk_bot</string>
+    <string>straightedge</string>
     <string>run</string>
     <string>--mode</string>
     <string>paper</string>
@@ -37,8 +37,8 @@
   <key>Umask</key>
   <integer>63</integer>
   <key>StandardOutPath</key>
-  <string>/ABS/PATH/TO/mt5-risk-bot/logs/launchd.out.log</string>
+  <string>/ABS/PATH/TO/straightedge/logs/launchd.out.log</string>
   <key>StandardErrorPath</key>
-  <string>/ABS/PATH/TO/mt5-risk-bot/logs/launchd.err.log</string>
+  <string>/ABS/PATH/TO/straightedge/logs/launchd.err.log</string>
 </dict>
 </plist>

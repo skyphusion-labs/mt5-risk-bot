@@ -31,7 +31,7 @@ import time
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from mt5_risk_bot.broker.mt4_live import REQ_NAME, RES_NAME
+from straightedge.broker.mt4_live import REQ_NAME, RES_NAME
 
 # Every op `Handle()` answers, in source order (Mt4RiskBot.mq4:237-271).
 # Seventeen, not sixteen: `docs/MT4.md:88-103` describes them in fourteen table

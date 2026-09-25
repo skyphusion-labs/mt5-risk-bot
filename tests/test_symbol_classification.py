@@ -8,11 +8,11 @@ from datetime import datetime, timezone
 
 import pytest
 
-from mt5_risk_bot.broker.paper import default_spec
-from mt5_risk_bot.config import BotConfig
-from mt5_risk_bot.currencies import CURRENCY_CODES
-from mt5_risk_bot.models import Account, Position, Side, Signal, SignalKind, Tick
-from mt5_risk_bot.risk import (
+from straightedge.broker.paper import default_spec
+from straightedge.config import BotConfig
+from straightedge.currencies import CURRENCY_CODES
+from straightedge.models import Account, Position, Side, Signal, SignalKind, Tick
+from straightedge.risk import (
     RiskManager,
     UnclassifiedSymbol,
     currency_exposure,
@@ -219,9 +219,9 @@ def test_non_fx_position_does_not_hide_a_real_fx_breach(tmp_path) -> None:
 
 
 def test_not_applicable_is_recorded_and_the_trade_proceeds(tmp_path) -> None:
-    from mt5_risk_bot.broker.paper import PaperBroker
-    from mt5_risk_bot.engine import Engine
-    from mt5_risk_bot.synthetic import generate_bars
+    from straightedge.broker.paper import PaperBroker
+    from straightedge.engine import Engine
+    from straightedge.synthetic import generate_bars
 
     cfg = _cfg(tmp_path)
     cfg.symbols = ["US30"]

@@ -21,9 +21,9 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mt5_risk_bot.config import AdviceConfig
-from mt5_risk_bot.journal import redact_text
-from mt5_risk_bot.llm import Advisor
+from straightedge.config import AdviceConfig
+from straightedge.journal import redact_text
+from straightedge.llm import Advisor
 
 FAKE_ANTHROPIC_KEY = "sk-ant-" + "a1B2c3D4e5F6g7H8i9J0" * 2
 FAKE_XAI_KEY = "xai-" + "k1L2m3N4o5P6q7R8s9T0" * 2

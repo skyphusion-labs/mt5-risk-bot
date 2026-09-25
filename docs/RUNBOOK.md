@@ -12,17 +12,17 @@ Nothing here guarantees profit.
 
 NOTE
 Put `--config` before the subcommand.
-Example: `python -m mt5_risk_bot --config config.toml run --mode paper --loop`.
+Example: `python -m straightedge --config config.toml run --mode paper --loop`.
 
 ## Paper first
 
 1. Run doctor.
-   `python -m mt5_risk_bot doctor`
+   `python -m straightedge doctor`
 2. Stop if doctor is not 0.
 3. Run a trend backtest.
-   `python -m mt5_risk_bot backtest --market trend --no-session-filter`
+   `python -m straightedge backtest --market trend --no-session-filter`
 4. Run a range backtest.
-   `python -m mt5_risk_bot backtest --market range --no-session-filter`
+   `python -m straightedge backtest --market range --no-session-filter`
 
 `doctor` is the gate.
 It pings Telegram if the token is set.
@@ -39,7 +39,7 @@ If either check fails on your machine, do not go live.
 CSV backtest (unix timestamps in `time`):
 
 ```bash
-python -m mt5_risk_bot backtest --csv path/to/ohlc.csv --symbol EURUSD --no-session-filter
+python -m straightedge backtest --csv path/to/ohlc.csv --symbol EURUSD --no-session-filter
 ```
 
 ## Seed paper from a live terminal (no orders)
@@ -47,7 +47,7 @@ python -m mt5_risk_bot backtest --csv path/to/ohlc.csv --symbol EURUSD --no-sess
 This needs a running terminal and a binding (`MetaTrader5` or `mt5-mac`).
 
 ```bash
-python -m mt5_risk_bot --config config.toml run --mode paper --feed-mt5
+python -m straightedge --config config.toml run --mode paper --feed-mt5
 ```
 
 Orders stay in the in-process broker.
@@ -83,10 +83,10 @@ Updates from any other chat are ignored.
 No terminal is required.
 
 1. Run doctor.
-   `python -m mt5_risk_bot doctor`
+   `python -m straightedge doctor`
 2. Stop if doctor is not 0.
 3. Start the paper loop.
-   `python -m mt5_risk_bot --config config.toml run --mode paper --loop`
+   `python -m straightedge --config config.toml run --mode paper --loop`
 
 4. Keep the bot in a terminal, tmux, or the LaunchAgent in `docs/launchd.plist.example`.
 5. Stop it with Ctrl-C or `launchctl bootout`.
@@ -104,10 +104,10 @@ Real money (`trade_mode=2`) is refused without `--i-accept-risk` at start
 or `/live on I-ACCEPT-RISK` in the locked chat.
 
 1. Run doctor with a login check.
-   `python -m mt5_risk_bot --config config.toml doctor --connect`
+   `python -m straightedge --config config.toml doctor --connect`
 2. Stop if doctor is not 0.
 3. Start the live loop for demo.
-   `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
+   `python -m straightedge --config config.toml run --mode mt5 --loop`
 4. For a real account, arm from chat after start. Do not put
    `--i-accept-risk` on a `--loop` command line (fc34): it re-arms real
    money on every crash restart and undoes the per-process live expiry
@@ -139,10 +139,10 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
 
 1. Set `account.mode = "mt4"` in config, or `export ACCOUNT_MODE=mt4`.
 2. Run doctor with a login check.
-   `python -m mt5_risk_bot --config config.toml doctor --connect`
+   `python -m straightedge --config config.toml doctor --connect`
 3. Stop if doctor is not 0.
 4. Start the live loop for demo.
-   `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop`
+   `python -m straightedge --config config.toml run --mode mt4 --loop`
 5. For a real account, arm from chat after start. Do not put
    `--i-accept-risk` on a `--loop` command line (fc34): it re-arms real
    money on every crash restart and undoes the per-process live expiry
@@ -225,7 +225,7 @@ Laptop: `agent/.dev.vars` (0600, gitignored).
    `export AI_PROVIDER=computer`
    `export ADVICE_URL=https://mt5-risk-agent.skyphusion.workers.dev/ask`
 5. Run doctor.
-   `python -m mt5_risk_bot doctor`
+   `python -m straightedge doctor`
 
 `/model computer` at runtime.
 Session is the Telegram chat id (one workspace per chat).
@@ -249,10 +249,10 @@ The agent is still a Cloudflare preview.
    `export MT5_SERVER=...`
 4. Set `account.mode = "mt5"` in `config.toml`.
 5. Run doctor with a login check.
-   `python -m mt5_risk_bot --config config.toml doctor --connect`
+   `python -m straightedge --config config.toml doctor --connect`
 6. Stop if doctor is not 0.
 7. Start the live loop.
-   `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
+   `python -m straightedge --config config.toml run --mode mt5 --loop`
 8. Confirm `trade_mode=0` in the doctor output.
 
 Leave it running through at least one full session window.
@@ -268,7 +268,7 @@ or `/live on I-ACCEPT-RISK` in the locked chat.
 2. Confirm `doctor --connect` exits 0.
 3. Set `risk_pct = 0.002` (0.2%) at first.
 4. Start the live loop, then arm from chat.
-   `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
+   `python -m straightedge --config config.toml run --mode mt5 --loop`
    `/live on I-ACCEPT-RISK`
    The phrase is required.
    `/live on` without it is usage.
@@ -370,7 +370,7 @@ Log in once by hand.
 1. Install the macOS binding.
    `pip install mt5-mac`
 2. Run doctor with a login check.
-   `python -m mt5_risk_bot --config config.toml doctor --connect`
+   `python -m straightedge --config config.toml doctor --connect`
 
 If `initialize` fails, launch MetaTrader 5.app yourself.
 Wait until it is fully up.
@@ -379,10 +379,15 @@ It does not launch the terminal.
 
 ### LaunchAgent
 
+RENAMED 2026-09-24. The label was `org.skyphusion.mt5-risk-bot`. If that agent is
+still loaded, bootout `gui/$(id -u)/org.skyphusion.mt5-risk-bot` and remove its
+plist BEFORE bootstrapping the new label. Two loaded agents is two loops on one
+Telegram token, the hazard `deploy/LIVE.md` warns about.
+
 1. Run doctor. It must exit 0.
-   `python -m mt5_risk_bot doctor`
+   `python -m straightedge doctor`
 2. Copy `docs/launchd.plist.example` to
-   `~/Library/LaunchAgents/org.skyphusion.mt5-risk-bot.plist`.
+   `~/Library/LaunchAgents/org.skyphusion.straightedge.plist`.
 3. Edit `WorkingDirectory`.
 4. Edit the venv `python` path.
 5. Edit `EnvironmentVariables` (`TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`).
@@ -407,14 +412,14 @@ Watchdog: `journal.heartbeat` next to `journal_path` under `WorkingDirectory`.
 12. Load the LaunchAgent.
 
 ```bash
-launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.skyphusion.mt5-risk-bot.plist
-launchctl print gui/$(id -u)/org.skyphusion.mt5-risk-bot
+launchctl bootstrap gui/$(id -u) ~/Library/LaunchAgents/org.skyphusion.straightedge.plist
+launchctl print gui/$(id -u)/org.skyphusion.straightedge
 ```
 
 Stop:
 
 ```bash
-launchctl bootout gui/$(id -u)/org.skyphusion.mt5-risk-bot
+launchctl bootout gui/$(id -u)/org.skyphusion.straightedge
 ```
 
 `KeepAlive` restarts a crash.
@@ -440,9 +445,9 @@ Do not bootout to halt.
    `export XAI_API_KEY=...` (Grok)
    and/or `export ANTHROPIC_API_KEY=...` (Claude)
 6. Send a test ping.
-   `python -m mt5_risk_bot telegram --message ping`
+   `python -m straightedge telegram --message ping`
 7. Run doctor. It must exit 0.
-   `python -m mt5_risk_bot doctor`
+   `python -m straightedge doctor`
 8. Start the paper, mt5, or mt4 loop above.
 
 Free text is `/ask`.

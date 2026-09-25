@@ -29,11 +29,11 @@ from __future__ import annotations
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mt5_risk_bot.broker.paper import default_spec
-from mt5_risk_bot.config import BotConfig
-from mt5_risk_bot.models import Account, Signal, SignalKind, Tick
-from mt5_risk_bot.risk import RiskManager
-from mt5_risk_bot.sizing import lots_for_risk, money_per_lot_at_stop
+from straightedge.broker.paper import default_spec
+from straightedge.config import BotConfig
+from straightedge.models import Account, Signal, SignalKind, Tick
+from straightedge.risk import RiskManager
+from straightedge.sizing import lots_for_risk, money_per_lot_at_stop
 
 WED_NOON = datetime(2024, 1, 3, 12, 0, tzinfo=timezone.utc)
 SPEC = default_spec("EURUSD")
@@ -262,7 +262,7 @@ def test_a_loosened_sizer_is_still_caught(tmp_path: Path, monkeypatch) -> None:
     )
     assert _gate(rm, acct, sig).reason == "ok", "the honest sizer must pass first"
 
-    monkeypatch.setattr("mt5_risk_bot.risk.lots_for_risk", loosened)
+    monkeypatch.setattr("straightedge.risk.lots_for_risk", loosened)
     oversized = round(honest * 1.5, 2)
     worst = money_per_lot_at_stop(sig.entry, sig.sl, SPEC) * oversized
     per_trade = acct.equity * cfg.risk.risk_pct * cfg.risk.max_risk_multiple

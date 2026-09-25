@@ -16,15 +16,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from tempfile import TemporaryDirectory
 
-from mt5_risk_bot import __version__
-from mt5_risk_bot.broker import broker_for
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import BotConfig, load_config
-from mt5_risk_bot.engine import Engine, run_backtest
-from mt5_risk_bot.journal import InstanceLock, InstanceLockError, redact_text
-from mt5_risk_bot.models import Bar
-from mt5_risk_bot.synthetic import generate_bars, generate_ranging
-from mt5_risk_bot.telegram import TelegramClient, TgCommand, offset_path_for
+from straightedge import __version__
+from straightedge.broker import broker_for
+from straightedge.broker.paper import PaperBroker
+from straightedge.config import BotConfig, load_config
+from straightedge.engine import Engine, run_backtest
+from straightedge.journal import InstanceLock, InstanceLockError, redact_text
+from straightedge.models import Bar
+from straightedge.synthetic import generate_bars, generate_ranging
+from straightedge.telegram import TelegramClient, TgCommand, offset_path_for
 
 
 def _cfg(args: argparse.Namespace) -> BotConfig:
@@ -52,7 +52,7 @@ def telegram_ping(cfg: BotConfig, *, transport=None) -> str:
     if tg is None or not tg.enabled:
         return "skip"
     try:
-        ok = tg.send("mt5-risk-bot doctor ping")
+        ok = tg.send("straightedge doctor ping")
     except (ValueError, RuntimeError, OSError) as exc:
         return f"fail ({exc})"
     return "ok" if ok else "fail"
@@ -103,11 +103,11 @@ def paper_round_trip() -> str:
 
 
 def cmd_doctor(args: argparse.Namespace) -> int:
-    print(f"mt5-risk-bot {__version__}")
+    print(f"straightedge {__version__}")
     print(f"python {sys.version.split()[0]}  {sys.executable}")
     mt5_ok = False
     try:
-        from mt5_risk_bot.broker.mt5_live import load_mt5_module
+        from straightedge.broker.mt5_live import load_mt5_module
 
         mod = load_mt5_module()
         mt5_ok = True
@@ -251,8 +251,8 @@ def _cmd_run_locked(args: argparse.Namespace, cfg: BotConfig) -> int:
     broker = broker_for(cfg)
     if cfg.mode == "paper":
         if args.synthetic:
-            from mt5_risk_bot.engine import run_backtest as _bt
-            from mt5_risk_bot.synthetic import generate_bars as _gb
+            from straightedge.engine import run_backtest as _bt
+            from straightedge.synthetic import generate_bars as _gb
 
             series = {
                 name: _gb(800, drift=0.0002, seed=3 + i) for i, name in enumerate(cfg.symbols)
@@ -316,14 +316,14 @@ def cmd_telegram(args: argparse.Namespace) -> int:
     if tg is None:
         print("telegram disabled: set TELEGRAM_BOT_TOKEN and TELEGRAM_CHAT_ID")
         return 2
-    ok = tg.send(args.message or "mt5-risk-bot ping")
+    ok = tg.send(args.message or "straightedge ping")
     print("sent" if ok else "send failed")
     return 0 if ok else 1
 
 
 def build_parser() -> argparse.ArgumentParser:
     p = argparse.ArgumentParser(
-        prog="mt5-risk-bot",
+        prog="straightedge",
         description="Telegram desk for MT4/MT5: full trades and Grok/Claude advice. Risk gates every order.",
     )
     p.add_argument("--config", help="path to TOML config")
@@ -358,7 +358,7 @@ def build_parser() -> argparse.ArgumentParser:
     r.set_defaults(func=cmd_run)
 
     t = sub.add_parser("telegram", help="send a test message to the configured chat")
-    t.add_argument("--message", default="mt5-risk-bot ping")
+    t.add_argument("--message", default="straightedge ping")
     t.set_defaults(func=cmd_telegram)
     return p
 

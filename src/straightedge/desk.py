@@ -6,10 +6,10 @@ import sys
 import time
 from dataclasses import dataclass
 
-from mt5_risk_bot.journal import redact_text
-from mt5_risk_bot.llm import Advice, Advisor
-from mt5_risk_bot.models import Signal, SignalKind
-from mt5_risk_bot.telegram import HELP, TgCommand
+from straightedge.journal import redact_text
+from straightedge.llm import Advice, Advisor
+from straightedge.models import Signal, SignalKind
+from straightedge.telegram import HELP, TgCommand
 
 
 @dataclass

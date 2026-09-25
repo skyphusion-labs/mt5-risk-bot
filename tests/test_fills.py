@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import BotConfig
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.models import Bar
-from mt5_risk_bot.synthetic import generate_bars
-from mt5_risk_bot.telegram import TelegramClient, TgCommand
+from straightedge.broker.paper import PaperBroker
+from straightedge.config import BotConfig
+from straightedge.engine import Engine
+from straightedge.models import Bar
+from straightedge.synthetic import generate_bars
+from straightedge.telegram import TelegramClient, TgCommand
 
 
 class FakeTransport:

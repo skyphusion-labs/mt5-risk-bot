@@ -74,7 +74,7 @@ None of these is a behaviour defect today and none is changed here. Each is pinn
 - Pinned, not changed: a `tick_value` measured as zero is replaced by 1.0 and becomes indistinguishable from a genuine 1.0. The Expert emits four decimals, so any real value below 0.00005 arrives as zero.
 - Field order is now checked. The Expert's pipe-join order for positions, orders and bars is asserted against the adapter's field tuples. A dict-returning stub is indifferent to order, so reordering one field used to leave the suite green.
 - The reply-id match is now covered. A reply carrying a foreign id is not consumed, and the request is left in the mailbox after a timeout.
-- Per-file coverage floors, declared in `[tool.mt5_risk_bot.coverage_floors]` in `pyproject.toml`. `broker/mt4_live.py` has a floor of 97%. A package-wide `--cov-fail-under` cannot go red for one file.
+- Per-file coverage floors, declared in `[tool.straightedge.coverage_floors]` in `pyproject.toml`. `broker/mt4_live.py` has a floor of 97%. A package-wide `--cov-fail-under` cannot go red for one file.
 - `broker/mt4_live.py` coverage: 86.94% to 97.59%. Tests touching it: 18 to 114. Suite: 305 to 415.
 Smaller items batch (#15), in priority order. No version bump encoded here
 (several PRs open today already claim conflicting numbers); assigned at
@@ -126,7 +126,7 @@ merge.
   bugs: unused imports, undefined names, syntax-adjacent issues), not the
   rest of `E`/`W`: this codebase's own idiom runs long, dense lines, and a
   line-length gate would be a rewrite, not "a cheap win". `mypy` runs
-  against `src/mt5_risk_bot` with two narrow, documented per-module
+  against `src/straightedge` with two narrow, documented per-module
   overrides (`desk.py`'s deliberately `object`-typed `engine`; the MT5
   binding's `Any | None` optional-import pattern in `mt5_live.py`), plus
   four small `dict[str, object]` annotations and two `PaperBroker`

@@ -19,9 +19,9 @@ The bot talks to this Expert through a file mailbox in Common Files.
 On Wine, that path is under the Wine prefix. Set it by hand.
 
 6. `account.mode = "mt4"`.
-7. `python -m mt5_risk_bot --config config.toml doctor --connect`
+7. `python -m straightedge --config config.toml doctor --connect`
 8. Stop if doctor is not 0.
-9. `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop`
+9. `python -m straightedge --config config.toml run --mode mt4 --loop`
 
 cmd.exe:
 
@@ -29,8 +29,8 @@ cmd.exe:
 set ACCOUNT_MODE=mt4
 set TELEGRAM_BOT_TOKEN=...
 set TELEGRAM_CHAT_ID=...
-python -m mt5_risk_bot --config config.toml doctor --connect
-python -m mt5_risk_bot --config config.toml run --mode mt4 --loop
+python -m straightedge --config config.toml doctor --connect
+python -m straightedge --config config.toml run --mode mt4 --loop
 ```
 
 Demo (`trade_mode=0`) does not need `--i-accept-risk`.

@@ -210,7 +210,7 @@ class OrderResult:
 
     @property
     def ok(self) -> bool:
-        from mt5_risk_bot.constants import RETCODE_OK
+        from straightedge.constants import RETCODE_OK
 
         return self.retcode in RETCODE_OK
 
@@ -223,26 +223,26 @@ class OrderResult:
         pre-trade check must abort on this, because an unmeasured check is not
         a passed check.
         """
-        from mt5_risk_bot.constants import RETCODE_UNKNOWN
+        from straightedge.constants import RETCODE_UNKNOWN
 
         return self.retcode != RETCODE_UNKNOWN
 
     @classmethod
     def unknown(cls, comment: str, request: dict[str, Any] | None = None) -> OrderResult:
         """No result came back: COULD NOT MEASURE, never PASSED."""
-        from mt5_risk_bot.constants import RETCODE_UNKNOWN
+        from straightedge.constants import RETCODE_UNKNOWN
 
         return cls(retcode=RETCODE_UNKNOWN, comment=comment, request=request or {})
 
     @classmethod
     def unchanged(cls) -> OrderResult:
-        from mt5_risk_bot.constants import TRADE_RETCODE_DONE
+        from straightedge.constants import TRADE_RETCODE_DONE
 
         return cls(retcode=TRADE_RETCODE_DONE, comment="unchanged")
 
     @classmethod
     def invalid_stops(cls, comment: str) -> OrderResult:
-        from mt5_risk_bot.constants import TRADE_RETCODE_INVALID_STOPS
+        from straightedge.constants import TRADE_RETCODE_INVALID_STOPS
 
         return cls(retcode=TRADE_RETCODE_INVALID_STOPS, comment=comment)
 

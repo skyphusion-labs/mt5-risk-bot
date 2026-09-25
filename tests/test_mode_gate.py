@@ -63,7 +63,7 @@ class _Engine:
 
 
 def _desk(mode: str, trade_mode: int, live_accepted: bool = False):
-    from mt5_risk_bot.desk import Desk
+    from straightedge.desk import Desk
 
     return Desk(_Engine(mode, trade_mode, live_accepted))
 

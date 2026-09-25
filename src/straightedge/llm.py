@@ -13,9 +13,9 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
-from mt5_risk_bot.config import AdviceConfig
-from mt5_risk_bot.journal import redact_text
-from mt5_risk_bot.telegram import Transport, UrlLibTransport
+from straightedge.config import AdviceConfig
+from straightedge.journal import redact_text
+from straightedge.telegram import Transport, UrlLibTransport
 
 KEEP_TURNS = 40
 

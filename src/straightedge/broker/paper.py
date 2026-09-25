@@ -12,7 +12,7 @@ from __future__ import annotations
 
 from dataclasses import replace
 
-from mt5_risk_bot.constants import (
+from straightedge.constants import (
     ORDER_TYPE_BUY,
     ORDER_TYPE_SELL,
     ORDER_TYPE_BUY_LIMIT,
@@ -36,7 +36,7 @@ from mt5_risk_bot.constants import (
     TRADE_RETCODE_POSITION_CLOSED,
     TRADE_RETCODE_TRADE_DISABLED,
 )
-from mt5_risk_bot.models import (
+from straightedge.models import (
     Account,
     Bar,
     MarketOrder,
@@ -48,7 +48,7 @@ from mt5_risk_bot.models import (
     Tick,
     WorkingOrder,
 )
-from mt5_risk_bot.sizing import ticks_between
+from straightedge.sizing import ticks_between
 
 _PENDING_SIDE = {
     ORDER_TYPE_BUY_LIMIT: Side.BUY,
@@ -295,7 +295,7 @@ class PaperBroker:
         magic: int = 0,
         deviation: int = 20,
     ) -> OrderResult:
-        from mt5_risk_bot.models import Side as SideT
+        from straightedge.models import Side as SideT
 
         close_side = SideT.SELL if side == "buy" else SideT.BUY
         return self._apply(

@@ -4,11 +4,11 @@ import sys
 from datetime import datetime
 from pathlib import Path
 
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import BotConfig, SessionConfig
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.journal import InstanceLock, InstanceLockError, Journal, lock_path_for
-from mt5_risk_bot.synthetic import generate_bars
+from straightedge.broker.paper import PaperBroker
+from straightedge.config import BotConfig, SessionConfig
+from straightedge.engine import Engine
+from straightedge.journal import InstanceLock, InstanceLockError, Journal, lock_path_for
+from straightedge.synthetic import generate_bars
 from wincompat import assert_owner_mode
 
 
@@ -42,7 +42,7 @@ def test_heartbeat_file_after_step_all_is_0600(tmp_path: Path) -> None:
 
 
 def test_journal_rotates_when_write_would_pass_cap(tmp_path: Path, monkeypatch) -> None:
-    import mt5_risk_bot.journal as journal_mod
+    import straightedge.journal as journal_mod
 
     monkeypatch.setattr(journal_mod, "_ROTATE_BYTES", 100)
     path = tmp_path / "journal.jsonl"
@@ -81,7 +81,7 @@ def test_overlapping_instance_lock_fails_second(tmp_path: Path) -> None:
         [
             sys.executable,
             "-c",
-            "from mt5_risk_bot.journal import InstanceLock; import sys, time; "
+            "from straightedge.journal import InstanceLock; import sys, time; "
             "lock = InstanceLock(sys.argv[1]); lock.acquire(); print('held', flush=True); "
             "time.sleep(60)",
             journal,

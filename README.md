@@ -1,4 +1,4 @@
-# mt5-risk-bot
+# straightedge
 
 The bot is the Python process on this computer.
 The desk is Telegram chat commands.
@@ -35,7 +35,7 @@ Auto EMA trading is off until `/auto on`.
 
 NOTE
 Put `--config` before the subcommand.
-Example: `python -m mt5_risk_bot --config config.toml run`.
+Example: `python -m straightedge --config config.toml run`.
 
 1. Create a venv.
    `python3 -m venv .venv`
@@ -58,9 +58,9 @@ Example: `python -m mt5_risk_bot --config config.toml run`.
 8. Run tests.
    `pytest`
 9. Run doctor.
-   `python -m mt5_risk_bot doctor`
+   `python -m straightedge doctor`
 10. Start the paper loop only if doctor exits 0.
-    `python -m mt5_risk_bot --config config.toml run --mode paper --loop`
+    `python -m straightedge --config config.toml run --mode paper --loop`
 
 Do not start a long run until doctor exits 0.
 
@@ -118,10 +118,10 @@ Then run `pip install mt5-mac`.
    `export MT5_PASSWORD=...`
    `export MT5_SERVER=YourBroker-Demo`
 2. Run doctor with a login check.
-   `python -m mt5_risk_bot --config config.toml doctor --connect`
+   `python -m straightedge --config config.toml doctor --connect`
 3. Stop if doctor is not 0.
 4. Start the live loop.
-   `python -m mt5_risk_bot --config config.toml run --mode mt5 --loop`
+   `python -m straightedge --config config.toml run --mode mt5 --loop`
 
 ## Live MT4
 
@@ -133,10 +133,10 @@ The bot process runs on that Windows host (`journal.lock` uses `msvcrt`).
 
 1. Set `account.mode = "mt4"`.
 2. Run doctor with a mailbox check.
-   `python -m mt5_risk_bot --config config.toml doctor --connect`
+   `python -m straightedge --config config.toml doctor --connect`
 3. Stop if doctor is not 0.
 4. Start the live loop.
-   `python -m mt5_risk_bot --config config.toml run --mode mt4 --loop`
+   `python -m straightedge --config config.toml run --mode mt4 --loop`
 
 See `docs/MT4.md` and `mt4/README.md`.
 

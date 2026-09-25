@@ -1,11 +1,11 @@
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mt5_risk_bot.broker.paper import default_spec
-from mt5_risk_bot.config import BotConfig
-from mt5_risk_bot.models import Account, Position, Side, Signal, SignalKind, Tick
-from mt5_risk_bot.risk import RiskManager, currency_exposure, in_session, parse_fx
-from mt5_risk_bot.state import snapshot_path_for
+from straightedge.broker.paper import default_spec
+from straightedge.config import BotConfig
+from straightedge.models import Account, Position, Side, Signal, SignalKind, Tick
+from straightedge.risk import RiskManager, currency_exposure, in_session, parse_fx
+from straightedge.state import snapshot_path_for
 
 
 def _acct(equity: float = 10_000, **kw) -> Account:
@@ -63,7 +63,7 @@ def test_currency_exposure_blocks_third_usd() -> None:
 
 
 def test_session_london_ny() -> None:
-    from mt5_risk_bot.config import SessionConfig
+    from straightedge.config import SessionConfig
 
     s = SessionConfig()
     assert in_session(datetime(2024, 1, 3, 12, 0, tzinfo=timezone.utc), s)

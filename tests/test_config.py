@@ -2,7 +2,7 @@ from pathlib import Path
 
 import pytest
 
-from mt5_risk_bot.config import AdviceConfig, BotConfig, load_config
+from straightedge.config import AdviceConfig, BotConfig, load_config
 
 
 # --- model pin is current generation (#15 item 5) ---------------------------

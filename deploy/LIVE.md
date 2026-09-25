@@ -28,15 +28,15 @@ POLL_SECONDS=1
 3. Stop the paper container on jello. One bot token. One loop.
 
 ```
-ssh jello 'cd /home/conrad/mt5-risk-bot && docker compose down'
+ssh jello 'cd /home/conrad/straightedge && docker compose down'
 ```
 
 4. On the MT5 host:
 
 ```
 set -a && source .env && set +a
-python -m mt5_risk_bot doctor --connect
-python -m mt5_risk_bot run --mode mt5 --loop
+python -m straightedge doctor --connect
+python -m straightedge run --mode mt5 --loop
 ```
 
 On a Windows MT4 host, attach `Mt4RiskBot.mq4`. `ACCOUNT_MODE=mt4`.
@@ -49,8 +49,8 @@ cmd.exe:
 set ACCOUNT_MODE=mt4
 set TELEGRAM_BOT_TOKEN=...
 set TELEGRAM_CHAT_ID=...
-python -m mt5_risk_bot doctor --connect
-python -m mt5_risk_bot run --mode mt4 --loop
+python -m straightedge doctor --connect
+python -m straightedge run --mode mt4 --loop
 ```
 
 5. Demo (`trade_mode=0`) does not need `/live on`.
@@ -60,6 +60,6 @@ WARNING: Do not run paper on jello and live on another host with the same token.
 
 ## What live is not
 
-- Not the `mt5-risk-bot:paper` image.
+- Not the `straightedge:paper` image.
 - Not dischord.
 - Not a profit guarantee.

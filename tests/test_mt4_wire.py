@@ -60,7 +60,7 @@ from mt4_transcripts import (
     t_select,
     t_symbol,
 )
-from mt5_risk_bot.broker.mt4_live import (
+from straightedge.broker.mt4_live import (
     BAR_FIELDS,
     ORD_FIELDS,
     POS_FIELDS,
@@ -72,7 +72,7 @@ from mt5_risk_bot.broker.mt4_live import (
     decode,
     encode,
 )
-from mt5_risk_bot.constants import (
+from straightedge.constants import (
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID_STOPS,
     TRADE_RETCODE_INVALID_VOLUME,
@@ -81,7 +81,7 @@ from mt5_risk_bot.constants import (
     TRADE_RETCODE_REJECT,
     TRADE_RETCODE_TRADE_DISABLED,
 )
-from mt5_risk_bot.models import MarketOrder, Side, WorkingOrder
+from straightedge.models import MarketOrder, Side, WorkingOrder
 
 TIMEOUT = 3.0
 

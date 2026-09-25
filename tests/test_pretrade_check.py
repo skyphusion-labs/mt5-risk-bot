@@ -15,11 +15,11 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mt5_risk_bot.broker.mt5_live import Mt5Broker
-from mt5_risk_bot.config import BotConfig, SessionConfig
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.models import Signal, SignalKind
-from mt5_risk_bot.broker.mt4_live import Mt4Broker
+from straightedge.broker.mt5_live import Mt5Broker
+from straightedge.config import BotConfig, SessionConfig
+from straightedge.engine import Engine
+from straightedge.models import Signal, SignalKind
+from straightedge.broker.mt4_live import Mt4Broker
 from test_mt4_adapter import FakeMt4
 from test_mt5_adapter import FakeMt5
 
@@ -121,7 +121,7 @@ def test_null_pretrade_check_sends_no_working_order(tmp_path: Path) -> None:
 
 def test_null_result_retcode_is_not_a_passing_code(tmp_path: Path) -> None:
     del tmp_path
-    from mt5_risk_bot.models import MarketOrder, Side
+    from straightedge.models import MarketOrder, Side
 
     broker = Mt5Broker(mt5=NullCheckMt5())
     check = broker.check_market(
@@ -167,8 +167,8 @@ def _mt4_engine(tmp_path: Path, fake: FakeMt4) -> Engine:
 
 
 def test_mt4_verdictless_check_is_not_measured() -> None:
-    from mt5_risk_bot.constants import TRADE_RETCODE_REJECT
-    from mt5_risk_bot.models import MarketOrder, Side
+    from straightedge.constants import TRADE_RETCODE_REJECT
+    from straightedge.models import MarketOrder, Side
 
     broker = Mt4Broker(VerdictlessCheckMt4().call)
     check = broker.check_market(
@@ -209,7 +209,7 @@ def test_mt4_genuine_check_still_sends(tmp_path: Path) -> None:
 
 
 def test_operator_line_separates_never_asked_from_refused() -> None:
-    from mt5_risk_bot.engine import _format_event
+    from straightedge.engine import _format_event
 
     unmeasured = _format_event(
         "order_check_fail",

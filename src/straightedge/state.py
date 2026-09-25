@@ -30,7 +30,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from mt5_risk_bot.models import EquitySnapshot
+from straightedge.models import EquitySnapshot
 
 SNAPSHOT_VERSION = 2
 

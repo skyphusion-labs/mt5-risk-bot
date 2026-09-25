@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from mt5_risk_bot.config import BotConfig
-from mt5_risk_bot.risk import RiskManager
+from straightedge.config import BotConfig
+from straightedge.risk import RiskManager
 from wincompat import assert_owner_mode
 
 

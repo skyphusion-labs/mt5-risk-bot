@@ -37,9 +37,9 @@ import os
 from datetime import datetime, timezone
 from pathlib import Path
 
-from mt5_risk_bot.config import BotConfig, SessionConfig
-from mt5_risk_bot.currencies import CURRENCY_CODES
-from mt5_risk_bot.models import (
+from straightedge.config import BotConfig, SessionConfig
+from straightedge.currencies import CURRENCY_CODES
+from straightedge.models import (
     Account,
     EquitySnapshot,
     Position,
@@ -50,8 +50,8 @@ from mt5_risk_bot.models import (
     SymbolSpec,
     Tick,
 )
-from mt5_risk_bot.sizing import lots_for_risk, money_per_lot_at_stop
-from mt5_risk_bot.state import (
+from straightedge.sizing import lots_for_risk, money_per_lot_at_stop
+from straightedge.state import (
     StateUnreadable,
     StateUnwritable,
     load_snapshot,

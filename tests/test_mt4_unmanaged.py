@@ -19,8 +19,8 @@ import threading
 import time
 from pathlib import Path
 
-from mt5_risk_bot.broker.mt4_live import FileBridge, Mt4Broker, decode
-from mt5_risk_bot.models import MarketOrder, Side, WorkingOrder
+from straightedge.broker.mt4_live import FileBridge, Mt4Broker, decode
+from straightedge.models import MarketOrder, Side, WorkingOrder
 
 EA_PATH = Path(__file__).resolve().parents[1] / "mt4" / "Experts" / "Mt4RiskBot.mq4"
 
@@ -233,10 +233,10 @@ def test_a_successful_send_reports_no_survivor(tmp_path: Path) -> None:
 
 
 def _engine(tmp_path: Path):
-    from mt5_risk_bot.broker.paper import PaperBroker
-    from mt5_risk_bot.config import BotConfig, SessionConfig
-    from mt5_risk_bot.engine import Engine
-    from mt5_risk_bot.journal import Journal
+    from straightedge.broker.paper import PaperBroker
+    from straightedge.config import BotConfig, SessionConfig
+    from straightedge.engine import Engine
+    from straightedge.journal import Journal
 
     cfg = BotConfig()
     cfg.session = SessionConfig(enabled=False)
@@ -245,8 +245,8 @@ def _engine(tmp_path: Path):
 
 
 def _result(**kw):
-    from mt5_risk_bot.constants import TRADE_RETCODE_INVALID_STOPS
-    from mt5_risk_bot.models import OrderResult
+    from straightedge.constants import TRADE_RETCODE_INVALID_STOPS
+    from straightedge.models import OrderResult
 
     kw.setdefault("retcode", TRADE_RETCODE_INVALID_STOPS)
     kw.setdefault("comment", "sl_modify_failed_position_live")
@@ -278,7 +278,7 @@ def test_engine_stays_quiet_when_nothing_survived(tmp_path: Path) -> None:
 
 
 def test_operator_is_told_in_words_not_only_in_the_journal() -> None:
-    from mt5_risk_bot.engine import _format_event
+    from straightedge.engine import _format_event
 
     live = _format_event("unmanaged_position", {"ticket": 777, "symbol": "EURUSD", "retcode": 10016})
     assert "777" in live
