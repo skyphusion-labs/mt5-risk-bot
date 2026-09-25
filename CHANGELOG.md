@@ -6,6 +6,59 @@ See README.md and docs/CONTRACT.md.
 
 ## Unreleased
 
+### The desk survives a reboot (MT4 startup wait)
+
+The Windows host was rebooted for the first time since setup. MT4 came back
+healthy, `Mt4RiskBot` was attached to XAUUSD,H1 with the smiley, and the
+mailbox path was correct. The desk was dead, and had to be started by hand.
+
+`Engine.start()` called `Mt4Broker.connect()`, which sent exactly ONE `ping` on
+the 5 second per-command timeout. MT4 is a GUI application that needs tens of
+seconds to launch, load the terminal, log in to the broker and reach the
+Expert's first timer tick, so a desk started from a boot-triggered scheduled task
+loses that race. The ping raised `mt4 bridge timeout`, the process exited, and
+nothing retried. **After any reboot, MT4 looked perfectly healthy and the bot
+was silently gone**, with no indicator anywhere showing it, and an operator
+with no shell on the host could neither notice nor fix it.
+
+- `Mt4Broker.startup_connect()` retries the ping with a growing gap (1s,
+  doubling to 5s) until the Expert answers or `mt4.startup_wait_sec` is spent.
+  Default 180 seconds, about twice the slowest cold start observed by hand, and
+  biased long on purpose: too short kills the desk on every reboot, while too
+  long only delays the report of a real misconfiguration.
+- **Bounded, never infinite.** Worst case is the budget plus one `timeout_ms`.
+  An unbounded wait would turn a wrong `files_dir` or a detached Expert into a
+  process that hangs forever looking busy, which is not better than a crash.
+- **It says it is waiting.** Every attempt prints to stdout with its elapsed
+  time, flushed per line, because a redirected log block-buffers and three
+  minutes of silence is indistinguishable from a hang. Giving up names the
+  attempt count, the elapsed time and what to check.
+- **The steady-state budget is untouched, and that is the point.**
+  `Engine.step_all()` calls `ensure_connected()` on every step and
+  `Engine._reconnect_broker()` calls `connect()` on the trading path. Both keep
+  the 5 second budget, so a transient blip cannot become a multi-minute stall
+  while the desk holds live positions. `doctor --connect` keeps it too:
+  interactive diagnosis should fail fast. Startup tolerance and steady-state
+  tolerance are different numbers, so they are different methods.
+- **An `ok=0` reply is not retried.** A live Expert stating a diagnosis is not
+  a bridge that has not appeared yet, and waiting cannot fix it. The partition
+  is a type: `FileBridge` now raises `BridgeTimeout`, a `RuntimeError`
+  subclass, so every existing `except RuntimeError` caller is unaffected while
+  the retry can key on the transport failure specifically rather than on the
+  wording of an error string.
+- New optional `[mt4] startup_wait_sec`. Omitted means the adapter default;
+  `0` means one ping and no wait, the previous behaviour. An unset key stays
+  `None` in `Mt4Config` rather than becoming a copy of 180, so the default has
+  exactly one declaration, in the module that implements the wait.
+
+Not the bug, and checked before the fix: the Expert was attached and running
+the whole time, the mailbox path was correct, and the autostart chain works
+(proven by two reboots). Only the desk's startup impatience was broken.
+
+`tests/test_mt4_startup_wait.py` drives all of it against a real mailbox
+directory and real wall-clock time, including the give-up path, because a retry
+that cannot give up is the same defect wearing a fix's clothes.
+
 ### A symbol with no price series is named, not silently untradeable (issue #33)
 
 MT4 keeps a price series per symbol AND timeframe and builds one only when

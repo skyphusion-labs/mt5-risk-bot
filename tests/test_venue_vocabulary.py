@@ -68,13 +68,19 @@ VENUE_SET_FORM_IN_SRC = 4
 REAL_MONEY_GATE_IN_RISK = 2
 #: the legality check in `config.py`, a different question from "is this a live venue".
 LEGAL_MODE_SET_IN_SRC = 1
-#: TOML section headers across the tracked tree. The mt4 header is 3, not 2: the two
-#: example configs plus one inline TOML fixture in tests/test_mt4_adapter.py.
+#: TOML section headers across the tracked tree. The mt4 header is 4, not 2: the two
+#: example configs, one inline TOML fixture in tests/test_mt4_adapter.py, and the
+#: CHANGELOG line naming the `[mt4] startup_wait_sec` key.
 CONFIG_SECTION_MT5 = 2
-CONFIG_SECTION_MT4 = 3
+CONFIG_SECTION_MT4 = 4
 #: the `[mt5]` section keys, and `timeout_ms` which both venue sections share.
+#: timeout_ms went 18 -> 23 with the MT4 startup wait: the two example configs each
+#: explain that startup_wait_sec is NOT timeout_ms, and docs/MT4.md plus the CHANGELOG
+#: state the budget table and the "budget plus one timeout_ms" bound. Every one of those
+#: is prose ABOUT the steady-state key, which is why the count grew without a new
+#: config site.
 KEY_TERMINAL_PATH = 6
-KEY_TIMEOUT_MS = 18
+KEY_TIMEOUT_MS = 23
 #: the official Windows pip package, named in the extra, the adapter import, the doctor
 #: advice and the mypy override.
 METATRADER5 = 21

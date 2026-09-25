@@ -93,8 +93,10 @@ def test_doctor_connect_mt4(capsys, monkeypatch, tmp_path) -> None:
     created: list = []
 
     class FakeMt4Broker:
-        def __init__(self, call, *, magic: int = 0) -> None:
-            del call, magic
+        def __init__(
+            self, call, *, magic: int = 0, startup_wait_sec: float = 0.0
+        ) -> None:
+            del call, magic, startup_wait_sec
             created.append(self)
             self.calls: list[str] = []
 

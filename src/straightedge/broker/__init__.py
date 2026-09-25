@@ -19,7 +19,11 @@ def broker_for(cfg: BotConfig) -> Broker:
             timeout_ms=cfg.mt5.timeout_ms,
         )
     if cfg.mode == "mt4":
-        from straightedge.broker.mt4_live import FileBridge, Mt4Broker
+        from straightedge.broker.mt4_live import (
+            DEFAULT_STARTUP_WAIT_SEC,
+            FileBridge,
+            Mt4Broker,
+        )
 
         path = cfg.mt4.files_dir
         if not path:
@@ -28,7 +32,12 @@ def broker_for(cfg: BotConfig) -> Broker:
                 "and attach mt4/Experts/Mt4RiskBot.mq4 to a chart."
             )
         bridge = FileBridge(path, timeout_sec=max(1.0, cfg.mt4.timeout_ms / 1000.0))
-        return Mt4Broker(bridge.call, magic=cfg.risk.magic)
+        wait = cfg.mt4.startup_wait_sec
+        return Mt4Broker(
+            bridge.call,
+            magic=cfg.risk.magic,
+            startup_wait_sec=DEFAULT_STARTUP_WAIT_SEC if wait is None else wait,
+        )
     from straightedge.broker.paper import PaperBroker
 
     return PaperBroker(balance=cfg.initial_balance)

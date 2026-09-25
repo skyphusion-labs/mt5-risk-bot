@@ -46,6 +46,37 @@ Call = Callable[[str, dict[str, Any]], dict[str, Any]]
 REQ_NAME = "mt4_risk_bot.req"
 RES_NAME = "mt4_risk_bot.res"
 
+#: How long `Mt4Broker.startup_connect()` waits for the Expert to start
+#: answering. This is a COLD BOOT budget, not a latency budget.
+#:
+#: A Windows host that starts the desk from a boot-triggered scheduled task
+#: races MetaTrader 4's own launch: the terminal has to start, load, log in to
+#: the broker and reach the Expert's first timer tick. That is tens of seconds
+#: on a quiet box and longer while every other service on the machine is
+#: competing for the same disk. Before this budget existed, `connect()` sent
+#: exactly one ping on the 5 second steady-state timeout, so after every
+#: reboot MT4 came up healthy and the desk was already dead, with nothing
+#: retrying and nothing saying why.
+#:
+#: 180 seconds is about twice the slowest cold start observed by hand. The two
+#: failure directions do not cost the same, which is why the number is biased
+#: long: too short kills the desk on every reboot, and too long only delays
+#: the report of a genuine misconfiguration (wrong `files_dir`, Expert not
+#: attached, MT4 not installed) by up to a couple of minutes. That report is
+#: never silent -- every attempt is logged with its elapsed time -- and the
+#: wait is always bounded, because an unbounded wait would turn the same
+#: misconfiguration into a process that hangs forever looking busy.
+DEFAULT_STARTUP_WAIT_SEC = 180.0
+
+#: Gap between startup pings: `_STARTUP_GAP_MIN`, then doubling to
+#: `_STARTUP_GAP_MAX`. Deliberately small next to `FileBridge.timeout`, because
+#: a ping that times out has already spent one full bridge timeout and the
+#: timeout IS most of the backoff. The gap exists for the failures that return
+#: IMMEDIATELY -- an unwritable mailbox directory raises `OSError` with no
+#: delay at all -- which would otherwise spin the budget away in a tight loop.
+_STARTUP_GAP_MIN = 1.0
+_STARTUP_GAP_MAX = 5.0
+
 BAR_FIELDS = ("time", "open", "high", "low", "close", "volume")
 POS_FIELDS = (
     "ticket",
@@ -203,6 +234,23 @@ def _split_row(text: str, fields: tuple[str, ...]) -> dict[str, Any]:
     return out
 
 
+def _log_line(msg: str) -> None:
+    """Default progress sink for the startup wait: stdout, flushed per line.
+
+    `flush=True` is load-bearing rather than tidiness. Under Windows Task
+    Scheduler stdout is a redirected file, so Python block-buffers it; a three
+    minute wait would then reach the log as one burst AFTER the wait ended,
+    which is exactly as useful to the operator as no logging at all. Silence
+    for three minutes is indistinguishable from a hang, and the whole point of
+    these lines is that the operator can tell the two apart while it happens.
+
+    stdout rather than stderr because the deployed desk redirects stdout to its
+    log file, and because `__main__.py` already prints operator-facing progress
+    there.
+    """
+    print(msg, flush=True)
+
+
 def _mailbox_encoding() -> str:
     # FILE_ANSI on Windows is the ANSI code page. latin-1 is 8-bit clean.
     if sys.platform == "win32":
@@ -232,6 +280,25 @@ def _atomic_write(path: Path, text: str, deadline: float) -> None:
             if time.monotonic() >= deadline:
                 raise
             time.sleep(0.02)
+
+
+class BridgeTimeout(RuntimeError):
+    """The mailbox produced no matching reply inside `FileBridge.timeout`.
+
+    A distinct TYPE rather than a message to match on, because the startup wait
+    in `Mt4Broker.startup_connect()` must retry exactly this and must NOT retry
+    an Expert that answered `ok=0`. Those are different facts: the first is
+    "nothing is answering yet", which a cold boot fixes by waiting, and the
+    second is a measured refusal from a live Expert, which waiting cannot fix
+    and which must be reported at once. Telling them apart by reading
+    `str(exc)` would make the retry policy depend on error wording, so the
+    partition is a type.
+
+    It subclasses `RuntimeError` so that every existing caller -- the
+    `except (RuntimeError, OSError, ValueError)` handlers in `engine.py` and
+    `__main__.py`, and the tests matching on "timeout" -- behaves exactly as
+    before.
+    """
 
 
 class FileBridge:
@@ -275,7 +342,7 @@ class FileBridge:
                     _retry_unlink(req, deadline)
                     return data
             time.sleep(0.02)
-        raise RuntimeError("mt4 bridge timeout")
+        raise BridgeTimeout("mt4 bridge timeout")
 
 
 class Mt4Broker:
@@ -287,16 +354,105 @@ class Mt4Broker:
     #: and streams the rest.
     history_async = True
 
-    def __init__(self, call: Call, *, magic: int = 0) -> None:
+    def __init__(
+        self,
+        call: Call,
+        *,
+        magic: int = 0,
+        startup_wait_sec: float = DEFAULT_STARTUP_WAIT_SEC,
+        log: Callable[[str], None] | None = None,
+    ) -> None:
         self._call = call
         self._magic = magic
+        #: Zero or less means one ping and no wait, which is the pre-1.4.2
+        #: behaviour and a legitimate operator choice on a host where MT4 is
+        #: already up before the desk starts.
+        self._startup_wait = max(0.0, float(startup_wait_sec))
+        self._log = log if log is not None else _log_line
 
     def connect(self) -> None:
+        """One ping, on the bridge's own steady-state timeout.
+
+        This budget stays SHORT on purpose, and the reason is the call graph
+        rather than taste. `ensure_connected()` below delegates here, and
+        `Engine.step_all()` calls `ensure_connected()` on every single step;
+        `Engine._reconnect_broker()` also lands here, on the trading path,
+        after a mid-session blip. Giving this method a cold-boot-sized budget
+        would convert a transient blip into a multi-minute stall while the desk
+        is holding live positions, which is a worse defect than the startup
+        race it would be fixing.
+
+        Startup tolerance and steady-state tolerance are different numbers, so
+        they are different methods: the wait lives in `startup_connect()`.
+        """
         got = self._call("ping", {})
         if not _truthy(got.get("ok")):
             raise RuntimeError(str(got.get("error") or "mt4 ping failed"))
 
+    def startup_connect(self) -> None:
+        """`connect()`, retried until the Expert answers or the budget expires.
+
+        Called once, by `Engine.start()`, and by nothing else. See
+        `DEFAULT_STARTUP_WAIT_SEC` for why the budget is what it is.
+
+        What is retried and what is not. A `BridgeTimeout` means no reply
+        arrived, and an `OSError` means the mailbox itself could not be
+        written; at boot both are ordinary, because MT4 may not have created
+        or released the Common Files directory yet. Anything else propagates
+        immediately, and the case that matters is an Expert that replied
+        `ok=0`: that is a live Expert stating a diagnosis, waiting cannot
+        change it, and retrying would bury the operator's actual error under
+        three minutes of silence.
+
+        The wall-clock bound is the budget PLUS one bridge timeout. A new
+        attempt is only started while time remains, but an attempt already
+        started is allowed to finish, and a single ping can cost a full
+        `FileBridge.timeout`. Stating that is better than pretending the
+        deadline is exact.
+        """
+        budget = self._startup_wait
+        if budget <= 0:
+            self.connect()
+            return
+        started = time.monotonic()
+        deadline = started + budget
+        self._log(
+            f"mt4: waiting up to {budget:.0f}s for the Expert to answer on the mailbox"
+        )
+        attempt = 0
+        gap = _STARTUP_GAP_MIN
+        while True:
+            attempt += 1
+            try:
+                self.connect()
+            except (BridgeTimeout, OSError) as exc:
+                elapsed = time.monotonic() - started
+                remaining = deadline - time.monotonic()
+                if remaining <= 0:
+                    raise RuntimeError(
+                        f"mt4 bridge never answered: {attempt} ping(s) over "
+                        f"{elapsed:.1f}s, budget {budget:.0f}s, last error: {exc}. "
+                        "Check that MetaTrader 4 is running, that "
+                        "mt4/Experts/Mt4RiskBot.mq4 is attached to exactly one "
+                        "chart with AutoTrading enabled, and that mt4.files_dir "
+                        "is the Terminal Common Files folder."
+                    ) from exc
+                pause = min(gap, remaining)
+                self._log(
+                    f"mt4: no reply yet, attempt {attempt} at {elapsed:.1f}s "
+                    f"of {budget:.0f}s ({exc}); retrying in {pause:.1f}s"
+                )
+                time.sleep(pause)
+                gap = min(_STARTUP_GAP_MAX, gap * 2)
+                continue
+            self._log(
+                f"mt4: Expert answered on attempt {attempt} after "
+                f"{time.monotonic() - started:.1f}s"
+            )
+            return
+
     def ensure_connected(self) -> None:
+        """Steady-state liveness check. Never the startup budget: see `connect`."""
         self.connect()
 
     def disconnect(self) -> None:
