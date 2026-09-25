@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "straightedge"
-version = "1.4.2"
+version = "1.5.0"
 description = "Risk-first MetaTrader desk. Paper by default. No profit guarantee."
 readme = "README.md"
 requires-python = ">=3.12"
@@ -58,6 +58,15 @@ exclude_lines = [
 # Per-file floors. Set from measurement, not aspiration: see tests/conftest.py
 # for why a package-wide --cov-fail-under cannot go red for one file.
 "src/straightedge/broker/mt4_live.py" = 97
+# 100% measured. This file is the ONLY thing between a bearer token and
+# OrderSend on a real account, and most of it is error-partition arms that a
+# happy-path suite never reaches: a 401 that must not be retried, a 504 that
+# must be, a timeout that arrives bare and a timeout that arrives wrapped. An
+# arm that stops being exercised is an arm nobody would notice breaking, which
+# is exactly how a wrong token would come to be retried in silence. 99 rather
+# than 100 so a single `pragma: no cover` on a genuinely defensive branch does
+# not turn this into a tripwire nobody can satisfy.
+"src/straightedge/broker/mt4_net.py" = 99
 # 99% measured. This file is the instrument that tells an operator a symbol
 # cannot trade; an instrument nobody exercises is where the next silent
 # degradation hides.

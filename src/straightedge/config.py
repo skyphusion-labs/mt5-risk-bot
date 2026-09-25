@@ -184,6 +184,22 @@ def resolve_state_path(raw: str, *, base_dir: Path) -> str:
 class Mt4Config:
     files_dir: str = ""
     timeout_ms: int = 5000
+    #: The `mt4-shim` endpoint on the host that runs MetaTrader 4 (#73).
+    #:
+    #: Set it and the desk speaks HTTP to that shim instead of reading the
+    #: mailbox directory itself, which is what lets the desk run off the
+    #: customer's Windows box. Empty means the co-located file mailbox, which is
+    #: still fully supported and is what a self-hoster keeps using.
+    #:
+    #: It is checked BEFORE `files_dir` in `broker_for`, and that order is
+    #: load-bearing: on Windows `files_dir` auto-resolves to Common Files even
+    #: when nobody configured it, so a url that lost the tie would leave a
+    #: remote-configured desk silently reading a LOCAL mailbox.
+    mailbox_url: str = ""
+    #: The shared bearer token for `mailbox_url`. Environment only
+    #: (`MT4_MAILBOX_TOKEN`), never read from the TOML file: `docs/CONTRACT.md`
+    #: keeps secrets in the environment, and this one can place orders.
+    mailbox_token: str = ""
     #: Seconds `Mt4Broker.startup_connect()` waits for the Expert at startup.
     #:
     #: `None` means the operator did not set it, and the adapter's own
@@ -593,6 +609,11 @@ def load_config(path: str | Path | None = None) -> BotConfig:
                 os.environ.get("MT4_FILES_DIR", str(mt4_s.get("files_dir", "") or ""))
             ),
             timeout_ms=int(mt4_s.get("timeout_ms", 5000)),
+            mailbox_url=str(
+                os.environ.get("MT4_MAILBOX_URL", str(mt4_s.get("mailbox_url", "") or ""))
+            ).strip(),
+            # Env ONLY. There is deliberately no TOML key to read here.
+            mailbox_token=os.environ.get("MT4_MAILBOX_TOKEN", ""),
             # Absent is not zero. Zero is a real operator choice ("one ping, do
             # not wait"), so an unset key must stay None and defer to the
             # adapter rather than collapse into the same value as a configured 0.

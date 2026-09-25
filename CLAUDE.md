@@ -25,18 +25,31 @@ test suite enforces.
 choice (`tests/test_venue_vocabulary.py` pins those exact package names, so this file points
 at README rather than restating them).
 
-**MT4 is a file mailbox, not a network call.** `mt4/Experts/Mt4RiskBot.mq4` and
-`mt4_live.py` talk only through `FileOpen` / `FileWriteString` / `FileDelete` on the two
-mailbox basenames `docs/MT4.md` names as the ICD (that doc, and
+**The MT4 EXPERT is a file mailbox, not a network call, and that is still true.**
+`mt4/Experts/Mt4RiskBot.mq4` talks only through `FileOpen` / `FileWriteString` /
+`FileDelete` on the two mailbox basenames `docs/MT4.md` names as the ICD (that doc, and
 `tests/test_venue_vocabulary.py`, pin the exact filenames; this file points at the ICD
-rather than restating them).
-Zero `WebRequest`, zero sockets. That is why the bot currently has to run on the same Windows
-box as the MT4 terminal, and it is the open decision in **straightedge#73**: the file mailbox
-is the only thing a customer ever installs, so changing its transport (e.g. to a `WebRequest`
-call against a hosted endpoint) is a product decision, not a refactor, because every existing
-customer would have to reinstall. `mt4_live.py` already carries retry logic for NTFS refusing
-to unlink a file the terminal still holds open; that is a filesystem race, not a bug to
-silently work around further.
+rather than restating them). Zero `WebRequest`, zero sockets, and **nothing is going to
+add any**: the Expert is the only artifact a customer installs, so its interface is the
+most expensive thing here to change.
+
+**The BOT no longer has to be on that Windows box.** `straightedge#73` is ruled (Conrad,
+2026-09-25, "before the first paying customer") and shipped; `docs/TRANSPORT.md` is the
+decision record and it carries the failure table. `mt4.mailbox_url` selects between two
+transports behind the one `Mt4Broker` `call` seam: unset is the file mailbox and the bot
+must be co-resident, set means the bot speaks HTTPS to `straightedge mt4-shim` running
+beside the terminal. The desk is still the INITIATOR either way, which is what keeps
+halt, daily-loss, drawdown and the live gates in the bot's process and on the bot's
+clock. **Do not re-propose the EA calling `WebRequest` for its own decisions**: it is
+synchronous, so it would block the chart thread on our latency, and it would move those
+gates behind the customer's polling. Making the EA a dumb TRANSPORT client is the
+deferred destination, and `docs/TRANSPORT.md` lists what it needs first; the blocker is
+that no CI runner has an MQL4 compiler, so that code cannot be verified before it ships
+to a customer.
+
+`mt4_live.py` already carries retry logic for NTFS refusing to unlink a file the terminal
+still holds open; that is a filesystem race, not a bug to silently work around further,
+and sharing Common Files over SMB is specifically NOT the way to move the bot off the box.
 
 ## The per-symbol trap
 
