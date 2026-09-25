@@ -1,11 +1,11 @@
 from pathlib import Path
 
-from mt5_risk_bot.broker.paper import PaperBroker, default_spec
-from mt5_risk_bot.config import BotConfig, SessionConfig
-from mt5_risk_bot.engine import Engine, run_backtest
-from mt5_risk_bot.models import Side
-from mt5_risk_bot.strategy import TrendStrategy
-from mt5_risk_bot.synthetic import generate_bars, generate_ranging
+from straightedge.broker.paper import PaperBroker, default_spec
+from straightedge.config import BotConfig, SessionConfig
+from straightedge.engine import Engine, run_backtest
+from straightedge.models import Side
+from straightedge.strategy import TrendStrategy
+from straightedge.synthetic import generate_bars, generate_ranging
 from wincompat import assert_owner_mode
 
 
@@ -52,7 +52,7 @@ def _cfg(**kw) -> BotConfig:
 
 
 def test_signal_reprice_keeps_distance() -> None:
-    from mt5_risk_bot.models import Signal, SignalKind
+    from straightedge.models import Signal, SignalKind
 
     spec = default_spec("EURUSD")
     sig = Signal(SignalKind.BUY, "EURUSD", 1.10000, 1.09500, 1.11250, 0.003)
@@ -70,7 +70,7 @@ def test_strategy_buys_uptrend() -> None:
 
 
 def test_strategy_flat_on_dead_market() -> None:
-    from mt5_risk_bot.models import Bar, SignalKind
+    from straightedge.models import Bar, SignalKind
 
     bars = [
         Bar(time=i * 3600, open=1.1, high=1.10005, low=1.09995, close=1.1) for i in range(250)
@@ -85,7 +85,7 @@ def test_paper_roundtrip_stop() -> None:
     broker.seed_bars("EURUSD", bars)
     spec = default_spec("EURUSD")
     tick = broker.tick("EURUSD")
-    from mt5_risk_bot.constants import (
+    from straightedge.constants import (
         ORDER_TYPE_BUY,
         TRADE_ACTION_DEAL,
         TRADE_RETCODE_DONE,
@@ -108,7 +108,7 @@ def test_paper_roundtrip_stop() -> None:
     assert res.retcode == TRADE_RETCODE_DONE
     assert broker.positions()
     # Drive price through the stop.
-    from mt5_risk_bot.models import Bar
+    from straightedge.models import Bar
 
     last = bars[-1]
     crash = Bar(
@@ -162,7 +162,7 @@ def test_engine_respects_halt_file(tmp_path: Path) -> None:
 
 
 def test_unknown_and_positions_commands(tmp_path: Path) -> None:
-    from mt5_risk_bot.telegram import TgCommand
+    from straightedge.telegram import TgCommand
 
     cfg = _cfg(journal=str(tmp_path / "j.jsonl"))
     engine = Engine(cfg, PaperBroker(balance=10_000), halt_dir=str(tmp_path))
@@ -174,7 +174,7 @@ def test_unknown_and_positions_commands(tmp_path: Path) -> None:
 
 
 def test_filling_choice() -> None:
-    from mt5_risk_bot.constants import (
+    from straightedge.constants import (
         ORDER_FILLING_FOK,
         ORDER_FILLING_IOC,
         ORDER_FILLING_RETURN,

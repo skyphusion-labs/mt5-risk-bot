@@ -6,7 +6,7 @@ from __future__ import annotations
 
 import math
 
-from mt5_risk_bot.models import SymbolSpec
+from straightedge.models import SymbolSpec
 
 
 def ticks_between(a: float, b: float, spec: SymbolSpec) -> float:

@@ -8,9 +8,9 @@ Engine, desk, and risk never send MetaTrader request dicts.
 They send `MarketOrder` and `WorkingOrder`.
 Each venue adapter maps those types to its own API.
 
-Paper, MT5, and MT4 implement `mt5_risk_bot.broker.base.Broker`.
+Paper, MT5, and MT4 implement `straightedge.broker.base.Broker`.
 `account.mode` selects the adapter (`paper`, `mt5`, or `mt4`) in `run`.
-`broker_for(cfg)` in `mt5_risk_bot.broker` returns PaperBroker, Mt5Broker, or Mt4Broker.
+`broker_for(cfg)` in `straightedge.broker` returns PaperBroker, Mt5Broker, or Mt4Broker.
 A new venue is a new adapter plus a factory branch.
 Do not teach the engine MT5 constants.
 

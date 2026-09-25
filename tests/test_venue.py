@@ -1,16 +1,16 @@
 from pathlib import Path
 
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import BotConfig, SessionConfig
-from mt5_risk_bot.constants import (
+from straightedge.broker.paper import PaperBroker
+from straightedge.config import BotConfig, SessionConfig
+from straightedge.constants import (
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID_VOLUME,
     TRADE_RETCODE_PLACED,
     TRADE_RETCODE_POSITION_CLOSED,
 )
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.models import MarketOrder, Side, WorkingOrder
-from mt5_risk_bot.synthetic import generate_bars
+from straightedge.engine import Engine
+from straightedge.models import MarketOrder, Side, WorkingOrder
+from straightedge.synthetic import generate_bars
 
 
 class VenueSpy:
@@ -310,8 +310,8 @@ def test_side_has_no_mt5_type_ints() -> None:
 def test_engine_does_not_import_mt5_retcodes() -> None:
     import inspect
 
-    import mt5_risk_bot.engine as eng
-    from mt5_risk_bot.models import OrderResult
+    import straightedge.engine as eng
+    from straightedge.models import OrderResult
 
     assert "TRADE_RETCODE" not in inspect.getsource(eng)
     done = OrderResult.unchanged()

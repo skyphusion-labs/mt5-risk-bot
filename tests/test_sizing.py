@@ -1,5 +1,5 @@
-from mt5_risk_bot.broker.paper import default_spec
-from mt5_risk_bot.sizing import lots_for_risk, money_per_lot_at_stop, normalize_volume
+from straightedge.broker.paper import default_spec
+from straightedge.sizing import lots_for_risk, money_per_lot_at_stop, normalize_volume
 
 
 def test_normalize_floors_not_ceils() -> None:

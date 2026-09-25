@@ -96,7 +96,7 @@ export class DeskAgent extends DurableObject<Env> {
         "cf-aig-gateway-id": gateway,
         "cf-aig-collect-log-payload": "false",
         "cf-aig-metadata": JSON.stringify({
-          bot: "mt5-risk-bot",
+          bot: "straightedge",
           surface: "computer",
         }),
       },

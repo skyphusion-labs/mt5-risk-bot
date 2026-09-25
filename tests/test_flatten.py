@@ -11,17 +11,17 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import BotConfig, SessionConfig
-from mt5_risk_bot.constants import (
+from straightedge.broker.paper import PaperBroker
+from straightedge.config import BotConfig, SessionConfig
+from straightedge.constants import (
     TRADE_RETCODE_DONE_PARTIAL,
     TRADE_RETCODE_POSITION_CLOSED,
     TRADE_RETCODE_REJECT,
 )
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.models import MarketOrder, OrderResult, Side, WorkingOrder
-from mt5_risk_bot.synthetic import generate_bars
-from mt5_risk_bot.telegram import TelegramClient, TgCommand
+from straightedge.engine import Engine
+from straightedge.models import MarketOrder, OrderResult, Side, WorkingOrder
+from straightedge.synthetic import generate_bars
+from straightedge.telegram import TelegramClient, TgCommand
 
 MAGIC = BotConfig().risk.magic
 
@@ -199,7 +199,7 @@ def _denominator(report) -> str:
 
 
 def _format_incomplete_text(tmp_path: Path) -> str:
-    from mt5_risk_bot.engine import _format_event
+    from straightedge.engine import _format_event
 
     ev = _events(tmp_path, "flatten_incomplete")[0]
     fields = {k: v for k, v in ev.items() if k not in ("ts", "event")}

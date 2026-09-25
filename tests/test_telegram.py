@@ -4,11 +4,11 @@ from io import BytesIO
 import urllib.error
 
 from wincompat import assert_owner_mode, assert_same_path
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import AdviceConfig, BotConfig, TelegramConfig
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.llm import Advisor
-from mt5_risk_bot.telegram import (
+from straightedge.broker.paper import PaperBroker
+from straightedge.config import AdviceConfig, BotConfig, TelegramConfig
+from straightedge.engine import Engine
+from straightedge.llm import Advisor
+from straightedge.telegram import (
     RETRY_CAP_S,
     RETRY_TRIES,
     TelegramClient,
@@ -31,7 +31,7 @@ class FakeTransport:
     def post_json(self, url: str, payload: dict, timeout: float = 10.0, headers=None) -> dict:
         del timeout
         if self.fail:
-            from mt5_risk_bot.telegram import TelegramError
+            from straightedge.telegram import TelegramError
 
             raise TelegramError("boom")
         self.sent.append((url, payload))

@@ -22,13 +22,13 @@ from pathlib import Path
 
 import pytest
 
-from mt5_risk_bot.broker.paper import PaperBroker, default_spec
-from mt5_risk_bot.config import BotConfig
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.journal import Journal
-from mt5_risk_bot.models import Account, EquitySnapshot, Signal, SignalKind, Tick
-from mt5_risk_bot.risk import RiskManager
-from mt5_risk_bot.state import (
+from straightedge.broker.paper import PaperBroker, default_spec
+from straightedge.config import BotConfig
+from straightedge.engine import Engine
+from straightedge.journal import Journal
+from straightedge.models import Account, EquitySnapshot, Signal, SignalKind, Tick
+from straightedge.risk import RiskManager
+from straightedge.state import (
     SNAPSHOT_VERSION,
     StateUnreadable,
     StateUnwritable,
@@ -36,8 +36,8 @@ from mt5_risk_bot.state import (
     save_snapshot,
     snapshot_path_for,
 )
-from mt5_risk_bot.synthetic import generate_bars
-from mt5_risk_bot.telegram import TgCommand
+from straightedge.synthetic import generate_bars
+from straightedge.telegram import TgCommand
 from wincompat import assert_owner_mode, assert_same_path
 
 DAY1 = datetime(2024, 1, 3, 12, 0, tzinfo=timezone.utc)  # Wednesday noon UTC
@@ -301,7 +301,7 @@ def test_unwritable_snapshot_halts(tmp_path: Path, monkeypatch) -> None:
     def boom(*_a, **_k):
         raise OSError(28, "No space left on device")
 
-    monkeypatch.setattr("mt5_risk_bot.state.os.replace", boom)
+    monkeypatch.setattr("straightedge.state.os.replace", boom)
     d = _gate(rm, 10_000)
     assert d.reason == "state_unwritable"
     assert d.allowed is False
@@ -371,7 +371,7 @@ def test_failed_write_leaves_the_previous_snapshot_intact(
     def boom(*_a, **_k):
         raise OSError(5, "I/O error")
 
-    monkeypatch.setattr("mt5_risk_bot.state.os.replace", boom)
+    monkeypatch.setattr("straightedge.state.os.replace", boom)
     with pytest.raises(StateUnwritable):
         save_snapshot(path, _snap(peak_equity=99_000.0))
     assert path.read_text(encoding="utf-8") == before

@@ -14,7 +14,7 @@ from dataclasses import replace
 from pathlib import Path
 from typing import Any, Callable
 
-from mt5_risk_bot.constants import (
+from straightedge.constants import (
     RETCODE_UNKNOWN,
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID_PRICE,
@@ -27,7 +27,7 @@ from mt5_risk_bot.constants import (
     TRADE_RETCODE_REJECT,
     TRADE_RETCODE_TRADE_DISABLED,
 )
-from mt5_risk_bot.models import (
+from straightedge.models import (
     Account,
     Bar,
     MarketOrder,

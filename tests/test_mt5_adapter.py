@@ -1,8 +1,8 @@
 import sys
 from types import SimpleNamespace
 
-from mt5_risk_bot.broker.mt5_live import Mt5Broker, _asdict, load_mt5_module
-from mt5_risk_bot.constants import (
+from straightedge.broker.mt5_live import Mt5Broker, _asdict, load_mt5_module
+from straightedge.constants import (
     ORDER_FILLING_IOC,
     ORDER_TYPE_BUY_LIMIT,
     ORDER_TYPE_SELL_LIMIT,
@@ -14,7 +14,7 @@ from mt5_risk_bot.constants import (
     TRADE_RETCODE_INVALID_FILL,
     TRADE_RETCODE_INVALID_ORDER,
 )
-from mt5_risk_bot.models import Side
+from straightedge.models import Side
 
 
 def _nt(**kw):
@@ -700,7 +700,7 @@ def test_disconnect_when_never_connected() -> None:
 
 
 def test_ensure_connected_when_unbound() -> None:
-    import mt5_risk_bot.broker.mt5_live as live
+    import straightedge.broker.mt5_live as live
 
     fake = FakeMt5()
     orig = live.load_mt5_module

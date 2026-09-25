@@ -12,7 +12,7 @@ from pathlib import Path
 
 from coverage_floor import TABLE, evaluate, line, read_floors
 
-MT4 = "src/mt5_risk_bot/broker/mt4_live.py"
+MT4 = "src/straightedge/broker/mt4_live.py"
 
 
 class TestEvaluate:
@@ -48,13 +48,13 @@ class TestEvaluate:
         assert "missing" in failures[0]
 
     def test_several_breaches_are_all_reported(self) -> None:
-        floors = {MT4: 97.0, "src/mt5_risk_bot/risk.py": 90.0}
-        failures = evaluate({MT4: 10.0, "src/mt5_risk_bot/risk.py": 20.0}, floors)
+        floors = {MT4: 97.0, "src/straightedge/risk.py": 90.0}
+        failures = evaluate({MT4: 10.0, "src/straightedge/risk.py": 20.0}, floors)
         assert len(failures) == 2
 
     def test_a_measured_file_with_no_declared_floor_is_ignored(self) -> None:
         """Only declared files are gated; everything else is the package-wide job."""
-        assert evaluate({"src/mt5_risk_bot/desk.py": 1.0}, {}) == []
+        assert evaluate({"src/straightedge/desk.py": 1.0}, {}) == []
 
     def test_no_floors_declared_is_not_a_failure(self) -> None:
         assert evaluate({MT4: 1.0}, {}) == []

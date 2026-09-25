@@ -5,7 +5,7 @@ from dataclasses import dataclass
 from pathlib import Path
 
 from wincompat import assert_owner_mode, assert_same_path
-from mt5_risk_bot.journal import (
+from straightedge.journal import (
     InstanceLock,
     InstanceLockError,
     Journal,
@@ -120,7 +120,7 @@ def test_instance_lock_blocks_other_process(tmp_path: Path) -> None:
             [
                 sys.executable,
                 "-c",
-                "from mt5_risk_bot.journal import InstanceLock, InstanceLockError\n"
+                "from straightedge.journal import InstanceLock, InstanceLockError\n"
                 f"try:\n"
                 f"    InstanceLock({str(journal)!r}).acquire()\n"
                 "except InstanceLockError as exc:\n"
@@ -145,7 +145,7 @@ def test_instance_lock_acquire_raises_when_flock_blocks(tmp_path: Path, monkeypa
     def blocked(*_args, **_kwargs):
         raise BlockingIOError("locked")
 
-    monkeypatch.setattr("mt5_risk_bot.journal._lock_nb", blocked)
+    monkeypatch.setattr("straightedge.journal._lock_nb", blocked)
     lock = InstanceLock(journal)
     try:
         lock.acquire()

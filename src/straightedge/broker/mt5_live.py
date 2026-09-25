@@ -9,7 +9,7 @@ from __future__ import annotations
 
 from typing import Any
 
-from mt5_risk_bot.constants import (
+from straightedge.constants import (
     FILLING_RETRY_ORDER,
     ORDER_TIME_GTC,
     ORDER_TYPE_BUY,
@@ -30,7 +30,7 @@ from mt5_risk_bot.constants import (
     choose_filling,
     timeframe_code,
 )
-from mt5_risk_bot.models import (
+from straightedge.models import (
     Account,
     Bar,
     MarketOrder,

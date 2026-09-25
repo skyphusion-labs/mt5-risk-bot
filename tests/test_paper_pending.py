@@ -1,5 +1,5 @@
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.constants import (
+from straightedge.broker.paper import PaperBroker
+from straightedge.constants import (
     ORDER_TYPE_BUY,
     ORDER_TYPE_BUY_LIMIT,
     ORDER_TYPE_BUY_STOP,
@@ -15,8 +15,8 @@ from mt5_risk_bot.constants import (
     TRADE_RETCODE_PLACED,
     TRADE_RETCODE_POSITION_CLOSED,
 )
-from mt5_risk_bot.models import Bar, MarketOrder, Side, WorkingOrder
-from mt5_risk_bot.synthetic import generate_bars
+from straightedge.models import Bar, MarketOrder, Side, WorkingOrder
+from straightedge.synthetic import generate_bars
 
 
 def _paper() -> PaperBroker:
@@ -128,7 +128,7 @@ def test_buy_limit_fills_on_bar() -> None:
 
 
 def test_sell_limit_fills_when_bid_rises() -> None:
-    from mt5_risk_bot.constants import ORDER_TYPE_SELL_LIMIT
+    from straightedge.constants import ORDER_TYPE_SELL_LIMIT
 
     broker = _paper()
     spec = broker.symbol("EURUSD")

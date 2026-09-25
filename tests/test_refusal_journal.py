@@ -13,15 +13,15 @@ reason string. Two invariants ride along:
 import json
 from datetime import datetime, timezone
 
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import AdviceConfig, BotConfig
-from mt5_risk_bot.desk import Desk
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.journal import Journal
-from mt5_risk_bot.llm import Advisor
-from mt5_risk_bot.models import Signal, SignalKind
-from mt5_risk_bot.synthetic import generate_bars
-from mt5_risk_bot.telegram import TelegramClient, TgCommand
+from straightedge.broker.paper import PaperBroker
+from straightedge.config import AdviceConfig, BotConfig
+from straightedge.desk import Desk
+from straightedge.engine import Engine
+from straightedge.journal import Journal
+from straightedge.llm import Advisor
+from straightedge.models import Signal, SignalKind
+from straightedge.synthetic import generate_bars
+from straightedge.telegram import TelegramClient, TgCommand
 
 QUESTION = "is the euro a buy right now"
 PROSE = "Model prose body about the trend."

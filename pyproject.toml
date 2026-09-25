@@ -3,7 +3,7 @@ requires = ["setuptools>=68"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "mt5-risk-bot"
+name = "straightedge"
 version = "1.4.1"
 description = "Risk-first MetaTrader desk. Paper by default. No profit guarantee."
 readme = "README.md"
@@ -27,7 +27,7 @@ mt5-win = ["MetaTrader5>=5.0.45"]
 mt5-mac = ["mt5-mac>=0.3.0"]
 
 [project.scripts]
-mt5-risk-bot = "mt5_risk_bot.__main__:main"
+straightedge = "straightedge.__main__:main"
 
 [project.urls]
 Documentation = "docs/MT5-API.md"
@@ -38,11 +38,11 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src", "tests"]
-addopts = "--cov=mt5_risk_bot --cov-report=term-missing --cov-fail-under=80"
+addopts = "--cov=straightedge --cov-report=term-missing --cov-fail-under=80"
 
 [tool.coverage.run]
 branch = true
-source = ["mt5_risk_bot"]
+source = ["straightedge"]
 omit = ["*/broker/base.py"]
 
 [tool.coverage.report]
@@ -54,10 +54,10 @@ exclude_lines = [
 ]
 
 
-[tool.mt5_risk_bot.coverage_floors]
+[tool.straightedge.coverage_floors]
 # Per-file floors. Set from measurement, not aspiration: see tests/conftest.py
 # for why a package-wide --cov-fail-under cannot go red for one file.
-"src/mt5_risk_bot/broker/mt4_live.py" = 97
+"src/straightedge/broker/mt4_live.py" = 97
 
 [tool.ruff]
 target-version = "py312"
@@ -74,7 +74,7 @@ select = ["E4", "E7", "E9", "F"]
 
 [tool.mypy]
 python_version = "3.12"
-files = ["src/mt5_risk_bot"]
+files = ["src/straightedge"]
 warn_unused_ignores = true
 
 # Both overrides are one whole-file design pattern each, not a grab bag:
@@ -85,7 +85,7 @@ warn_unused_ignores = true
 # through that by construction; attr-defined would fire on nearly every
 # method and the file would need a duck-typed Protocol to clear cleanly,
 # which is a real design change, not this item's scope.
-module = "mt5_risk_bot.desk"
+module = "straightedge.desk"
 disable_error_code = ["attr-defined"]
 
 [[tool.mypy.overrides]]
@@ -94,5 +94,5 @@ disable_error_code = ["attr-defined"]
 # every call site relies on connect() having populated it first, a
 # lifecycle invariant mypy cannot see. Same pattern at every site in this
 # one file.
-module = "mt5_risk_bot.broker.mt5_live"
+module = "straightedge.broker.mt5_live"
 disable_error_code = ["union-attr"]

@@ -2,7 +2,7 @@
 
 from __future__ import annotations
 
-from mt5_risk_bot.models import Bar
+from straightedge.models import Bar
 
 
 def ema(values: list[float], period: int) -> list[float]:

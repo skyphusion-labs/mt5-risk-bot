@@ -25,12 +25,12 @@ from mt4_transcripts import EA_SYMBOL_KEYS, t_symbol
 from test_mt4_wire import broker, reads_of, wired
 from test_risk import _acct, _cfg, _now, _sig, _tick
 
-from mt5_risk_bot.broker.mt4_live import Mt4Broker
-from mt5_risk_bot.broker.paper import default_spec
-from mt5_risk_bot.risk import RiskManager
-from mt5_risk_bot.sizing import lots_for_risk
+from straightedge.broker.mt4_live import Mt4Broker
+from straightedge.broker.paper import default_spec
+from straightedge.risk import RiskManager
+from straightedge.sizing import lots_for_risk
 
-ADAPTER_PATH = Path(__file__).resolve().parents[1] / "src" / "mt5_risk_bot" / "broker" / "mt4_live.py"
+ADAPTER_PATH = Path(__file__).resolve().parents[1] / "src" / "straightedge" / "broker" / "mt4_live.py"
 
 # The four the Expert cannot answer. MQL4's MarketInfo has no trade-mode
 # identifier and no per-symbol currency identifiers, so these are not an
@@ -150,7 +150,7 @@ def test_the_fabricated_one_point_zero_oversizes_by_the_ratio() -> None:
     assert honest > 0 and fabricated > 0
 
     # What the fabricated size actually loses, priced at the true tick value.
-    from mt5_risk_bot.sizing import money_per_lot_at_stop
+    from straightedge.sizing import money_per_lot_at_stop
 
     real_loss = money_per_lot_at_stop(entry, sl, spec_with(2.5)) * fabricated
     assert real_loss > budget * 2.0, (real_loss, budget)

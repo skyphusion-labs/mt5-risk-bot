@@ -2,9 +2,9 @@
 
 from __future__ import annotations
 
-from mt5_risk_bot.config import StrategyConfig
-from mt5_risk_bot.indicators import adx, atr, ema
-from mt5_risk_bot.models import Bar, Position, Side, Signal, SignalKind, SymbolSpec
+from straightedge.config import StrategyConfig
+from straightedge.indicators import adx, atr, ema
+from straightedge.models import Bar, Position, Side, Signal, SignalKind, SymbolSpec
 
 
 def _last(xs: list[float]) -> float:

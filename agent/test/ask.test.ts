@@ -87,7 +87,7 @@ describe("ask: the outbound gateway contract", () => {
     expect(seen.collectLogPayload).toBe("false");
     expect(seen.authorization).toBe("present");
     expect(JSON.parse(seen.metadata ?? "{}")).toEqual({
-      bot: "mt5-risk-bot",
+      bot: "straightedge",
       surface: "computer",
     });
   });

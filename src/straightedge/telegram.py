@@ -16,8 +16,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Protocol
 
-from mt5_risk_bot.config import TelegramConfig, is_shared_chat_id
-from mt5_risk_bot.journal import redact_text
+from straightedge.config import TelegramConfig, is_shared_chat_id
+from straightedge.journal import redact_text
 
 API_ROOT = "https://api.telegram.org"
 RETRY_TRIES = 4
@@ -45,7 +45,7 @@ class UrlLibTransport:
         body = json.dumps(payload).encode("utf-8")
         hdrs = {
             "Content-Type": "application/json",
-            "User-Agent": "mt5-risk-bot/1.0",
+            "User-Agent": "straightedge/1.0",
         }
         if headers:
             hdrs.update(headers)
@@ -221,7 +221,7 @@ def _chunks(text: str, size: int) -> list[str]:
 
 
 HELP = (
-    "mt5-risk-bot  (not financial advice)\n"
+    "straightedge  (not financial advice)\n"
     "/quote [SYMBOL]\n"
     "/buy SYMBOL [sl=] [tp=] [limit=PRICE] [stop=PRICE]\n"
     "/sell SYMBOL [sl=] [tp=] [limit=PRICE] [stop=PRICE]\n"

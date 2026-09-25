@@ -4,17 +4,17 @@ from pathlib import Path
 
 import pytest
 
-from mt5_risk_bot.broker import broker_for
-from mt5_risk_bot.broker.mt4_live import (
+from straightedge.broker import broker_for
+from straightedge.broker.mt4_live import (
     FileBridge,
     Mt4Broker,
     decode,
     encode,
     parse_rows,
 )
-from mt5_risk_bot.config import BotConfig, Mt4Config, load_config, resolve_mt4_files_dir
-from mt5_risk_bot.constants import TRADE_RETCODE_DONE, TRADE_RETCODE_PLACED
-from mt5_risk_bot.models import MarketOrder, Side, WorkingOrder
+from straightedge.config import BotConfig, Mt4Config, load_config, resolve_mt4_files_dir
+from straightedge.constants import TRADE_RETCODE_DONE, TRADE_RETCODE_PLACED
+from straightedge.models import MarketOrder, Side, WorkingOrder
 
 
 class FakeMt4:

@@ -5,7 +5,7 @@ The bot is the Python process on this computer.
 Pulled from the official MQL5 Python Integration reference
 (https://www.mql5.com/en/docs/integration/python_metatrader5)
 and the trade-server return-code table.
-The bot mirrors these constants in `mt5_risk_bot/constants.py`.
+The bot mirrors these constants in `straightedge/constants.py`.
 The paper broker and the live adapter share one vocabulary.
 
 ## Binding

@@ -22,8 +22,8 @@ from datetime import datetime, timedelta, timezone
 
 from test_refusal_journal import FakeLlm, _advice_payload, _engine
 
-from mt5_risk_bot.synthetic import generate_bars
-from mt5_risk_bot.telegram import TgCommand
+from straightedge.synthetic import generate_bars
+from straightedge.telegram import TgCommand
 
 ASK = "/ask what should I do"
 
@@ -292,7 +292,7 @@ def test_neither_refusal_is_broadcast_to_the_chat_that_caused_it(tmp_path) -> No
     """#49's rule: a refusal is journaled, never pushed back as an alert."""
     from test_refusal_journal import FakeTransport
 
-    from mt5_risk_bot.telegram import TelegramClient
+    from straightedge.telegram import TelegramClient
 
     transport = FakeTransport()
     tg = TelegramClient(
@@ -322,7 +322,7 @@ def test_a_version_one_snapshot_still_loads_after_the_schema_grew(tmp_path) -> N
     older version would fail CLOSED on every existing install, which is a
     self-inflicted outage rather than a safety property.
     """
-    from mt5_risk_bot.state import load_snapshot
+    from straightedge.state import load_snapshot
 
     path = tmp_path / "j.equity.json"
     path.write_text(
@@ -397,7 +397,7 @@ def test_the_toml_keys_actually_load(tmp_path) -> None:
     A setting that parses nowhere is a setting that silently does not exist, so
     the shipped example is the thing this asserts against.
     """
-    from mt5_risk_bot.config import load_config
+    from straightedge.config import load_config
 
     cfg = load_config("config.example.toml")
     cfg.validate()
@@ -438,7 +438,7 @@ def test_a_negative_cap_is_rejected_at_validate() -> None:
     """A negative cap would make the comparison silently false forever."""
     import pytest
 
-    from mt5_risk_bot.config import BotConfig
+    from straightedge.config import BotConfig
 
     cfg = BotConfig()
     cfg.risk.max_trades_per_day = -1

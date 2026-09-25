@@ -2,7 +2,7 @@ from __future__ import annotations
 
 from typing import Protocol
 
-from mt5_risk_bot.models import (
+from straightedge.models import (
     Account,
     Bar,
     MarketOrder,

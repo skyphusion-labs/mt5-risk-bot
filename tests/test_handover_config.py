@@ -22,13 +22,13 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
-from mt5_risk_bot.__main__ import main
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import BotConfig, TelegramConfig, load_config
-from mt5_risk_bot.desk import Desk
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.synthetic import generate_bars
-from mt5_risk_bot.telegram import TgCommand
+from straightedge.__main__ import main
+from straightedge.broker.paper import PaperBroker
+from straightedge.config import BotConfig, TelegramConfig, load_config
+from straightedge.desk import Desk
+from straightedge.engine import Engine
+from straightedge.synthetic import generate_bars
+from straightedge.telegram import TgCommand
 
 
 def _engine(tmp_path, *, allow_approve_always=True, allow_auto=True) -> Engine:
@@ -159,7 +159,7 @@ def test_approve_always_explicitly_enabled_is_unchanged(tmp_path) -> None:
 
 
 def test_refusal_does_not_reach_the_chat(tmp_path) -> None:
-    from mt5_risk_bot.telegram import TelegramClient
+    from straightedge.telegram import TelegramClient
 
     class FakeTransport:
         def __init__(self) -> None:

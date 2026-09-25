@@ -6,14 +6,14 @@ import os
 from datetime import datetime, timezone
 from typing import Any
 
-from mt5_risk_bot.broker.base import Broker
-from mt5_risk_bot.config import BotConfig
-from mt5_risk_bot.desk import Desk
-from mt5_risk_bot.indicators import adx, ema, last_closed
-from mt5_risk_bot.indicators import atr as atr_bars
-from mt5_risk_bot.journal import Journal, redact_text
-from mt5_risk_bot.llm import Advisor, advice_path_for
-from mt5_risk_bot.models import (
+from straightedge.broker.base import Broker
+from straightedge.config import BotConfig
+from straightedge.desk import Desk
+from straightedge.indicators import adx, ema, last_closed
+from straightedge.indicators import atr as atr_bars
+from straightedge.journal import Journal, redact_text
+from straightedge.llm import Advisor, advice_path_for
+from straightedge.models import (
     Bar,
     FlattenReport,
     MarketOrder,
@@ -24,11 +24,11 @@ from mt5_risk_bot.models import (
     SignalKind,
     WorkingOrder,
 )
-from mt5_risk_bot.risk import RiskDecision, RiskManager, day_key
-from mt5_risk_bot.sizing import money_per_lot_at_stop, normalize_volume
-from mt5_risk_bot.state import snapshot_path_for
-from mt5_risk_bot.strategy import TrendStrategy
-from mt5_risk_bot.telegram import TelegramClient, TgCommand
+from straightedge.risk import RiskDecision, RiskManager, day_key
+from straightedge.sizing import money_per_lot_at_stop, normalize_volume
+from straightedge.state import snapshot_path_for
+from straightedge.strategy import TrendStrategy
+from straightedge.telegram import TelegramClient, TgCommand
 
 _ORDER_TYPE_NAME = {
     "limit": "LIMIT",
@@ -1209,7 +1209,7 @@ class Engine:
         reason = self.risk.halt_reason or ("halt_file" if self.risk.halt_path().exists() else "")
         halt = "HALTED " + reason if (self.halted or reason) else "running"
         return (
-            f"mt5-risk-bot {halt}\n"
+            f"straightedge {halt}\n"
             f"mode={self.cfg.mode} server={acct.server}\n"
             f"equity={acct.equity:.2f} {acct.currency}  "
             f"balance={acct.balance:.2f}  peak={self.risk.snapshot.peak_equity:.2f}\n"
@@ -1448,7 +1448,7 @@ def _format_event(event: str, fields: dict[str, Any]) -> str:
 
 
 def run_backtest(cfg: BotConfig, series: dict[str, list[Bar]], *, journal_path: str) -> dict:
-    from mt5_risk_bot.broker.paper import PaperBroker
+    from straightedge.broker.paper import PaperBroker
 
     broker = PaperBroker(balance=cfg.initial_balance)
     for name, bars in series.items():

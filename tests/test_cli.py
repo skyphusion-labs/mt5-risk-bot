@@ -5,10 +5,10 @@ from pathlib import Path
 
 import pytest
 
-from mt5_risk_bot.__main__ import build_parser, main, paper_round_trip, run_loop, telegram_ping
-from mt5_risk_bot.config import BotConfig, TelegramConfig
-from mt5_risk_bot.journal import InstanceLock, InstanceLockError, Journal, lock_path_for
-from mt5_risk_bot.telegram import TelegramClient, offset_path_for
+from straightedge.__main__ import build_parser, main, paper_round_trip, run_loop, telegram_ping
+from straightedge.config import BotConfig, TelegramConfig
+from straightedge.journal import InstanceLock, InstanceLockError, Journal, lock_path_for
+from straightedge.telegram import TelegramClient, offset_path_for
 
 
 class _FakeTg:
@@ -102,7 +102,7 @@ def test_doctor_connect_mt4(capsys, monkeypatch, tmp_path) -> None:
                 },
             )()
 
-    monkeypatch.setattr("mt5_risk_bot.broker.mt4_live.Mt4Broker", FakeMt4Broker)
+    monkeypatch.setattr("straightedge.broker.mt4_live.Mt4Broker", FakeMt4Broker)
     assert main(["doctor", "--connect"]) == 0
     out = capsys.readouterr().out
     assert created
@@ -134,8 +134,8 @@ def test_doctor_connect_calls_ensure_connected(capsys, monkeypatch) -> None:
         created.append(broker)
         return broker
 
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", lambda: object())
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.Mt5Broker", factory)
+    monkeypatch.setattr("straightedge.broker.mt5_live.load_mt5_module", lambda: object())
+    monkeypatch.setattr("straightedge.broker.mt5_live.Mt5Broker", factory)
     assert main(["doctor", "--connect"]) == 0
     out = capsys.readouterr().out
     assert len(created) == 1
@@ -155,7 +155,7 @@ def test_doctor_connect_fails_without_binding(capsys, monkeypatch) -> None:
     def boom():
         raise RuntimeError("No MT5 Python binding")
 
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", boom)
+    monkeypatch.setattr("straightedge.broker.mt5_live.load_mt5_module", boom)
     assert main(["doctor", "--connect"]) == 1
     out = capsys.readouterr().out
     assert "connect: fail (no mt5 binding)" in out
@@ -178,8 +178,8 @@ def test_doctor_connect_fails_on_ensure_error(capsys, monkeypatch) -> None:
         def disconnect(self) -> None:
             self.disconnected = True
 
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", lambda: object())
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.Mt5Broker", BoomBroker)
+    monkeypatch.setattr("straightedge.broker.mt5_live.load_mt5_module", lambda: object())
+    monkeypatch.setattr("straightedge.broker.mt5_live.Mt5Broker", BoomBroker)
     assert main(["doctor", "--connect"]) == 1
     out = capsys.readouterr().out
     assert "connect: fail" in out
@@ -202,8 +202,8 @@ def test_doctor_connect_fail_redacts_botfather_token(capsys, monkeypatch) -> Non
         def disconnect(self) -> None:
             return None
 
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", lambda: object())
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.Mt5Broker", BoomBroker)
+    monkeypatch.setattr("straightedge.broker.mt5_live.load_mt5_module", lambda: object())
+    monkeypatch.setattr("straightedge.broker.mt5_live.Mt5Broker", BoomBroker)
     assert main(["doctor", "--connect"]) == 1
     out = capsys.readouterr().out
     assert "connect: fail" in out
@@ -243,8 +243,8 @@ def test_doctor_connect_falls_back_to_connect(capsys, monkeypatch) -> None:
                 },
             )()
 
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", lambda: object())
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.Mt5Broker", NoEnsure)
+    monkeypatch.setattr("straightedge.broker.mt5_live.load_mt5_module", lambda: object())
+    monkeypatch.setattr("straightedge.broker.mt5_live.Mt5Broker", NoEnsure)
     assert main(["doctor", "--connect"]) == 0
     out = capsys.readouterr().out
     assert created[0].calls[0] == "connect"
@@ -281,8 +281,8 @@ def test_doctor_connect_disconnect_error_still_ok(capsys, monkeypatch) -> None:
         def disconnect(self) -> None:
             raise RuntimeError("shutdown")
 
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.load_mt5_module", lambda: object())
-    monkeypatch.setattr("mt5_risk_bot.broker.mt5_live.Mt5Broker", OkThenBoom)
+    monkeypatch.setattr("straightedge.broker.mt5_live.load_mt5_module", lambda: object())
+    monkeypatch.setattr("straightedge.broker.mt5_live.Mt5Broker", OkThenBoom)
     assert main(["doctor", "--connect"]) == 0
     out = capsys.readouterr().out
     assert "connected login=3" in out
@@ -311,7 +311,7 @@ def test_telegram_ping_preserves_update_offset(tmp_path, monkeypatch) -> None:
         seen["offset_path"] = offset_path
         return orig(cfg, transport=transport, offset_path=offset_path)
 
-    monkeypatch.setattr("mt5_risk_bot.__main__.TelegramClient.from_config", wrapped)
+    monkeypatch.setattr("straightedge.__main__.TelegramClient.from_config", wrapped)
     journal = tmp_path / "desk.jsonl"
     path = offset_path_for(journal)
     Path(path).write_text("99", encoding="utf-8")
@@ -505,7 +505,7 @@ def test_run_loop_second_process_refuses_shared_journal(tmp_path: Path) -> None:
             [
                 sys.executable,
                 "-m",
-                "mt5_risk_bot",
+                "straightedge",
                 "--config",
                 str(cfg),
                 "run",
@@ -575,9 +575,9 @@ def test_run_starts_engine_under_single_lock(tmp_path, monkeypatch) -> None:
         created.append(eng)
         return eng
 
-    monkeypatch.setattr("mt5_risk_bot.__main__.Engine", factory)
+    monkeypatch.setattr("straightedge.__main__.Engine", factory)
     monkeypatch.setattr(
-        "mt5_risk_bot.__main__.TelegramClient.from_config",
+        "straightedge.__main__.TelegramClient.from_config",
         staticmethod(lambda *a, **k: object()),
     )
     rc = main(["run", "--mode", "paper"])

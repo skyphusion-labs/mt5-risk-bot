@@ -4,9 +4,9 @@ import time
 from datetime import datetime, timezone
 
 from wincompat import assert_owner_mode
-from mt5_risk_bot.broker.paper import PaperBroker
-from mt5_risk_bot.config import AdviceConfig, BotConfig
-from mt5_risk_bot.constants import (
+from straightedge.broker.paper import PaperBroker
+from straightedge.config import AdviceConfig, BotConfig
+from straightedge.constants import (
     ORDER_TYPE_BUY,
     ORDER_TYPE_SELL,
     TRADE_ACTION_CLOSE_BY,
@@ -16,12 +16,12 @@ from mt5_risk_bot.constants import (
     TRADE_RETCODE_INVALID,
     TRADE_RETCODE_INVALID_STOPS,
 )
-from mt5_risk_bot.desk import pending_from_record
-from mt5_risk_bot.engine import Engine
-from mt5_risk_bot.llm import Advisor, parse_advice
-from mt5_risk_bot.models import OrderResult
-from mt5_risk_bot.synthetic import generate_bars
-from mt5_risk_bot.telegram import TgCommand
+from straightedge.desk import pending_from_record
+from straightedge.engine import Engine
+from straightedge.llm import Advisor, parse_advice
+from straightedge.models import OrderResult
+from straightedge.synthetic import generate_bars
+from straightedge.telegram import TgCommand
 
 
 class FakeLlm:
@@ -286,7 +286,7 @@ def test_trail_toggle_does_not_enable_auto(tmp_path) -> None:
 
 
 def test_trail_on_manages_without_auto_entries(tmp_path) -> None:
-    from mt5_risk_bot.models import Bar
+    from straightedge.models import Bar
 
     engine = _engine(tmp_path)
     engine.start()
@@ -567,7 +567,7 @@ def test_partial_close_and_history(tmp_path) -> None:
 
 
 def test_scale_out_tp_partial_close_on_hit(tmp_path) -> None:
-    from mt5_risk_bot.models import Bar
+    from straightedge.models import Bar
 
     engine = _engine(tmp_path)
     engine.start()
@@ -647,7 +647,7 @@ def test_be_missing_ticket_and_winner(tmp_path) -> None:
     engine.handle_command(TgCommand("1", 1, "/confirm", 3))
     pos = engine.broker.positions()[0]
     last = engine.broker.rates("EURUSD", engine.cfg.strategy.timeframe_id, 1)[-1]
-    from mt5_risk_bot.models import Bar
+    from straightedge.models import Bar
 
     engine.broker.seed_bars(
         "EURUSD",

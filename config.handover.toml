@@ -78,7 +78,7 @@ skip_friday_after_utc = "16:00"
 
 [engine]
 poll_seconds = 15
-comment = "mt5-risk-bot"
+comment = "straightedge"
 journal_path = "journal.jsonl"
 
 [telegram]

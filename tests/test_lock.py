@@ -1,7 +1,7 @@
 from pathlib import Path
 
-from mt5_risk_bot.__main__ import build_parser, cmd_run
-from mt5_risk_bot.journal import InstanceLock
+from straightedge.__main__ import build_parser, cmd_run
+from straightedge.journal import InstanceLock
 
 
 def test_cmd_run_second_instance_exits_when_lock_held(tmp_path: Path, monkeypatch, capsys) -> None:

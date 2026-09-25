@@ -6,7 +6,7 @@ import math
 import random
 from datetime import datetime, timezone
 
-from mt5_risk_bot.models import Bar
+from straightedge.models import Bar
 
 
 def generate_bars(

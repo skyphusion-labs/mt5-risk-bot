@@ -30,7 +30,7 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev]"
       - run: pytest -q -rs --override-ini addopts=
-      - run: python -m mt5_risk_bot doctor
+      - run: python -m straightedge doctor
 
   lint:
     name: lint
@@ -44,7 +44,7 @@ jobs:
           cache: pip
       - run: pip install -e ".[dev]"
       - run: ruff check src/
-      - run: mypy src/mt5_risk_bot
+      - run: mypy src/straightedge
 
   # The org ruleset (aviation-grade-main-org, 18677665) requires status
   # checks literally named `ci`, `coverage`, `CodeQL` -- nothing else is at

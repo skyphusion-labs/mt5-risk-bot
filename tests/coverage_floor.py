@@ -18,11 +18,11 @@ import tomllib
 from pathlib import Path
 
 #: The table in `pyproject.toml` that declares the floors.
-TABLE = ("tool", "mt5_risk_bot", "coverage_floors")
+TABLE = ("tool", "straightedge", "coverage_floors")
 
 
 def read_floors(rootpath: Path) -> dict[str, float]:
-    """Load `[tool.mt5_risk_bot.coverage_floors]` from the package manifest.
+    """Load `[tool.straightedge.coverage_floors]` from the package manifest.
 
     The floors live in `pyproject.toml` rather than a workflow file so one
     declaration covers the local run and every CI job, and so a change to the

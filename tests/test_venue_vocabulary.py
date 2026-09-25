@@ -1,0 +1,280 @@
+"""The venue vocabulary must survive a rename. A blind find/replace must go RED here.
+
+Why this file exists
+--------------------
+The repo was renamed `mt5-risk-bot` -> `straightedge` on 2026-09-24. In this tree the
+string `mt5` carries FOUR different meanings, and only one of them was the dead product
+name:
+
+  1. the PRODUCT name (`mt5_risk_bot`, `mt5-risk-bot`). Dead. Renamed. Must stay at zero.
+  2. the MetaTrader 5 VENUE (`mode = "mt5"`, `[mt5]`, `MetaTrader5`, `mt5-win`,
+     `mt5-mac`). LIVE. The desk drives MT5 and MT4 both. Must survive byte-for-byte.
+  3. the MT4 file-mailbox WIRE CONTRACT (`mt4_risk_bot.req` / `.res`), which spans the
+     MQL4 Expert and `broker/mt4_live.py`. Renaming one side and not the other makes the
+     Expert write a file the Python side never reads. The desk would just time out.
+  4. the id of a LIVE Cloudflare AI Gateway resource that still happens to be called
+     `mt5-risk-bot`. Renaming the code reference without renaming the Cloudflare
+     resource breaks the agent. That rename needs an infra change request, so the
+     literal stays here until the resource itself moves.
+
+A global find/replace over `mt5` would break 2, 3 and 4 while every test that does not
+exercise those paths stayed green: MT5 needs a Windows/macOS binding absent from CI, the
+MT4 mailbox is faked in the adapter tests, and the gateway is only reached over the
+network. That is a false green with real money behind it, which is why this gate counts
+the vocabulary directly instead of trusting behaviour to notice.
+
+What this gate does and does not catch
+--------------------------------------
+It catches DISAPPEARANCE and ARRIVAL: a venue token deleted, mangled or mass-renamed, and
+the dead product token coming back. It does not check that any of these sites is
+semantically right; `tests/test_mode_gate.py` does that for the mode gate. A count is an
+instrument, not a proof. Each expected number below was measured against the tracked tree
+at the rename commit. If you intentionally add or remove a venue site, change the
+constant in the same commit and say why -- that diff is the review surface.
+
+Proven red: renaming one occurrence of `{"mt5", "mt4"}` in `risk.py` fails
+`test_real_money_gate_set_form`, `test_venue_set_form_sites` and
+`test_mode_literal_mt5_sites`. A gate seen only green is not a gate.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from pathlib import Path
+
+import pytest
+
+ROOT = Path(__file__).resolve().parents[1]
+
+#: This file is excluded from its own scan. It quotes every token it pins, including the
+#: dead ones, so counting itself would make its own prose load-bearing and would push the
+#: dead-module-token count above zero. The exclusion is printed on every run.
+SELF = Path(__file__).resolve().relative_to(ROOT).as_posix()
+
+# --- expected counts, measured over the TRACKED tree at the rename commit -------------
+# Bare `mt5` / `mt4` are too noisy to pin (prose, test names, symbols), so each constant
+# pins a token that SELECTS BEHAVIOUR or names a real artifact.
+
+#: `"mt5"` as a quoted literal anywhere under `src/` (mode values, dispatch, argparse
+#: choices, the `[mt5]` section lookup key).
+MODE_LITERAL_MT5_IN_SRC = 11
+#: the MT4 counterpart. The desk drives both venues; a rename that keeps one is broken.
+MODE_LITERAL_MT4_IN_SRC = 12
+#: the set-form venue test `{"mt5", "mt4"}` under `src/` (risk.py x2, desk.py code +
+#: its explaining comment).
+VENUE_SET_FORM_IN_SRC = 4
+#: `self.cfg.mode in {"mt5", "mt4"}` in `risk.py`. THE REAL-MONEY GATE. Two sites:
+#: `send_gate` and `circuit`. If this number drops, a live send stopped being gated.
+REAL_MONEY_GATE_IN_RISK = 2
+#: the legality check in `config.py`, a different question from "is this a live venue".
+LEGAL_MODE_SET_IN_SRC = 1
+#: TOML section headers across the tracked tree. The mt4 header is 3, not 2: the two
+#: example configs plus one inline TOML fixture in tests/test_mt4_adapter.py.
+CONFIG_SECTION_MT5 = 2
+CONFIG_SECTION_MT4 = 3
+#: the `[mt5]` section keys, and `timeout_ms` which both venue sections share.
+KEY_TERMINAL_PATH = 6
+KEY_TIMEOUT_MS = 18
+#: the official Windows pip package, named in the extra, the adapter import, the doctor
+#: advice and the mypy override.
+METATRADER5 = 21
+#: the optional-dependency extras. `mt5-win` is the pyproject extra; `mt5-mac` is both an
+#: extra and the macOS package name, so it appears in advice and docs too.
+EXTRA_MT5_WIN = 1
+PACKAGE_MT5_MAC = 13
+#: the doctor line that reports whether a binding is present at all.
+DOCTOR_MT5_BINDING = 3
+#: the MT4 file-mailbox basenames. MQL4 Expert and Python adapter must agree exactly.
+MT4_MAILBOX = 20
+#: the LIVE Cloudflare AI Gateway id. Deliberately still the old string; see the header.
+#: 13 gateway-resource references plus 2 in the RUNBOOK LaunchAgent migration note.
+GATEWAY_ID_AND_MIGRATION_NOTE = 15
+#: the dead product module token. Zero, forever.
+DEAD_MODULE_TOKEN = 0
+
+
+def _tracked() -> list[Path]:
+    """Every tracked text file, as the thing that actually ships.
+
+    A missing git is a hard failure, never a skip: a vocabulary gate that quietly
+    measures nothing is indistinguishable from one that passed.
+    """
+    try:
+        out = subprocess.run(
+            ["git", "-C", str(ROOT), "ls-files", "-z"],
+            capture_output=True,
+            check=True,
+        )
+    except (OSError, subprocess.CalledProcessError) as exc:  # pragma: no cover
+        pytest.fail(f"cannot enumerate the tracked tree, so nothing was measured: {exc}")
+    names = [n for n in out.stdout.decode().split("\0") if n and n != SELF]
+    if not names:  # pragma: no cover
+        pytest.fail("the tracked tree enumerated to zero files, so nothing was measured")
+    return [ROOT / n for n in names]
+
+
+def _count(needle: str, under: str = "") -> tuple[int, int]:
+    """Return (occurrences, files scanned). Substring count, not line count."""
+    total = 0
+    scanned = 0
+    prefix = f"{under}/" if under else ""
+    for path in _tracked():
+        rel = path.relative_to(ROOT).as_posix()
+        if prefix and not rel.startswith(prefix):
+            continue
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (UnicodeDecodeError, OSError):
+            continue  # a binary or unreadable file carries no vocabulary
+        scanned += 1
+        total += text.count(needle)
+    return total, scanned
+
+
+def _assert(label: str, needle: str, expected: int, under: str = "") -> None:
+    got, scanned = _count(needle, under)
+    where = under or "the tracked tree"
+    where = f"{where} (excluding {SELF})"
+    print(f"venue vocabulary: {label}: {got}/{expected} over {scanned} files in {where}")
+    assert got == expected, (
+        f"{label}: found {got} occurrences of {needle!r} in {where} "
+        f"({scanned} files scanned), expected {expected}. "
+        "If a venue site was added or removed on purpose, update the constant in this "
+        "commit. If this dropped because of a rename, the rename ate a LIVE venue token."
+    )
+
+
+# --- the real-money gate ---------------------------------------------------------------
+
+
+def test_real_money_gate_set_form() -> None:
+    """`risk.py` is what actually gates a send on a real account."""
+    risk = (ROOT / "src" / "straightedge" / "risk.py").read_text(encoding="utf-8")
+    got = risk.count('self.cfg.mode in {"mt5", "mt4"}')
+    print(f"venue vocabulary: real-money gate: {got}/{REAL_MONEY_GATE_IN_RISK} in risk.py")
+    assert got == REAL_MONEY_GATE_IN_RISK, (
+        f"the real-money gate appears {got} times in risk.py, expected "
+        f"{REAL_MONEY_GATE_IN_RISK} (send_gate and circuit). A live send may no longer "
+        "be gated on live_accepted."
+    )
+
+
+def test_venue_set_form_sites() -> None:
+    _assert("venue set form", '{"mt5", "mt4"}', VENUE_SET_FORM_IN_SRC, "src")
+
+
+def test_legal_mode_set() -> None:
+    _assert("legal mode set", '{"paper", "mt5", "mt4"}', LEGAL_MODE_SET_IN_SRC, "src")
+
+
+# --- venue mode literals ---------------------------------------------------------------
+
+
+def test_mode_literal_mt5_sites() -> None:
+    _assert("mode literal mt5", '"mt5"', MODE_LITERAL_MT5_IN_SRC, "src")
+
+
+def test_mode_literal_mt4_sites() -> None:
+    _assert("mode literal mt4", '"mt4"', MODE_LITERAL_MT4_IN_SRC, "src")
+
+
+# --- config vocabulary -----------------------------------------------------------------
+
+
+def test_config_section_mt5() -> None:
+    _assert("config section [mt5]", "[mt5]", CONFIG_SECTION_MT5)
+
+
+def test_config_section_mt4() -> None:
+    _assert("config section [mt4]", "[mt4]", CONFIG_SECTION_MT4)
+
+
+def test_mt5_section_keys() -> None:
+    _assert("key terminal_path", "terminal_path", KEY_TERMINAL_PATH)
+    _assert("key timeout_ms", "timeout_ms", KEY_TIMEOUT_MS)
+
+
+# --- the MT5 binding -------------------------------------------------------------------
+
+
+def test_metatrader5_package_sites() -> None:
+    _assert("MetaTrader5", "MetaTrader5", METATRADER5)
+
+
+def test_mt5_extras() -> None:
+    _assert("extra mt5-win", "mt5-win", EXTRA_MT5_WIN)
+    _assert("package mt5-mac", "mt5-mac", PACKAGE_MT5_MAC)
+
+
+def test_doctor_binding_output() -> None:
+    _assert("doctor mt5 binding", "mt5 binding", DOCTOR_MT5_BINDING, "src")
+
+
+# --- the MT4 mailbox wire contract -----------------------------------------------------
+
+
+def test_mt4_mailbox_basenames_agree() -> None:
+    """One side renamed is a silent timeout, not an error."""
+    _assert("mt4 mailbox token", "mt4_risk_bot", MT4_MAILBOX)
+    expert = (ROOT / "mt4" / "Experts" / "Mt4RiskBot.mq4").read_text(encoding="utf-8")
+    adapter = (ROOT / "src" / "straightedge" / "broker" / "mt4_live.py").read_text(
+        encoding="utf-8"
+    )
+    for name in ("mt4_risk_bot.req", "mt4_risk_bot.res"):
+        assert name in expert, f"{name} is gone from the MQL4 Expert"
+        assert name in adapter, f"{name} is gone from the Python adapter"
+
+
+# --- the deliberate residual and the dead token ----------------------------------------
+
+
+def test_gateway_id_residual_is_deliberate() -> None:
+    """The Cloudflare AI Gateway is still named `mt5-risk-bot`. Renaming the code
+    reference without renaming the resource breaks the agent, so this literal stays
+    until an infra change request moves the resource."""
+    _assert("gateway id + migration note", "mt5-risk-bot", GATEWAY_ID_AND_MIGRATION_NOTE)
+
+
+def test_dead_module_token_stays_dead() -> None:
+    _assert("dead module token", "mt5_risk_bot", DEAD_MODULE_TOKEN)
+
+
+def test_total_pinned_vocabulary() -> None:
+    """One printed total, so the denominator is visible in every run."""
+    parts = {
+        "mode literal mt5 (src)": ('"mt5"', "src"),
+        "mode literal mt4 (src)": ('"mt4"', "src"),
+        "venue set form (src)": ('{"mt5", "mt4"}', "src"),
+        "legal mode set (src)": ('{"paper", "mt5", "mt4"}', "src"),
+        "config section [mt5]": ("[mt5]", ""),
+        "config section [mt4]": ("[mt4]", ""),
+        "terminal_path": ("terminal_path", ""),
+        "timeout_ms": ("timeout_ms", ""),
+        "MetaTrader5": ("MetaTrader5", ""),
+        "mt5-win": ("mt5-win", ""),
+        "mt5-mac": ("mt5-mac", ""),
+        "doctor mt5 binding (src)": ("mt5 binding", "src"),
+        "mt4 mailbox": ("mt4_risk_bot", ""),
+    }
+    total = 0
+    for label, (needle, under) in parts.items():
+        got, _ = _count(needle, under)
+        total += got
+        print(f"venue vocabulary: {label} = {got}")
+    expected = (
+        MODE_LITERAL_MT5_IN_SRC
+        + MODE_LITERAL_MT4_IN_SRC
+        + VENUE_SET_FORM_IN_SRC
+        + LEGAL_MODE_SET_IN_SRC
+        + CONFIG_SECTION_MT5
+        + CONFIG_SECTION_MT4
+        + KEY_TERMINAL_PATH
+        + KEY_TIMEOUT_MS
+        + METATRADER5
+        + EXTRA_MT5_WIN
+        + PACKAGE_MT5_MAC
+        + DOCTOR_MT5_BINDING
+        + MT4_MAILBOX
+    )
+    print(f"venue vocabulary: TOTAL pinned venue references = {total}/{expected}")
+    assert total == expected
