@@ -117,6 +117,11 @@ poll_seconds = 1            # Telegram getUpdates timeout (seconds). One loop ti
 comment = "straightedge"
 # journal.jsonl is the fill log (SSOT). journal.tg_offset is chmod 0600. Process umask 077.
 # journal.heartbeat is written each successful step_all. chmod 0600.
+# Line 1 is an ISO timestamp; then blocked=, mode=, stale_after_s= and friends.
+# Read it with `python -m straightedge watch`. Nothing else does.
+# The staleness threshold is DERIVED from poll_seconds above, the Telegram retry
+# ceiling and the venue timeout_ms below. There is deliberately no key for it:
+# an operator-set alarm window is a number nobody measured. `doctor` prints it.
 # journal.jsonl rotates to journal.jsonl.1 at 10 MiB.
 # journal.lock is exclusive (flock / msvcrt). A second run --loop on this path exits 2.
 journal_path = "journal.jsonl"

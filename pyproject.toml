@@ -71,6 +71,11 @@ exclude_lines = [
 # cannot trade; an instrument nobody exercises is where the next silent
 # degradation hides.
 "src/straightedge/history.py" = 98
+# 100% measured. Same argument, one step further out: this file is the only
+# thing that tells an operator the desk is alive AND armed, and it runs in a
+# SECOND process nobody else is watching. A branch in here that stops being
+# reached is a watchdog that has quietly stopped distinguishing two states.
+"src/straightedge/watchdog.py" = 99
 
 [tool.ruff]
 target-version = "py312"

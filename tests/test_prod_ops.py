@@ -32,12 +32,20 @@ def test_heartbeat_file_after_step_all_is_0600(tmp_path: Path) -> None:
     engine.step_all()
     assert dest.is_file()
     assert_owner_mode(dest)
-    datetime.fromisoformat(dest.read_text(encoding="utf-8").strip())
+    # LINE ONE is still the bare ISO timestamp 1.0.0 promised. The watchdog
+    # added `key=value` lines after it so the file can also say whether the desk
+    # would TRADE; the timestamp-only reading stays valid, which is why this
+    # assertion is on the first line rather than on the whole file.
+    text = dest.read_text(encoding="utf-8")
+    datetime.fromisoformat(text.splitlines()[0].strip())
+    assert "blocked=" in text
     dest.unlink()
     engine.halted = True
     engine.step_all()
     assert dest.is_file()
     assert_owner_mode(dest)
+    # A halted desk still ticks, and the heartbeat says WHY it will not trade.
+    assert "blocked=halted" in dest.read_text(encoding="utf-8")
     engine.stop()
 
 

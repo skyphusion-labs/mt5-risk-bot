@@ -98,6 +98,9 @@ The bot stays up.
 Two `run --loop` processes cannot share one journal.
 The second process prints `already running` and exits 2.
 Each successful tick writes `journal.heartbeat`.
+`python -m straightedge watch` reads it and says whether the desk is ticking AND
+armed. Three states, not two: a restart brings the desk back disarmed on
+purpose, and `ALIVE NOT TRADING` is how you hear about it.
 The live journal rotates to `journal.jsonl.1` at 10 MiB.
 `journal.jsonl` is the source of truth for fills the bot observed.
 
@@ -215,7 +218,7 @@ Send `/help` for the rest.
 `docs/CONTRACT.md` is the behaviour that tests enforce.
 `docs/VENUE.md` is the provider-agnostic execution API (`MarketOrder`, `WorkingOrder`).
 `docs/MT4.md` is the MT4 file-mailbox ICD.
-`docs/RUNBOOK.md` is paper, live, `/live on I-ACCEPT-RISK`, `/approve always`, `poll_seconds=1`, HALT, confirm-on-restart, lock, heartbeat, journal rotate, and launchd.
+`docs/RUNBOOK.md` is paper, live, `/live on I-ACCEPT-RISK`, `/approve always`, `poll_seconds=1`, HALT, confirm-on-restart, lock, heartbeat, `watch`, the unattended Windows scheduled task, journal rotate, and launchd.
 `docs/launchd.plist.example` is a user LaunchAgent.
 It uses paper `--loop`, `KeepAlive`, and `Umask` 63.
 Tokens stay `REPLACE_ME` in the example.

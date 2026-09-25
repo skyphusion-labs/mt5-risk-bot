@@ -77,8 +77,14 @@ LEGAL_MODE_SET_IN_SRC = 1
 #: `[mt4] mailbox_token` into a config FILE and assert the loader does not read it,
 #: because that token is environment-only and a TOML key for it would put a
 #: trade-placing secret in a file people commit.
-CONFIG_SECTION_MT5 = 2
-CONFIG_SECTION_MT4 = 9
+#:
+#: Both went up by one with the watchdog (issue #38), from ONE line of
+#: `docs/RUNBOOK.md` that names which key sets the staleness threshold: the
+#: threshold is derived from the venue's own per-command budget, so the operator
+#: reading the alarm has to be told which section that budget lives in. It is
+#: prose about the key, not a new config site.
+CONFIG_SECTION_MT5 = 3
+CONFIG_SECTION_MT4 = 10
 #: the `[mt5]` section keys, and `timeout_ms` which both venue sections share.
 #: timeout_ms went 18 -> 24 with the MT4 startup wait. Only ONE of those six was a new
 #: config site (a fixture in tests/test_mt4_startup_wait.py asserting that an absent
@@ -96,8 +102,21 @@ CONFIG_SECTION_MT4 = 9
 #: budget-ordering paragraph), one in docs/CONTRACT.md, one in the CHANGELOG, and one in
 #: tests/test_mt4_net_transport.py. If this number drops back toward 24, the most likely
 #: cause is the shim growing a budget of its own, which is the drift this pin catches.
+#:
+#: It went 30 -> 39 with the watchdog (issue #38), and the reason is the same
+#: shape as the shim's: the staleness threshold REUSES this key as the venue
+#: term of its budget rather than introducing an alarm window of its own, so
+#: every new site is that statement. Attributed by file, because a total nobody
+#: can break down is not a measurement: 2 in `src/straightedge/watchdog.py` (the
+#: derivation in the module docstring, and the one `getattr` that reads it), 3 in
+#: `tests/test_watchdog.py` (the pinned MT4 and MT5 budgets, and the docstring
+#: saying that moving this default has to move them), and 1 each in
+#: `docs/RUNBOOK.md`, `docs/CONTRACT.md`, `config.example.toml` and the
+#: `CHANGELOG.md`. If this number drops toward 30, the most likely cause is the
+#: watchdog growing a hardcoded alarm window, which is the drift this pin
+#: catches and the exact defect issue #68 measured on the price axis.
 KEY_TERMINAL_PATH = 6
-KEY_TIMEOUT_MS = 30
+KEY_TIMEOUT_MS = 39
 #: the official Windows pip package, named in the extra, the adapter import, the doctor
 #: advice and the mypy override.
 METATRADER5 = 21

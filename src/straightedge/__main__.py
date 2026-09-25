@@ -33,6 +33,12 @@ from straightedge.models import Bar
 from straightedge.strategy import TrendStrategy
 from straightedge.synthetic import generate_bars, generate_ranging
 from straightedge.telegram import TelegramClient, TgCommand, offset_path_for
+from straightedge.watchdog import (
+    heartbeat_path_for,
+    stale_after_seconds,
+    tick_budget_seconds,
+    watch,
+)
 
 
 def _cfg(args: argparse.Namespace) -> BotConfig:
@@ -90,6 +96,60 @@ def cmd_mt4_shim(args: argparse.Namespace) -> int:
         print(redact_text(str(exc)), file=sys.stderr)
         return 2
     return serve(server)
+
+
+def watchdog_line(cfg: BotConfig) -> str:
+    """The derived staleness threshold, printed where an operator will see it.
+
+    `doctor` is the one command the runbook makes mandatory, so the number the
+    watchdog will judge this desk by is stated there rather than left to be
+    discovered from a source file.
+    """
+    line = (
+        f"watchdog: {heartbeat_path_for(cfg.journal_path)}, stale after "
+        f"{stale_after_seconds(cfg)}s (tick budget {tick_budget_seconds(cfg)}s)"
+    )
+    if not cfg.telegram.enabled:
+        # The long poll is the biggest term in the budget, and with no token
+        # there is no long poll, so this number is not the one a running desk
+        # will get. `run` refuses to start without Telegram anyway; printing the
+        # bare figure would be a measurement of a config that cannot run.
+        line += " -- telegram unset, so the poll term is missing from this figure"
+    return line
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Is the desk ticking, and will it trade. See docs/RUNBOOK.md `Watchdog`.
+
+    A SEPARATE process on purpose. A desk cannot report its own death, and an
+    in-process staleness check is an instrument that fails with its subject;
+    this one shares nothing with the desk but the heartbeat file, and it never
+    takes the run lock (that could make a restarting desk exit `already
+    running`) and never calls `getUpdates` (that would steal the desk's
+    commands).
+    """
+    cfg = _cfg(args)
+    path = heartbeat_path_for(cfg.journal_path)
+    # SEND-ONLY, and the missing `offset_path=` is the load-bearing part: this
+    # client is never given a cursor because it must never poll for updates.
+    tg = TelegramClient.from_config(cfg.telegram)
+    if tg is None and args.loop:
+        print(
+            "telegram is the alarm channel: set TELEGRAM_BOT_TOKEN and "
+            "TELEGRAM_CHAT_ID, or run `watch` once and read the exit code",
+            file=sys.stderr,
+        )
+        return 2
+    if tg is None:
+        print("telegram disabled: this check prints and exits, it cannot alert")
+    print(watchdog_line(cfg))
+    return watch(
+        path,
+        cfg,
+        send=(tg.send if tg is not None else None),
+        loop=bool(args.loop),
+        ok_every=float(args.ok_every),
+    )
 
 
 def telegram_ping(cfg: BotConfig, *, transport=None) -> str:
@@ -219,6 +279,7 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("Windows default: %APPDATA%\\MetaQuotes\\Terminal\\Common\\Files")
     if cfg.mode == "mt4":
         print(mt4_transport_line(cfg))
+    print(watchdog_line(cfg))
     print("Homebrew has no MetaTrader cask; Python is enough for paper/backtest.")
     print("telegram token:", "SET" if os.environ.get("TELEGRAM_BOT_TOKEN") else "unset")
     print("telegram chat:", "SET" if os.environ.get("TELEGRAM_CHAT_ID") else "unset")
@@ -497,6 +558,26 @@ def build_parser() -> argparse.ArgumentParser:
         ),
     )
     s.set_defaults(func=cmd_mt4_shim)
+
+    w = sub.add_parser(
+        "watch",
+        help="is the desk ticking, and is it armed (reads journal.heartbeat)",
+    )
+    w.add_argument(
+        "--loop",
+        action="store_true",
+        help="keep watching and alert the locked chat on every state change",
+    )
+    w.add_argument(
+        "--ok-every",
+        type=float,
+        default=0.0,
+        help=(
+            "seconds between confirmations that the desk is healthy. 0 is off. "
+            "Set it and this watcher going silent becomes a signal too"
+        ),
+    )
+    w.set_defaults(func=cmd_watch)
 
     t = sub.add_parser("telegram", help="send a test message to the configured chat")
     t.add_argument("--message", default="straightedge ping")
