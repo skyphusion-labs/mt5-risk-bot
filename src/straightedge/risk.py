@@ -146,6 +146,12 @@ class UnclassifiedSymbol(ValueError):
 def currency_exposure(positions: list[Position], extra: tuple[str, Side] | None = None) -> dict[str, int]:
     """Net count of positions touching each currency. Buy EURUSD: +EUR, -USD.
 
+    One bucket per code and no other kind of bucket, so a crypto leg, a metal
+    leg and a fiat leg land in the same place: buy BTCUSD and the USD leg is
+    the same -1 that EURUSD and XAUUSD contribute. That is the issue #66
+    decision, and `currencies.py` carries the argument for it, including why a
+    separate crypto bucket was rejected.
+
     Raises UnclassifiedSymbol when a symbol cannot be resolved to a pair. An
     unclassified symbol is unknown exposure, so it must never be counted as
     zero and silently dropped from the limit.
