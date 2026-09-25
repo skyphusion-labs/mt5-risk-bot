@@ -57,6 +57,15 @@ Measured by Conrad on the live MT4 rig, 2026-09-24. `[risk] deviation_points` wa
 - Nothing here ran against the rig, which is SSH-keyed from the lead's laptop only. That the gate refuses the configuration measured rejecting is proven in the suite; that a gold send at 150 points then FILLS is COULD NOT MEASURE from here.
 
 
+### Two attached Experts can no longer both send the same order
+
+- `Process()` in `mt4/Experts/Mt4RiskBot.mq4` claimed a request by reading the shared name and deleting it AFTERWARDS, with `FILE_SHARE_READ|FILE_SHARE_WRITE` on the open and only a per-instance `gBusy` flag for exclusion. Two attached Experts both read the whole body and both called `OrderSend`: one requested trade, two positions, double the sized risk, and only one of them journalled, which corrupts every drawdown, equity-peak and exposure figure derived from the journal. The only mitigation was the sentence "attach to one chart", written four times across the docs. That is a documented rule with no mechanism, on the order-execution path.
+- The Expert now CLAIMS the request before reading it. It takes a terminal-wide mutex (`GlobalVariableSetOnCondition`, the one primitive MQL4 documents as atomic, and documents for exactly this use), renames `mt4_risk_bot.req` to `mt4_risk_bot.req.claim.<chart id>`, and reads the body from the claimed path. A loser finds the source gone, logs `claim lost`, and executes nothing. `FileMove` is the second barrier, never the guarantee: MQL4 does not document it as atomic.
+- `OnInit()` takes a second terminal-wide lock and returns `INIT_FAILED` when another instance holds it, so a duplicate attach refuses to start and says why in the Experts log instead of silently competing. The holder refreshes the lock on every timer tick and market tick and releases it in `OnDeinit`; a crashed instance frees it after `SingletonStaleSeconds` (default 15), and both locks are temporary globals that MT4 deletes at terminal shutdown, so neither can survive a crash on disk and block a legitimate restart.
+- An orphaned claim file is not the mailbox and blocks nothing; the same chart overwrites it on its next claim. The orphaned request is deliberately NOT replayed, because replaying a claimed order after a restart is the duplicate this change removes.
+- Scope stated plainly in `docs/MT4.md`: MQL4's atomic guarantee is per TERMINAL. Two MT4 terminals on one host share Common Files, and there the rename is the only barrier.
+- `mt4/README.md` and `docs/MT4.md` no longer ask the operator to remember "one chart". They state what the software enforces and what happens if two are attached.
+
 ## 1.5.0
 
 The last-line size guard can fire (issue #55). It was dead. It recomputed the cap `lots_for_risk` had already applied, from the same entry, stop, spec and equity, with a LOOSER tolerance (`1e-6` against the sizer `1e-9`), so every input that would have tripped it had already been turned into 0 lots and reported as `size_zero`. A 497,664-case sweep reached the line 114,840 times and tripped it zero times.
