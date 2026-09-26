@@ -13,6 +13,7 @@ from straightedge.desk import Desk
 from straightedge.history import HistoryReport, preflight
 from straightedge.indicators import adx, ema, last_closed
 from straightedge.indicators import atr as atr_bars
+from straightedge.inflight import InflightLedger, new_key, stamped_comment
 from straightedge.journal import Journal, redact_text
 from straightedge.llm import Advisor, advice_path_for
 from straightedge.models import (
@@ -95,6 +96,12 @@ class Engine:
                 self.advisor.load()
         else:
             self.advisor = Advisor(cfg.advice, persist_path=persist)
+        #: Sends that have LEFT but whose outcome is unknown, keyed by client
+        #: order id and durable across a process exit. See `inflight.py`; the
+        #: short version is that a timeout is not evidence the order did not
+        #: reach the broker, so the record is written BEFORE the send and cleared
+        #: only by an outcome.
+        self.inflight = InflightLedger(self.journal.path)
         self.desk = Desk(self, self.advisor)
         self._seen_pos: set[int] | None = None
         #: Filled by start(). None means the preflight has not run, which is
@@ -155,6 +162,12 @@ class Engine:
         # Duck-typed rather than added to the `Broker` Protocol for the same
         # reason `ensure_connected` is (see `step_all`): it is one venue's own
         # property, not something every venue must implement.
+        # BEFORE the venue is touched. An unresolved send is a question about
+        # money that is already at risk, and it has to be in the journal even if
+        # the connect below fails: a desk that cannot reach the terminal is
+        # exactly the state in which an operator most needs to know that an
+        # earlier order's outcome was never established.
+        self.report_unresolved_sends()
         opener = getattr(self.broker, "startup_connect", None)
         if callable(opener):
             opener()
@@ -505,7 +518,113 @@ class Engine:
             return False
         return True
 
-    def _open(self, signal: Signal, volume: float) -> OrderResult:
+    def _unresolved(self, client_id: str, symbol: str) -> OrderResult | None:
+        """Refuse a send whose key already has an open attempt against it.
+
+        This is the whole of the duplicate-order fix, and it is a REFUSAL rather
+        than a reconciliation on purpose. Reconciliation is attempted (below, and
+        at startup) and it can only ever produce two answers: a position that
+        matches, or silence. Silence is not proof: the Expert may be mid-ladder,
+        the fill may be seconds away, the position may have opened and closed. So
+        the desk refuses, says why, and leaves the judgement to a human with the
+        terminal in front of them. Refusing costs an order; sending twice costs
+        money and cannot be undone.
+        """
+        if not client_id:
+            return None
+        entry = self.inflight.get(client_id)
+        if entry is None:
+            return None
+        self._emit(
+            "send_refused_unresolved",
+            client_id=client_id,
+            symbol=symbol,
+            attempts=int(entry.get("attempts", 0)),
+            first_at=entry.get("at"),
+        )
+        return OrderResult.unknown(
+            f"unresolved send {client_id}: an earlier attempt for this order left "
+            "no verdict, so it may already be on the book. Reconcile in the "
+            "terminal (/positions), then /cancel and re-stage if nothing moved."
+        )
+
+    def _after_unresolved_send(
+        self, client_id: str, symbol: str, exc: BaseException
+    ) -> None:
+        """One book read after a send that answered nothing, and an honest report.
+
+        Not a resolution. A matching position is a POSITIVE and is reported as an
+        unmanaged position, because a send that never returned also never got its
+        stop confirmed. Nothing found is reported as UNRESOLVED, never as clean:
+        the desk's own budget expired while the Expert may still have been inside
+        `SendRetry`, so an empty book is the expected reading of the dangerous
+        case.
+        """
+        withdrawal = getattr(exc, "withdrawal", "") or "unknown"
+        found: list[int] = []
+        read_failed = ""
+        if isinstance(exc, Exception):
+            # The probe costs a full read budget, and it is skipped for the
+            # BaseException arms (KeyboardInterrupt, SystemExit): the operator is
+            # stopping the process and adding a five second book read to a Ctrl-C
+            # buys nothing. The LEDGER ENTRY and the journal record below are
+            # written either way, which is what makes the send unresolved rather
+            # than forgotten.
+            try:
+                for pos in self.broker.positions(magic=self.cfg.risk.magic):
+                    if (
+                        pos.symbol == symbol
+                        and client_id
+                        and client_id in (pos.comment or "")
+                    ):
+                        found.append(int(pos.ticket))
+            except (RuntimeError, OSError, ValueError) as probe:
+                read_failed = str(probe)
+        else:
+            read_failed = "not attempted: the process is shutting down"
+        self._emit(
+            "send_unresolved",
+            client_id=client_id,
+            symbol=symbol,
+            request=withdrawal,
+            matched=found,
+            book_read_failed=read_failed,
+            detail=str(exc),
+        )
+        for ticket in found:
+            # It carries our key, so it IS this send. It also never had its stop
+            # confirmed, which is what `unmanaged_position` means.
+            self._emit("unmanaged_position", symbol=symbol, ticket=ticket, retcode=0,
+                       comment=f"unresolved send {client_id}")
+
+    def report_unresolved_sends(self) -> int:
+        """Announce every still-open attempt. Called by `start()`.
+
+        It fires on EVERY start, not once, and that is deliberate: an unresolved
+        send is a standing money question, and a report that stops repeating is a
+        report that gets forgotten. An unparseable ledger is reported too, because
+        "no open sends" and "I could not read the file" render identically.
+        """
+        if not self.inflight.readable():
+            self._emit("inflight_unreadable", path=str(self.inflight.path))
+            return 0
+        entries = self.inflight.open_entries()
+        for key, entry in sorted(entries.items(), key=lambda kv: kv[1].get("at", 0)):
+            self._emit(
+                "send_unresolved",
+                client_id=key,
+                symbol=entry.get("symbol", ""),
+                side=entry.get("side", ""),
+                volume=entry.get("volume", 0),
+                attempts=int(entry.get("attempts", 0)),
+                request=entry.get("request", "unknown"),
+                detail="still unresolved at startup",
+            )
+        return len(entries)
+
+    def _open(
+        self, signal: Signal, volume: float, client_id: str | None = None
+    ) -> OrderResult:
         side = signal.side
         assert side is not None
         # Which deviation applied, and whether it came from the per-symbol map
@@ -513,20 +632,51 @@ class Engine:
         # cannot tell an operator whether their override was consulted, missed
         # on a decorated broker symbol, or never written.
         dev = self.cfg.risk.resolve_deviation(signal.symbol)
+        key = client_id or new_key()
+        refusal = self._unresolved(key, signal.symbol)
+        if refusal is not None:
+            return refusal
         order = MarketOrder(
             symbol=signal.symbol,
             side=side,
             volume=volume,
             sl=signal.sl,
             tp=signal.tp,
-            comment=self.cfg.comment[:31],
+            comment=stamped_comment(self.cfg.comment, key),
             magic=self.cfg.risk.magic,
             deviation=dev.points,
+            client_id=key,
         )
         check = self.broker.check_market(order)
         if not self._pretrade_ok(check, signal.symbol):
             return check
-        result = self.broker.market(order)
+        # The ledger entry is written BEFORE the send and is the only durable
+        # trace that exists until a reply comes back. A crash between these two
+        # statements leaves an open entry for an order that never left, which
+        # refuses one re-send; the other order of these two statements loses the
+        # record for an order that DID leave. Those costs are not symmetrical.
+        self.inflight.begin(
+            key,
+            symbol=signal.symbol,
+            side=side.value,
+            volume=volume,
+            sl=signal.sl,
+            tp=signal.tp,
+            op="market",
+        )
+        try:
+            result = self.broker.market(order)
+        except BaseException as exc:
+            # Deliberately not `except Exception`. Whatever stopped the send --
+            # a bridge timeout, an OSError, a KeyboardInterrupt from the
+            # operator -- the money question is identical and the entry must
+            # stay open. Re-raised unchanged; this clause adds a report, it does
+            # not swallow anything.
+            self._after_unresolved_send(key, signal.symbol, exc)
+            raise
+        # Every path from here has a VERDICT from the venue, including the
+        # rejections, so the ambiguity is gone and the entry is closed.
+        self.inflight.resolve(key, "ok" if result.ok else "rejected")
         if result.ok:
             self.risk.record_trade()
             ticket = int(result.order or result.deal or 0)
@@ -550,6 +700,7 @@ class Engine:
             atr=signal.atr,
             deviation=dev.points,
             deviation_source=dev.source,
+            client_id=key,
         )
         return result
 
@@ -772,14 +923,29 @@ class Engine:
             reason="reverse",
         )
 
-    def submit(self, signal: Signal, volume: float) -> OrderResult:
-        if signal.pending_kind:
-            return self._place_pending(signal, volume)
-        return self._open(signal, volume)
+    def submit(
+        self, signal: Signal, volume: float, client_id: str | None = None
+    ) -> OrderResult:
+        """Send one order. `client_id` is the idempotency key.
 
-    def _place_pending(self, signal: Signal, volume: float) -> OrderResult:
+        The desk passes the key it minted when it STAGED the order, so the key
+        survives a `/confirm` that timed out and a process restart in between; the
+        auto leg passes nothing and gets a fresh key per signal, because each bar
+        produces a genuinely new order rather than a retry of an old one.
+        """
+        if signal.pending_kind:
+            return self._place_pending(signal, volume, client_id)
+        return self._open(signal, volume, client_id)
+
+    def _place_pending(
+        self, signal: Signal, volume: float, client_id: str | None = None
+    ) -> OrderResult:
         side = signal.side
         assert side is not None
+        key = client_id or new_key()
+        refusal = self._unresolved(key, signal.symbol)
+        if refusal is not None:
+            return refusal
         order = WorkingOrder(
             symbol=signal.symbol,
             side=side,
@@ -788,13 +954,27 @@ class Engine:
             price=signal.entry,
             sl=signal.sl,
             tp=signal.tp,
-            comment=self.cfg.comment[:31],
+            comment=stamped_comment(self.cfg.comment, key),
             magic=self.cfg.risk.magic,
+            client_id=key,
         )
         check = self.broker.check_working(order)
         if not self._pretrade_ok(check, signal.symbol):
             return check
-        result = self.broker.working(order)
+        self.inflight.begin(
+            key,
+            symbol=signal.symbol,
+            side=side.value,
+            volume=volume,
+            price=signal.entry,
+            op="working",
+        )
+        try:
+            result = self.broker.working(order)
+        except BaseException as exc:
+            self._after_unresolved_send(key, signal.symbol, exc)
+            raise
+        self.inflight.resolve(key, "ok" if result.ok else "rejected")
         if result.ok:
             self.risk.record_trade()
         else:
@@ -811,6 +991,7 @@ class Engine:
             ok=result.ok,
             retcode=result.retcode,
             order=result.order,
+            client_id=key,
         )
         return result
 

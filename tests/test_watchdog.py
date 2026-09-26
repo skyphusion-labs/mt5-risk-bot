@@ -60,6 +60,43 @@ MT5_BUDGET = 324
 MT5_STALE = 648
 
 
+def test_the_alarm_derives_from_the_read_budget_and_not_the_send_budget() -> None:
+    """A decision, pinned so it cannot be switched quietly.
+
+    `venue_timeout_seconds` reads `mt4.timeout_ms`, the READ budget. The two
+    commands `step_all` spends before it can write a heartbeat (`ensure_connected`
+    and `account`) are both reads; a send lives in the part of a tick no config
+    value bounds, which `UNBOUNDED_TAIL_ALLOWANCE` already doubles the budget for.
+    Deriving the alarm from `mt4.send_timeout_ms` instead would widen the staleness
+    threshold an operator was promised in `doctor` and in the runbook, for a cost
+    the allowance already covers.
+
+    The guard is that the budget must NOT move when only the send budget moves.
+    """
+    cfg = BotConfig()
+    cfg.mode = "mt4"
+    # `TelegramConfig.enabled` is derived from token and chat_id, both empty on a
+    # default BotConfig, so the poll ceiling is already zero and the only term
+    # left is the venue budget. With Telegram on, a 204s poll term would swamp a
+    # few seconds of venue budget and this guard could not go red.
+    assert not cfg.telegram.enabled
+    assert cfg.mt4.send_timeout_ms != cfg.mt4.timeout_ms, (
+        "this test cannot tell the two budgets apart, so it proves nothing"
+    )
+    before = watchdog.tick_budget_seconds(cfg)
+    cfg.mt4.send_timeout_ms = cfg.mt4.send_timeout_ms * 4
+    assert watchdog.tick_budget_seconds(cfg) == before, (
+        "the alarm latency moved when only the SEND budget moved; the watchdog is "
+        "now deriving from the wrong number and the promised staleness window in "
+        "doctor and the runbook is wrong"
+    )
+    cfg.mt4.timeout_ms = cfg.mt4.timeout_ms * 2
+    assert watchdog.tick_budget_seconds(cfg) > before, (
+        "the alarm latency did NOT move when the READ budget moved, so this guard "
+        "cannot go red"
+    )
+
+
 def _cfg(tmp_path: Path, *, mode: str = "paper", poll: int = 1, telegram: bool = True) -> BotConfig:
     cfg = BotConfig()
     cfg.mode = mode

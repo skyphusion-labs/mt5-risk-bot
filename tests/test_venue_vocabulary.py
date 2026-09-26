@@ -84,7 +84,11 @@ LEGAL_MODE_SET_IN_SRC = 1
 #: reading the alarm has to be told which section that budget lives in. It is
 #: prose about the key, not a new config site.
 CONFIG_SECTION_MT5 = 3
-CONFIG_SECTION_MT4 = 10
+#: 11 after the read/send budget split (#37). The new site is
+#: `docs/RUNBOOK.md`, which names `[mt4] send_timeout_ms` beside
+#: `[mt4] timeout_ms` to say which of the two the watchdog derives its alarm from.
+#: Prose about the pair, not a new config section.
+CONFIG_SECTION_MT4 = 11
 #: the `[mt5]` section keys, and `timeout_ms` which both venue sections share.
 #: timeout_ms went 18 -> 24 with the MT4 startup wait. Only ONE of those six was a new
 #: config site (a fixture in tests/test_mt4_startup_wait.py asserting that an absent
@@ -116,13 +120,40 @@ CONFIG_SECTION_MT4 = 10
 #: watchdog growing a hardcoded alarm window, which is the drift this pin
 #: catches and the exact defect issue #68 measured on the price axis.
 KEY_TERMINAL_PATH = 6
-#: 39 before the claim-open retry landed, now 41. Neither new site is a live
+#: 39 before the claim-open retry landed, then 41. Neither of those two was a live
 #: config read: the 40th is a COMMENT in `mt4/Experts/Mt4RiskBot.mq4` citing
 #: `mt4.timeout_ms` to show the arithmetic that bounds the retry against the
 #: adapter budget, and the 41st is the same citation in
-#: `tests/test_mt4_claim_open_retry.py`, which pins that arithmetic. Pinned up
-#: in the same commit that added them, which is what this tripwire asks for.
-KEY_TIMEOUT_MS = 41
+#: `tests/test_mt4_claim_open_retry.py`, which pins that arithmetic.
+#:
+#: 122 after the read/send budget split (#37). The jump is large and it is real, and
+#: it is largely the SUBSTRING trap this tripwire is built out of: the new key is
+#: `send_timeout_ms`, so every one of its sites also matches `timeout_ms`, and a
+#: line that names both increments this twice. Attribution by file, counted in the
+#: same commit that added them:
+#:
+#:   23  src/straightedge/config.py            both Mt4Config fields and their
+#:                                            reasoning, the loader, and the two
+#:                                            new `validate()` refusals
+#:   21  tests/test_send_budget.py             the new gate over the derivation
+#:   11  tests/test_watchdog.py                unchanged count plus the pin that the
+#:                                            alarm derives from the READ budget
+#:    7  docs/RUNBOOK.md, docs/MT4.md, config.example.toml, CHANGELOG.md (each)
+#:    6  config.handover.toml
+#:    5  docs/TRANSPORT.md
+#:    4  src/straightedge/watchdog.py, broker/__init__.py, __main__.py (each)
+#:    3  tests/test_mt4_net_transport.py, tests/test_mt4_adapter.py,
+#:       docs/CONTRACT.md (each)
+#:    2  src/straightedge/broker/mt5_live.py
+#:    1  tests/test_mt4_startup_wait.py, tests/test_mt4_claim_open_retry.py,
+#:       src/straightedge/constants.py, src/straightedge/broker/mt4_live.py,
+#:       mt4/Experts/Mt4RiskBot.mq4 (each)
+#:
+#: There are exactly TWO live config reads across all of it, both in
+#: `config.py`'s loader: `timeout_ms` and `send_timeout_ms`. Everything else is a
+#: field declaration, a derivation, a test, or prose explaining why the two numbers
+#: are not one number.
+KEY_TIMEOUT_MS = 122
 #: the official Windows pip package, named in the extra, the adapter import, the doctor
 #: advice and the mypy override.
 METATRADER5 = 21
@@ -136,17 +167,23 @@ DOCTOR_MT5_BINDING = 3
 #: 20 before the mailbox claim landed, plus 9: the Expert's claim-by-rename path and
 #: refusal log, the "One Expert, enforced" sections of docs/MT4.md and mt4/README.md,
 #: and the CHANGELOG entry that describes the claim.
-#: 29 before the claim-open retry landed, now 31, and neither addition is a new
-#: mailbox site. The 30th is the measured EA log line quoted in
-#: `tests/test_mt4_claim_open_retry.py`, naming
-#: `mt4_risk_bot.req.claim.<ChartID>` as the path that was claimed and dropped.
-#: The 31st names `mt4_risk_bot.res.tmp` in the same file, the reply staging
-#: file whose FileOpen was failing silently. Both are evidence in docstrings.
-#: The 32nd is the `-Base` default in `mt4/tools/measure-mailbox.ps1`, the
-#: measurement instrument. It is parameterised precisely so the basename
-#: appears ONCE there rather than at every filename it builds, which is what
-#: this tripwire wants: one site to rename, not eight.
-MT4_MAILBOX = 32
+#: 29 before the claim-open retry landed, then 31, then 32, and none of those three
+#: is a new mailbox site: the 30th is the measured EA log line in
+#: `tests/test_mt4_claim_open_retry.py` naming `mt4_risk_bot.req.claim.<ChartID>`,
+#: the 31st names `mt4_risk_bot.res.tmp` in the same file (the reply staging file
+#: whose FileOpen was failing silently), and the 32nd is the `-Base` default in
+#: `mt4/tools/measure-mailbox.ps1`, parameterised so the basename appears ONCE
+#: there rather than at every filename it builds.
+#:
+#: 36 after the stale-request fence (#37). Four more, and one of them IS a new file
+#: in the mailbox directory:
+#:   2  tests/test_mt4_stale_request_fence.py, asserting the Expert stamps
+#:      `mt4_risk_bot.req` BEFORE it renames it to the claim path
+#:   2  mt4/Experts/Mt4RiskBot.mq4, where the fence reads that stamp and where
+#:      `CalibrateFileTime` writes and deletes its own `mt4_risk_bot.timeprobe`
+#: The probe is a real new mailbox file. It is created and removed inside the one
+#: function that needs it, at OnInit and never again.
+MT4_MAILBOX = 36
 #: the LIVE Cloudflare AI Gateway id. Deliberately still the old string; see the header.
 #: 13 gateway-resource references plus 2 in the RUNBOOK LaunchAgent migration note.
 GATEWAY_ID_AND_MIGRATION_NOTE = 15

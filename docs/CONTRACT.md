@@ -48,7 +48,8 @@ Auto EMA trading is off until `/auto on`.
 | Secrets | Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `AI_PROVIDER`, `ADVICE_URL`, `ADVICE_TOKEN`, `MT4_MAILBOX_TOKEN`. |
 | MT4 transport | The MT4 venue has two transports and one ICD (`docs/MT4.md`, decision in `docs/TRANSPORT.md`). Unset `mt4.mailbox_url`: the desk reads MT4's Common Files mailbox itself and must run on the MetaTrader 4 host. Set: the desk speaks HTTPS to `straightedge mt4-shim` on that host and can run anywhere, while the Expert is byte-for-byte the same file and issues no `WebRequest`. `mailbox_url` is checked BEFORE `files_dir`, because `files_dir` auto-resolves on Windows and a url that lost the tie would leave a remote-configured desk reading a local mailbox. The desk is still the initiator either way, so every risk gate stays in the desk's process and on the desk's clock. |
 | MT4 transport auth | `MT4_MAILBOX_TOKEN` is required on BOTH ends, is environment-only (there is no TOML key), and must be at least 32 characters. There is no unauthenticated mode and no flag that creates one. The shim checks it BEFORE the path, the method and the body, answers every unauthenticated request with `401` whatever it asked for, and writes nothing to the mailbox when it refuses. `http.server` has no TLS, so the shim binds `127.0.0.1` and refuses a routable address without `--i-understand-plaintext`; the supported exposure is a Cloudflare Tunnel, which opens no inbound port. |
-| MT4 transport failure | The partition `Mt4Broker.startup_connect()` depends on survives the network. The shim answers `504` when the Expert did not reply and `503` when the mailbox is unwritable, and the desk turns both back into `BridgeTimeout`, which is retried at startup. Everything else (`401`, `404`, `411`, `413`, `400`, `500`, a mismatched reply id) is a live peer stating a diagnosis, is raised as `RuntimeError`, and is NEVER retried. The shim's mailbox budget is `mt4.timeout_ms` and the desk allows that plus 2 seconds, so the shim gives up first and the desk learns which end did. A network partition means the desk cannot flatten; what protects a position in that window is the broker-side stop the Expert attaches on every entry, not the desk. |
+| MT4 transport failure | The partition `Mt4Broker.startup_connect()` depends on survives the network. The shim answers `504` when the Expert did not reply and `503` when the mailbox is unwritable, and the desk turns both back into `BridgeTimeout`, which is retried at startup. Everything else (`401`, `404`, `411`, `413`, `400`, `500`, a mismatched reply id) is a live peer stating a diagnosis, is raised as `RuntimeError`, and is NEVER retried. A read gets `mt4.timeout_ms` and a send gets `mt4.send_timeout_ms`; the desk allows itself 2 seconds more than it tells the far end, so the far end gives up first and the desk learns which. A network partition means the desk cannot flatten; what protects a position in that window is the broker-side stop the Expert attaches on every entry, not the desk. |
+| MT4 send timeout | A send that produced no reply is UNRESOLVED, never "failed": the order may be filled, in flight, or never sent. The desk withdraws the request if it still can, states which of `withdrawn` / `claimed` / `locked` it achieved, reads the book once, reports what it matched, and refuses to transmit that order again. It does NOT conclude from an empty book that nothing happened. |
 | Agent billing | `AI_PROVIDER=computer` posts to the agent. The agent bills through the gateway (`CF_AIG_TOKEN`), not a provider key. |
 | Redact | Journal writes, `loop_error` stderr, and Telegram `send` redact BotFather tokens. Named secret keys in the journal become `[REDACTED]`. |
 | File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.equity.json`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600 on Unix. The bot sets umask 077. Windows has no POSIX mode bits; the lock is still exclusive. |
@@ -137,6 +138,35 @@ Remainder keeps its SL.
 Halt, daily-loss, and drawdown still refuse.
 VOL must snap to lot step.
 Remainder must be 0 or at least `volume_min`.
+
+### One staged order, at most one transmission
+
+A staged order carries a client order id, minted once at stage time, kept on the
+`confirm_stage` journal record and therefore unchanged across a `/confirm` that
+timed out and across a desk restart in between.
+
+A record of the attempt is written to `<journal stem>.inflight.json` BEFORE the
+send and is cleared only by a VERDICT: success, or a venue rejection. A send whose
+key already has an open record is REFUSED and nothing is transmitted.
+
+A timeout is not evidence the order did not reach the broker, and an empty book is
+not evidence either: the desk's budget can expire while the Expert is still inside
+its retry ladder, so the position the send is about to create is not visible yet.
+The desk therefore refuses rather than reconciling itself to a conclusion. The
+reply says nothing was transmitted and names the key; `/cancel` and re-stage is the
+operator's move, after checking the terminal.
+
+A CLOSE is not guarded this way and does not need to be: the ticket is already the
+key at the venue, so closing #N twice fails the second time. An OPEN has no
+equivalent, because nothing on the MT4 side can tell two identical `OrderSend`
+calls apart.
+
+Journal events: `send_unresolved` (a send answered nothing; carries the key, what
+the mailbox did with the request, and any position whose comment matched),
+`send_refused_unresolved` (a second send for the same key was refused),
+`confirm_unresolved` (the chat path's record of the same), `inflight_unreadable`
+(the ledger file exists and could not be parsed, which must never read as "no open
+sends"). `Engine.start()` re-announces every open record on EVERY start.
 
 ## Advice
 

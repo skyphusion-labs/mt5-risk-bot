@@ -44,6 +44,7 @@ from pathlib import Path
 from typing import Any, Callable, cast
 
 from straightedge.broker.mt4_live import BridgeTimeout, FileBridge, decode, encode
+from straightedge.constants import MAILBOX_SEND_OPS
 
 #: The one path the shim serves. One path, one method: every other request is a
 #: 404 AFTER the auth check, so an unauthenticated caller cannot map the surface.
@@ -152,6 +153,7 @@ class HttpBridge:
         token: str,
         *,
         timeout_sec: float = 5.0,
+        send_timeout_sec: float | None = None,
         opener: Callable[..., Any] | None = None,
     ) -> None:
         if not url:
@@ -164,9 +166,22 @@ class HttpBridge:
         self._token = require_token(token, where="mt4.mailbox_url is set but")
         #: The shim should give up first: see `NET_GRACE_SEC`.
         self.timeout = float(timeout_sec) + NET_GRACE_SEC
+        #: Same grace on the send budget, for the same reason and with more at
+        #: stake: the end that gives up first is the end that abandons a request
+        #: the Expert may still be executing, and on a send that is the
+        #: ambiguous-money case rather than a lost tick.
+        self.send_timeout = (
+            self.timeout
+            if send_timeout_sec is None
+            else float(send_timeout_sec) + NET_GRACE_SEC
+        )
         self._n = 0
         self._lock = threading.Lock()
         self._opener = opener if opener is not None else urllib.request.urlopen
+
+    def budget_for(self, op: str) -> float:
+        """The HTTP timeout this op gets. Same partition as `FileBridge`."""
+        return self.send_timeout if op in MAILBOX_SEND_OPS else self.timeout
 
     def call(self, op: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
@@ -174,7 +189,12 @@ class HttpBridge:
             return self._call(op, payload, self._n)
 
     def _call(self, op: str, payload: dict[str, Any], req_id: int) -> dict[str, Any]:
-        body = encode(op, payload, req_id).encode("ascii", "replace")
+        budget = self.budget_for(op)
+        # The ttl the SHIM reads to size its own mailbox wait, and the Expert
+        # reads to fence the request, is the desk's budget MINUS the network
+        # grace: the desk allows itself the extra, the far end must not.
+        ttl_ms = int(max(0.0, budget - NET_GRACE_SEC) * 1000)
+        body = encode(op, payload, req_id, ttl_ms=ttl_ms).encode("ascii", "replace")
         request = urllib.request.Request(
             self.url,
             data=body,
@@ -186,7 +206,7 @@ class HttpBridge:
             },
         )
         try:
-            with self._opener(request, timeout=self.timeout) as resp:
+            with self._opener(request, timeout=budget) as resp:
                 raw = resp.read(MAX_REPLY_BYTES + 1)
         # HTTPError FIRST, and this ordering is the whole point. HTTPError
         # subclasses URLError subclasses OSError, and `startup_connect()` retries
@@ -195,17 +215,27 @@ class HttpBridge:
         # is the same defect class as the boot bug #74 fixed. Driven red in
         # `tests/test_mt4_net_transport.py`.
         except urllib.error.HTTPError as exc:
-            raise self._from_status(exc) from exc
+            raise self._from_status(exc, op) from exc
         # A read that timed out after the headers arrived surfaces as
         # TimeoutError, which is an OSError but is NOT a URLError.
         except TimeoutError as exc:
             raise BridgeTimeout(
-                f"mt4 net bridge timeout after {self.timeout:.1f}s: {exc}"
+                f"mt4 net bridge timeout after {budget:.1f}s op={op}: {exc}",
+                op=op,
+                # The request crossed the network and this end never had the
+                # file, so nothing here can take it back. `claimed` is the
+                # honest word for that, and it is the unsafe reading on
+                # purpose.
+                withdrawal="claimed",
+                req_id=req_id,
             ) from exc
         except urllib.error.URLError as exc:
             if isinstance(exc.reason, TimeoutError):
                 raise BridgeTimeout(
-                    f"mt4 net bridge timeout after {self.timeout:.1f}s: {exc.reason}"
+                    f"mt4 net bridge timeout after {budget:.1f}s op={op}: {exc.reason}",
+                    op=op,
+                    withdrawal="claimed",
+                    req_id=req_id,
                 ) from exc
             # Connection refused, DNS failure, host down. URLError IS an
             # OSError, and at startup that is ordinary: the shim may not be up
@@ -228,13 +258,21 @@ class HttpBridge:
             )
         return data
 
-    def _from_status(self, exc: urllib.error.HTTPError) -> Exception:
+    def _from_status(self, exc: urllib.error.HTTPError, op: str = "") -> Exception:
         detail = _short(exc)
         if exc.code in RETRYABLE_STATUSES:
             # The shim answered, and what it said is "the Expert has not replied
             # yet" or "the mailbox is not writable yet". Both are the cold-boot
             # shape, so the type is the one `startup_connect()` retries.
-            return BridgeTimeout(f"mt4 net bridge: {exc.code} from the shim ({detail})")
+            return BridgeTimeout(
+                f"mt4 net bridge: {exc.code} from the shim ({detail})",
+                op=op,
+                # A 504 IS the shim reporting a mailbox timeout, and the
+                # shim's own FileBridge has already withdrawn the request
+                # on that path. It does not say WHICH outcome it got,
+                # though, so this end must not claim the safe one.
+                withdrawal="claimed",
+            )
         return RuntimeError(f"mt4 net bridge: HTTP {exc.code} from {self.url} ({detail})")
 
 
@@ -444,6 +482,7 @@ def make_shim(
     host: str = "127.0.0.1",
     port: int = DEFAULT_SHIM_PORT,
     timeout_sec: float = 5.0,
+    send_timeout_sec: float | None = None,
     allow_plaintext_exposure: bool = False,
     log: Callable[[str], None] | None = None,
 ) -> socketserver.BaseServer:
@@ -477,14 +516,21 @@ def make_shim(
             "listener on 127.0.0.1, or pass --i-understand-plaintext if you are "
             "terminating TLS in front of it yourself."
         )
-    bridge = FileBridge(path, timeout_sec=timeout_sec)
+    # `FileBridge.exchange` takes the budget from the request's own `ttl_ms`,
+    # clamped to this ceiling. The shim must not shorten a send: the end that
+    # gives up first is the end that abandons a request the Expert is still
+    # executing.
+    bridge = FileBridge(
+        path, timeout_sec=timeout_sec, send_timeout_sec=send_timeout_sec
+    )
     server = _ShimServer((host, port), bridge, checked, sink)
     # `server_address` is typed loosely enough to include a bytes AF_UNIX path;
     # this is an AF_INET listener, so name the two fields we actually bound.
     bound = cast("tuple[str, int]", server.server_address)
     sink(
         f"mt4-shim: serving {CALL_PATH} on {bound[0]}:{bound[1]}, "
-        f"mailbox {path}, mailbox timeout {timeout_sec:.1f}s"
+        f"mailbox {path}, mailbox timeout {timeout_sec:.1f}s read / "
+        f"{bridge.send_timeout:.1f}s send ceiling"
     )
     if not _is_loopback(host):
         sink(

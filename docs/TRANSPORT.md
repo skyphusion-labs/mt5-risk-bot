@@ -233,13 +233,14 @@ drives that case red on purpose.
 | reply `id` does not match | `200` | `RuntimeError` | **no** | surfaces at once |
 | EA replied `ok=0` | `200` | nothing; `ok=0` reaches the adapter | **no**, by design | the refusal |
 
-**The shim times out before the desk does, on purpose.** The shim uses
-`mt4.timeout_ms` for its own mailbox wait and `HttpBridge` allows that plus a
-2 second network grace, so the desk normally receives a `504` that says which end
-gave up rather than a bare socket timeout that says nothing. A client timeout
-that fired first would abandon a request the EA may still be executing, and the
-orphan rule in `docs/MT4.md` (a claimed request is never replayed) means the reply
-would simply be lost.
+**The shim times out before the desk does, on purpose.** `HttpBridge` allows the
+op's own budget plus `NET_GRACE_SEC` (2 seconds), so the desk normally receives a
+`504` that says which end gave up rather than a bare socket timeout that says
+nothing. A client timeout that fired first would abandon a request the EA may
+still be executing, and the orphan rule in `docs/MT4.md` (a claimed request is
+never replayed) means the reply would simply be lost. Which budget an op gets, and
+how the shim learns it from the request itself, is the next section: the
+grace is the DESK's slack and is never the far end's.
 
 **On the EA side, nothing changed.** Claim-by-rename, the terminal-wide singleton
 lock, the refusal of a second attach, the two-step entry with `survivor_ticket`,
@@ -249,6 +250,85 @@ is the same file.
 **Ordering is unchanged and the desk is still the one that waits.** `startup_connect()`
 now also covers "the shim is not up yet", which is the same shape as "the terminal
 is not up yet" and needs no new budget.
+
+## Budgets, and the `ttl_ms` that crosses the wire
+
+MT4 has two per-op budgets, and the split is a money decision rather than a tuning
+one. A READ that times out is retried by the next step. A SEND that times out is
+AMBIGUOUS: the order may be filled, in flight, or never sent, and the desk cannot
+tell. So `mt4.timeout_ms` (default 5000) covers the ops that cannot move the book
+and `mt4.send_timeout_ms` (default 7060) covers the ops that can.
+`constants.MAILBOX_SEND_OPS` is the single place that partition is written down:
+`market`, `working`, `modify_position`, `modify_working`, `cancel`, `close`,
+`close_by`. `check_market` and `check_working` are READS, because the Expert
+returns before `SendRetry` when `send` is false, so a stale one cannot move money.
+
+The send budget is DERIVED and not chosen: `constants.derive_send_timeout_ms()`
+sums a 1000 ms measured transport ceiling, the Expert's 950 ms worst-case `Sleep`
+total, 360 ms of claim-open retries across two ladders (the claim read and the
+reply write are both on the same `tries` knob), and 19 broker round trips at a
+250 ms allowance. The desk has to outlast the Expert or it writes off a request the Expert
+is still executing. That 250 ms is the one un-measured term; `docs/RUNBOOK.md`
+("Unresolved sends") carries the table, the validation floor, and the measurement
+it is still waiting for.
+
+### The fence is a DURATION, never a deadline
+
+`encode()` puts `ttl_ms` last on every request body. `HttpBridge._call` picks the
+op's budget with `budget_for()` and states `ttl_ms` as that budget MINUS
+`NET_GRACE_SEC`: the desk allows itself the extra 2 seconds and the far end must
+not have them, or the far end becomes the one that outlasts the desk.
+
+A duration rather than a deadline, because of this document's own premise. The desk
+and the terminal are on different hosts, so a wall-clock deadline would be judged
+against a clock that never agreed with the one that set it. The failure is not
+symmetrical. When the terminal's clock runs BEHIND, every stale request looks
+FRESH, and that is the direction that fires a trade nobody is waiting for any
+more. A duration is measured entirely on the side that reads it: the Expert ages
+the request file against the filesystem that HOLDS it, using an offset it measures
+at `OnInit` by writing its own probe file, so `TimeLocal()` versus
+`FILE_MODIFY_DATE` is measured rather than guessed (`CalibrateFileTime` and
+`RequestAgeSec` in `mt4/Experts/Mt4RiskBot.mq4`).
+
+A request the Expert refuses as stale comes back as
+`ok=0 retcode=4109 error=request_expired survivor_ticket=0 age_sec=<n>`, which is
+the "EA replied `ok=0`" row of the failure table above: a live peer stating a diagnosis,
+reported at once and never retried.
+
+### The shim sizes its mailbox wait FROM the request, clamped
+
+`FileBridge.exchange` is what the shim serves a remote desk with, and it takes its
+budget from the body's own `ttl_ms` rather than from its own configuration, clamped
+to `max(self.timeout, self.send_timeout)`. A body that declares no ttl falls back
+to the read budget.
+
+Both halves earn their place. The desk decided how long its send is allowed to
+take, and a shim that gave up at its own read budget would abandon a request the
+Expert was still executing: that is the exact defect the split budget removes, put
+back one hop away. The clamp is there because `ttl_ms` arrives over the network and
+the shim is single-threaded by contract (one shim, one mailbox, one terminal), so
+an unbounded value from the wire would hold the mailbox against everybody else.
+
+The shim states both numbers at startup, so which end will give up first is
+readable without inspecting a config:
+
+```
+mt4-shim: serving /mt4/call on 127.0.0.1:8730, mailbox <FILE_COMMON>, mailbox timeout <read>s read / <send>s send ceiling
+```
+
+On the shipped defaults that line reads `5.0s read / 6.9s send ceiling`.
+
+**This is where the split first got it wrong, so the guard is named.** The first
+version of `cmd_mt4_shim` passed only `mt4.timeout_ms` to `make_shim`. The clamp
+then shortened a 7060 ms send ttl to 5000 ms and the shim gave up about 1.9 seconds
+BEFORE the desk's send budget expired: the exact failure the split exists to
+remove, reintroduced one hop away, and reachable only on the network transport,
+which is the live topology. Measured rather than reasoned about, by driving the
+shipped CLI and timing what the mailbox waited: 5.01 s against a 6.88 s desk
+budget. `cmd_mt4_shim` now passes both, and
+`tests/test_mt4_net_transport.py::TestFileBridgeExchange::test_the_shim_cli_gives_the_mailbox_the_desks_send_ceiling`
+inspects the arguments the CLI actually builds the bridge with, because nothing
+else in the suite passes `send_timeout_sec` and without it the gap could not go red.
 
 ## Measured numbers
 
@@ -264,8 +344,10 @@ The 40 `rates` are the history preflight retrying a cold series up to 10 times p
 symbol; a warm terminal costs 4. So the steady-state cost of moving the transport
 off-box is **8 network round trips per step**, and the file leg inside the shim is
 unchanged at up to 100 ms of EA timer latency per op. At a 50 ms RTT that is about
-0.8 s per step against about 0.4 s today, against an `H1` strategy. The budget is
-`mt4.timeout_ms` per op and it does not need to change.
+0.8 s per step against about 0.4 s today, against an `H1` strategy. Every op in
+that count is a READ, so the budget for all of them is `mt4.timeout_ms` and it does
+not need to change; the ops that got their own budget do not appear in a
+steady-state step at all.
 
 Measured against a REAL `straightedge mt4-shim` subprocess over loopback, with the
 stand-in Expert from `tests/mt4_transcripts.py` polling the mailbox every 20 ms:

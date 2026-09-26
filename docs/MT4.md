@@ -146,10 +146,35 @@ side=buy
 volume=0.1
 sl=1.09000
 tp=1.12000
-comment=straightedge
+comment=straightedge 3f1c8a02
 magic=20260909
 deviation=20
+client_id=3f1c8a02
+ttl_ms=7060
 ```
+
+`id` is first and `op` is second, always. `ttl_ms` is last. Every other field is
+optional and absent rather than empty when it does not apply.
+
+`client_id` is the desk's idempotency key for this order, minted once when the
+order was STAGED and unchanged across a retry or a process restart. It is also
+prefixed into `comment`, which is how it reaches the BOOK: MT4 returns
+`OrderComment()` on a position, so a key visible there attributes that position to
+one send. That attribution is corroboration and NOT the dedupe mechanism -- brokers
+append to and overwrite `OrderComment`, so a key MISSING from the book proves
+nothing. The guarantee is the desk-side ledger (see below).
+
+`ttl_ms` is how long this request stays executable, counted from when it was
+written. It is a DURATION and not a deadline, and that is load-bearing: with
+`mt4.mailbox_url` the desk and the terminal are on different hosts, so a
+wall-clock deadline would have to survive clock skew between them, and skew in the
+wrong direction makes a stale request look FRESH. A duration has no clock domain;
+the Expert measures the age on the filesystem that holds the file, against its own
+clock, after calibrating how that clock relates to a file timestamp.
+
+An Expert that predates `ttl_ms` ignores it and behaves exactly as before. That is
+why the desk ALSO withdraws an abandoned request itself; neither layer is trusted
+alone.
 
 Success reply:
 
@@ -205,6 +230,59 @@ it is read and the retry helpers read it first. Recompile and reattach
 | `close_by` | `OrderCloseBy`. Hedge accounts only. |
 
 MT4 has no `OrderCheck`. `check_*` is the Expert validating volume and stops.
+
+`ping` also declares the Expert to the desk:
+
+```
+id=1
+ok=1
+time=1790389600
+ladder_ms=950
+broker_calls=19
+fence=1
+```
+
+`ladder_ms` is the worst-case total of the Expert's own `Sleep` inside one
+`Process()` call, `broker_calls` is how many broker round trips it can make in
+that call, and `fence` says whether it can measure a request's age. The desk
+checks its send budget against `ladder_ms` on every connect and warns loudly when
+it does not clear; `doctor --connect` prints the verdict and exits non-zero on
+`TOO SHORT`. These are declared rather than documented because the ladder bounds
+reach the Expert as `input` parameters, so the attached Expert can differ from the
+one in this repo with nothing saying so. A number in a runbook cannot go red.
+
+Absent means an Expert too old to answer, which is reported as `NOT MEASURED` and
+never as a pass.
+
+### Ops that can move money get a different budget
+
+| Class | Ops | Budget |
+| --- | --- | --- |
+| Read | `ping`, `account`, `symbol`, `tick`, `select`, `rates`, `positions`, `orders`, `check_market`, `check_working` | `mt4.timeout_ms`, default 5000 |
+| Send | `market`, `working`, `modify_position`, `modify_working`, `cancel`, `close`, `close_by` | `mt4.send_timeout_ms`, default 7060 |
+
+`check_market` and `check_working` are READS: the Expert returns before
+`SendRetry` when `send` is false, so they cannot change the book. The partition
+lives in `constants.MAILBOX_SEND_OPS` and in the Expert's `IsSendOp()`, and
+`tests/test_mt4_stale_request_fence.py` asserts the two lists are identical,
+because that is the only place the two languages are ever compared.
+
+### request_expired
+
+```
+id=1
+ok=0
+retcode=4109
+error=request_expired
+survivor_ticket=0
+age_sec=412
+```
+
+The Expert found the request older than its own `ttl_ms` and refused it without
+reaching `OrderSend`. `survivor_ticket=0` here is a real measurement rather than a
+default: the refusal happens before anything touches the book, so the Expert
+genuinely knows nothing survived. `age_sec` is `-1` when the age could not be
+measured at all, and an unmeasurable age refuses a SEND and allows a READ.
 
 ## History is per symbol AND timeframe
 
@@ -390,7 +468,8 @@ ping with a growing gap until the Expert answers or the budget runs out.
 | | Budget | Set by | Used by |
 | --- | --- | --- | --- |
 | Startup | `mt4.startup_wait_sec`, default 180s | `startup_connect()` | `Engine.start()`, once |
-| Steady state | `mt4.timeout_ms`, default 5000 | `FileBridge.timeout` | every other command |
+| Steady state, reads | `mt4.timeout_ms`, default 5000 | `FileBridge.timeout` | every op that cannot change the book |
+| Steady state, sends | `mt4.send_timeout_ms`, default 7060 | `FileBridge.send_timeout` | `market`, `working`, `modify_*`, `cancel`, `close`, `close_by` |
 
 **The two numbers are deliberately not one number.** `Engine.step_all()` calls
 `ensure_connected()` on every step and `Engine._reconnect_broker()` calls
@@ -416,6 +495,112 @@ mt4: no reply yet, attempt 1 at 5.0s of 180s (mt4 bridge timeout); retrying in 1
 mt4: no reply yet, attempt 2 at 11.0s of 180s (mt4 bridge timeout); retrying in 2.0s
 mt4: Expert answered on attempt 6 after 48.3s
 ```
+
+### Why a send gets its own budget, and where 7060 comes from
+
+A read that times out is retried by the next step. A send that times out is
+AMBIGUOUS: the order may be filled, in flight, or never sent, and the desk cannot
+tell. The two failures do not cost the same, so they do not share a number.
+
+Measured steady-state round trip on the live rig (2026-09-26 01:48Z, a
+FileSystemWatcher on the mailbox directory, `.req` renamed in to `.res` renamed
+in): p50 205ms, p90 206ms, max 223ms, and zero round trips over 1000ms. So 5000ms
+is a 22x margin for a read and was never the defect.
+
+For a send it is not a margin at all, because the Expert can spend most of it
+before it is able to reply. The send budget is therefore DERIVED, term by term,
+and `constants.derive_send_timeout_ms()` is its only home:
+
+| Term | ms | Kind |
+| --- | --- | --- |
+| Transport ceiling | 1000 | MEASURED, indirectly: about 5x the p50 of 205ms, which is the ONLY trustworthy statistic from that window (see below) |
+| Expert ladder `Sleep` total | 950 | COMPUTED: (8 `OrderSend` + 5 `OrderModify` + 6 rollback) x 50ms |
+| Claim-open retries | 2 x 180 = 360 | COMPUTED: (`ClaimOpenRetries` 10 - 1) x `ClaimOpenRetryMs` 20, for the claim read AND the reply write |
+| Broker round trips | 19 x 250 = 4750 | ALLOWANCE, the only un-measured term |
+| **Total** | **7060** | |
+
+**Why the ceiling is not a tail statistic.** `tests/live_measurements.py` records
+the p50 and deliberately records nothing above it: the naive pairing used to
+compute latency shifts by one after every unanswered request, and three of the 2166
+requests in that window went unanswered, so p90 and above are unreliable. A
+ceiling has to come from somewhere defensible, so it is a multiple of the median,
+in the conservative direction for a budget whose failure mode is expiring early.
+
+**There are TWO claim-retry ladders, not one, and that term moved late.** #82
+retried the claim READ; #83 then gave the reply WRITE the same bounded retry, on
+the same `tries` knob so the two cannot drift. Both sit between the desk's request
+and the desk's reply, so both spend the send budget.
+`tests/test_send_budget.py` counts the loops in the .mq4 and goes red if a third
+appears.
+
+The allowance is named as an allowance on purpose. No measurement of `OrderSend`
+latency against the live OANDA account exists yet: the box is still on the
+MetaQuotes demo and the gold market is shut, so the first market-hours window is
+what measures it. 250ms is chosen against the one thing that IS measured about
+this instrument, gold's 45 point spread against the shipped 20 point deviation,
+which makes a requote the expected case rather than the tail, and a requote is a
+full round trip.
+
+`cfg.validate()` refuses a send budget at or below the read budget, and one inside
+the Expert's `Sleep` total. The watchdog still derives its alarm from
+`timeout_ms`, the READ budget, because the two commands `step_all` spends before
+it can write a heartbeat are both reads; that reasoning is in
+`watchdog.venue_timeout_seconds`.
+
+### A request the desk gave up on must not fire later
+
+`FileBridge` used to raise with no cleanup, leaving the `.req` file on the shared
+name addressed to an Expert that had not claimed it. The Expert polls every 100ms
+and executes whatever it finds, so a trade the operator was told had FAILED could
+fire minutes afterwards; across a desk process exit nothing bounded "later" at all,
+and a silent restart with no traceback was observed on the live box at
+2026-09-26T01:56:49Z.
+
+Two layers, and only the second is a guarantee:
+
+1. the desk WITHDRAWS the request before raising. `BridgeTimeout` then states which
+   outcome it got, because "I gave up" and "nothing can happen now" are different
+   facts:
+
+   | `withdrawal` | Meaning |
+   | --- | --- |
+   | `withdrawn` | the request was still on the shared name and is now gone. It cannot fire. |
+   | `claimed` | the shared name was already gone, so the Expert HAS it and may be executing it now. This is the ambiguous-money case. |
+   | `locked` | still there and could not be removed. It can still fire, and `ttl_ms` is the only guard left. |
+
+2. the Expert refuses a request older than its `ttl_ms`. This is the layer that
+   survives the desk not being there any more, and it is the only one that does.
+
+The Expert does not guess how to read a file timestamp. MQL4 does not state
+whether `FILE_MODIFY_DATE` comes back in local time or UTC, and the two wrong
+answers fail in opposite directions: one makes every request look ancient and
+stops the desk working, the other makes an old request look fresh and silently
+removes the fence. So `OnInit` writes its own probe file, reads the stamp back,
+and keeps the offset. A calibration that fails reports it, and then an
+unmeasurable age refuses a send.
+
+### A staged order is transmitted at most once
+
+`BridgeTimeout` subclasses `RuntimeError` and `Desk.handle` catches
+`RuntimeError`, so a `/confirm` whose bridge call timed out returned the bare
+string `mt4 bridge timeout` to the operator with the order still staged. A second
+`/confirm` sent it again. Measured before the fix: two identical 0.55 lot market
+orders, the second reporting success.
+
+A TIMEOUT IS NOT EVIDENCE THE ORDER DID NOT REACH THE BROKER, and AN EMPTY BOOK IS
+NOT EVIDENCE EITHER: the desk's budget expires while the Expert may still be
+inside `SendRetry`, so the position the send is about to create is not on the book
+when the desk looks.
+
+So every staged order carries a client order id, a record of the attempt is written
+to `<journal stem>.inflight.json` BEFORE the send and cleared only by a VERDICT
+(success or a venue rejection), and a send whose key already has an open record is
+REFUSED. The ledger is durable (flush, fsync, atomic replace) because the observed
+failure was a process that died; the key rides the `confirm_stage` journal record,
+so it survives the restart too.
+
+Refusing costs an order. Sending twice costs money and cannot be undone. See
+`docs/RUNBOOK.md` for how an operator reconciles one.
 
 Giving up names the elapsed time and what to check:
 

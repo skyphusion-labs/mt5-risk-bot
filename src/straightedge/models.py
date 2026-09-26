@@ -35,6 +35,11 @@ class MarketOrder:
     magic: int = 0
     deviation: int = 20
     ticket: int | None = None
+    #: The idempotency key for this send, minted when the order was STAGED and
+    #: unchanged across a retry or a process restart. A typed field rather than
+    #: something parsed back out of `comment`, because the venue may rewrite the
+    #: comment and the contract must not depend on the venue preserving it.
+    client_id: str = ""
 
 
 @dataclass(frozen=True)
@@ -51,6 +56,8 @@ class WorkingOrder:
     comment: str = ""
     magic: int = 0
     ticket: int | None = None
+    #: Same key, same reason as `MarketOrder.client_id`.
+    client_id: str = ""
 
 
 @dataclass(frozen=True)
