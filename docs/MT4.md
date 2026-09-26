@@ -672,10 +672,16 @@ Two checks in there are worth knowing about before editing either side:
 
 ## Attach
 
-1. Compile `Mt4RiskBot.mq4` in MetaEditor. The Toolbox Errors tab must read
-   `0 error(s), 0 warning(s)`. Record that line in the handover checklist. CI
-   cannot do this step: there is no MQL4 compiler on any runner, so a green CI
-   run says nothing about whether the Expert builds.
+1. Install the `.ex4` that CI built for the commit you are deploying, from the
+   `Mt4RiskBot-ex4-<sha>` artifact on that commit's `mt4-compile` run
+   (`.github/workflows/mt4-compile.yml`, straightedge#86). CI DOES compile now: it
+   asserts the artifact is fresh and non-empty and that the log reads
+   `0 errors, 0 warnings`, and it fails on a source that cannot compile. If you
+   compile by hand instead, the Toolbox Errors tab must read
+   `0 error(s), 0 warning(s)` and that line goes in the handover checklist, but then
+   the binary on the box is not tied to a commit.
+   **Compiling is not loading:** replacing the `.ex4` on disk does not reload it, so
+   record which binary is live from MT4's own inputs line after a terminal restart.
 2. Attach it to one chart. A second attach refuses to initialise and prints
    `REFUSING TO START` in the Experts log; see "One Expert, enforced".
 3. Enable AutoTrading. Allow live trading on the Expert.

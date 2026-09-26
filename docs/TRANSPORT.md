@@ -56,7 +56,7 @@ The issue framed this as file mailbox versus `WebRequest`. There are three.
 | MT4 allowed-URL whitelist needed | yes | **no** | yes |
 | blocks the EA thread on our latency | yes, the decision is in the call | **no** | only on a queue read |
 | inbound port on our infrastructure | yes | **no** | no, if the rendezvous is a Worker |
-| verifiable in this repo's CI | no | **yes, both OS legs** | no, no MQL4 compiler on any runner |
+| verifiable in this repo's CI | compiles only | **yes, both OS legs** | compiles only, behaviour still unverifiable |
 
 ### A is rejected
 
@@ -81,11 +81,15 @@ a queue read and a bounded server hold, never our decision latency.
 It is still the more expensive half, for reasons that are measured and not
 aesthetic:
 
-- The new code sits in the **one artifact a customer installs**, and no CI runner
-  has an MQL4 compiler (`docs/MT4.md`, "Attach", step 1). A green CI run says
-  nothing about whether the Expert builds, let alone whether its WebRequest loop
-  is correct. Real money is behind this repo, so shipping an unverified rewrite of
-  `Process()` is not available.
+- The new code sits in the **one artifact a customer installs**. As of 2026-09-26
+  CI does compile it (`.github/workflows/mt4-compile.yml`, straightedge#86), so the
+  half of this bullet that said "a green CI run says nothing about whether the Expert
+  builds" is retired: it now says exactly that. The half that matters here survives
+  unchanged, and it is the expensive half: **a compile is not a behaviour test.**
+  Nothing in CI exercises a `WebRequest` loop, a rendezvous, a retry path or a
+  reconnect, and there is no MT4 terminal in CI to run an Expert in. Real money is
+  behind this repo, so shipping an unverified rewrite of `Process()` is still not
+  available, and the compile gate does not change that.
 - It needs a rendezvous service, tenancy, revocation and a Worker deploy before
   the first byte moves.
 - It adds a **manual, GUI-only, per-terminal** allowed-URL whitelist entry that

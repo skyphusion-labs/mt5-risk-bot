@@ -43,9 +43,13 @@ halt, daily-loss, drawdown and the live gates in the bot's process and on the bo
 clock. **Do not re-propose the EA calling `WebRequest` for its own decisions**: it is
 synchronous, so it would block the chart thread on our latency, and it would move those
 gates behind the customer's polling. Making the EA a dumb TRANSPORT client is the
-deferred destination, and `docs/TRANSPORT.md` lists what it needs first; the blocker is
-that no CI runner has an MQL4 compiler, so that code cannot be verified before it ships
-to a customer.
+deferred destination, and `docs/TRANSPORT.md` lists what it needs first. **The old
+blocker ("no CI runner has an MQL4 compiler") is FALSE as of 2026-09-26**:
+`.github/workflows/mt4-compile.yml` installs MetaEditor on a GitHub-hosted
+`windows-latest` runner and compiles the Expert, so a broken `.mq4` now reds a PR
+(straightedge#86). That closes the BUILD half only. A clean compile says nothing about
+whether a `WebRequest` loop is correct, and compiling is not loading, so the transport
+decision in `docs/TRANSPORT.md` is not re-opened by it.
 
 `mt4_live.py` already carries retry logic for NTFS refusing to unlink a file the terminal
 still holds open; that is a filesystem race, not a bug to silently work around further,

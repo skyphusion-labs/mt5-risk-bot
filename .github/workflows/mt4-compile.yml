@@ -1,0 +1,222 @@
+name: mt4-compile
+
+# Compile mt4/Experts/Mt4RiskBot.mq4 on a GitHub-hosted windows-latest runner and publish the .ex4
+# as a build artifact, so "merged" and "running" stop being independent facts (straightedge#86).
+#
+# WHY THIS IS NOT A CONVENIENCE STEP
+#
+# Until now MQL4 compiled nowhere in CI, so a merged .mq4 carried no information about the binary
+# the terminal is executing: #86 measured the live Expert missing three merged PRs. A compile whose
+# output is tied to a commit sha makes the pipeline the source of truth for the binary.
+#
+# THE EXIT CODE IS NOT A GATE, MEASURED NOT QUOTED
+#
+# On windows-latest 2026-09-26 (straightedge#86, probe runs 36228747784 and 36229301358):
+#
+#   mt4setup.exe /auto            -> exit 1 on a SUCCESSFUL install
+#   metaeditor /compile: <valid>  -> exit 1, log "Result: 0 errors, 0 warnings", .ex4 written
+#   metaeditor /compile: <broken> -> exit 0, log "Result: 2 errors, 0 warnings", NO .ex4
+#   metaeditor /compile: <absent> -> exit 0, NO log at all, NO .ex4
+#
+# So the exit status is inverted AND it reports success for a source that does not exist. Nothing in
+# this workflow reads it. Every decision is made on the ARTIFACT (exists, non-zero, mtime after a
+# recorded start) and on the log's own error and warning counts, and a MISSING log is a failure
+# rather than a pass, because an absent check reads like a passed one.
+#
+# The gate is watched going red on every run, not once: mt4/tests/fixtures/negative-control.mq4
+# cannot compile, and the job fails if it ever produces an .ex4 or reports zero errors.
+#
+# LICENCE CONSTRAINTS (straightedge#87, ernst's reading of the MT4 EULA; mackaye 2026-09-26)
+#
+#   - mt4setup.exe is fetched from the MetaQuotes CDN, never a broker mirror, and there is NO
+#     fallback source: a silent failover would move us onto terms nobody read.
+#   - The stub is sha256-pinned and a mismatch FAILS the run. Update the pin deliberately, in a
+#     commit that says why; never bypass it.
+#   - There is NO cache step, and the only upload is the single .ex4 file by exact path. Clause 2.2
+#     forbids distributing the Product or any part of it, and a public repo's Actions cache is
+#     restorable by fork PRs, so neither caching nor publishing the MetaEditor binaries is available
+#     to us. This is a licence constraint, not hygiene.
+#   - ACCEPTED AND RECORDED RISK, so the next person does not re-derive it: whether a GitHub-hosted
+#     runner is "Your personal computer" under clause 2.1, and whether clause 2.27's separate MQL4
+#     IDE grant covers an unattended CI compile, are unresolved. The EULA is SILENT on automated,
+#     headless use, and silent is a finding rather than a permission. Option 1 (download each run)
+#     was chosen because it is the only option that avoids every clause naming a prohibited act.
+#
+# NOT A REQUIRED STATUS CHECK, DELIBERATELY. The stub is a moving target upstream, and a pin
+# rotation would otherwise block every unrelated PR in the repo, which is the exact defect class
+# this sprint closed elsewhere. Promoting it to a required context is a ruleset decision and belongs
+# to whoever owns the ruleset, after the pin has been observed stable.
+
+on:
+  pull_request:
+    paths:
+      - "mt4/**"
+      - ".github/workflows/mt4-compile.yml"
+  push:
+    branches: [main]
+    paths:
+      - "mt4/**"
+      - ".github/workflows/mt4-compile.yml"
+  workflow_dispatch: {}
+
+permissions:
+  contents: read
+
+concurrency:
+  group: mt4-compile-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  # MetaQuotes CDN web stub. Measured 2026-09-26: 4699304 bytes, sha256 below, on two independent
+  # downloads. No fallback URL by design.
+  MT4_SETUP_URL: https://download.mql5.com/cdn/web/metaquotes.software.corp/mt4/mt4setup.exe
+  MT4_SETUP_SHA256: 873af0c7f5ca67eb937a6c609a8317eeb60969073e81a67064fb6f00f84b3e0a
+  METAEDITOR: C:\Program Files (x86)\MetaTrader 4\metaeditor.exe
+  EXPERT_SOURCE: mt4\Experts\Mt4RiskBot.mq4
+  NEGATIVE_CONTROL: mt4\tests\fixtures\negative-control.mq4
+
+jobs:
+  mt4-compile:
+    name: mt4-compile
+    runs-on: windows-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v7
+        with:
+          persist-credentials: false
+
+      - name: Fetch mt4setup.exe from the MetaQuotes CDN and check the pin
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Stop"
+          $dest = Join-Path $env:RUNNER_TEMP "mt4setup.exe"
+          Invoke-WebRequest -Uri $env:MT4_SETUP_URL -OutFile $dest -UseBasicParsing
+          $fi = Get-Item $dest
+          $sha = (Get-FileHash -Algorithm SHA256 $dest).Hash.ToLower()
+          Write-Host "mt4setup.exe bytes=$($fi.Length) sha256=$sha"
+          if ($sha -ne $env:MT4_SETUP_SHA256) {
+            Write-Host "::error::mt4setup.exe sha256 is $sha, pinned MT4_SETUP_SHA256 is $($env:MT4_SETUP_SHA256)."
+            Write-Host "::error::A third-party executable in this repo's build path changed. Review the new stub and update the pin in a commit that says why. Do NOT add a fallback download source (straightedge#87)."
+            exit 1
+          }
+          Write-Host "pin matches"
+
+      - name: Install MetaTrader 4 silently
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+          $setup = Join-Path $env:RUNNER_TEMP "mt4setup.exe"
+          $p = Start-Process -FilePath $setup -ArgumentList "/auto" -PassThru
+          if (-not $p.WaitForExit(600000)) {
+            Write-Host "::error::mt4setup.exe /auto did not finish within 600s"
+            try { $p.Kill() } catch { }
+            exit 1
+          }
+          # Recorded, never trusted: exit 1 is what a SUCCESSFUL install returns.
+          Write-Host "installer exit code (not a gate): $($p.ExitCode)"
+          if (-not (Test-Path -LiteralPath $env:METAEDITOR)) {
+            Write-Host "::error::no MetaEditor at $($env:METAEDITOR) after a silent install"
+            $hits = @(Get-ChildItem -Path "C:\Program Files (x86)" -Filter "metaeditor*.exe" -Recurse -ErrorAction SilentlyContinue -Force |
+                      Select-Object -ExpandProperty FullName)
+            Write-Host "::error::bounded search under C:\Program Files (x86) found $($hits.Count) candidate(s)"
+            foreach ($h in $hits) { Write-Host "::error::candidate $h" }
+            exit 1
+          }
+          Write-Host "MetaEditor present at $($env:METAEDITOR)"
+
+      - name: Compile, and assert on the artifact and the log counts
+        shell: pwsh
+        run: |
+          $ErrorActionPreference = "Continue"
+
+          function Invoke-Mql4Compile {
+            param([string]$Source, [string]$Tag)
+            $abs = Join-Path (Get-Location) $Source
+            if (-not (Test-Path -LiteralPath $abs)) {
+              Write-Host "::error::source not found: $abs"
+              return $null
+            }
+            $ex4 = [System.IO.Path]::ChangeExtension($abs, ".ex4")
+            $log = Join-Path $env:RUNNER_TEMP "$Tag.log"
+            # 1. A stale .ex4 would pass every assertion below, so it goes first.
+            if (Test-Path -LiteralPath $ex4) { Remove-Item -Force -LiteralPath $ex4 }
+            if (Test-Path -LiteralPath $log) { Remove-Item -Force -LiteralPath $log }
+            # 2. Start timestamp, with a margin wider than the filesystem timestamp resolution so
+            #    "fresh" cannot be true by rounding.
+            $start = Get-Date
+            Start-Sleep -Milliseconds 1100
+            $proc = Start-Process -FilePath $env:METAEDITOR -ArgumentList @("/compile:$abs", "/log:$log") -PassThru -Wait
+            Write-Host "[$Tag] metaeditor exit code (not a gate): $($proc.ExitCode)"
+            # 3. Read the log. It is UTF-16 on this build; fall back rather than guessing.
+            $text = $null
+            if (Test-Path -LiteralPath $log) {
+              $text = Get-Content -LiteralPath $log -Raw -Encoding unicode -ErrorAction SilentlyContinue
+              if (-not $text -or -not ($text -match "[A-Za-z]")) {
+                $text = Get-Content -LiteralPath $log -Raw -ErrorAction SilentlyContinue
+              }
+              foreach ($line in ($text -split "`r?`n")) { if ($line.Trim()) { Write-Host "[$Tag] $line" } }
+            } else {
+              Write-Host "[$Tag] NO COMPILE LOG WRITTEN"
+            }
+            # 4. Parse the counts. No match means the counts are UNKNOWN, which is never a pass.
+            $errors = $null
+            $warnings = $null
+            if ($text -and ($text -match "Result:\s*(\d+)\s*errors?,\s*(\d+)\s*warnings?")) {
+              $errors = [int]$Matches[1]
+              $warnings = [int]$Matches[2]
+            }
+            $exists = Test-Path -LiteralPath $ex4
+            $bytes = 0
+            $fresh = $false
+            if ($exists) {
+              $fi = Get-Item -LiteralPath $ex4
+              $bytes = $fi.Length
+              $fresh = $fi.LastWriteTime -gt $start
+              Write-Host "[$Tag] ex4 bytes=$bytes mtime=$($fi.LastWriteTime.ToString('o')) start=$($start.ToString('o')) fresh=$fresh"
+            } else {
+              Write-Host "[$Tag] no .ex4 produced"
+            }
+            return [pscustomobject]@{
+              Ex4 = $ex4; Exists = $exists; Bytes = $bytes; Fresh = $fresh
+              Errors = $errors; Warnings = $warnings; HasLog = ($null -ne $text)
+            }
+          }
+
+          $failed = 0
+
+          # THE REAL EXPERT. Must produce a fresh, non-empty .ex4 with zero errors and zero
+          # warnings. #property strict is on, so zero warnings is cheap to keep.
+          $r = Invoke-Mql4Compile -Source $env:EXPERT_SOURCE -Tag "expert"
+          if ($null -eq $r) { exit 1 }
+          if (-not $r.HasLog) { Write-Host "::error::no compile log for the Expert; counts unknown, which is not a pass"; $failed = 1 }
+          if ($null -eq $r.Errors) { Write-Host "::error::could not parse a Result line from the Expert compile log; counts unknown, which is not a pass"; $failed = 1 }
+          elseif ($r.Errors -ne 0) { Write-Host "::error::Expert compiled with $($r.Errors) error(s)"; $failed = 1 }
+          elseif ($r.Warnings -ne 0) { Write-Host "::error::Expert compiled with $($r.Warnings) warning(s); #property strict is on, keep it at zero"; $failed = 1 }
+          if (-not $r.Exists) { Write-Host "::error::no .ex4 produced for the Expert"; $failed = 1 }
+          elseif ($r.Bytes -le 0) { Write-Host "::error::.ex4 is zero length"; $failed = 1 }
+          elseif (-not $r.Fresh) { Write-Host "::error::.ex4 mtime is not after this compile started; it is a stale binary"; $failed = 1 }
+
+          # NEGATIVE CONTROL, every run. If a source that cannot compile still yields an .ex4, or
+          # reports no errors, then the assertions above are not measuring anything.
+          $n = Invoke-Mql4Compile -Source $env:NEGATIVE_CONTROL -Tag "negative-control"
+          if ($null -eq $n) { Write-Host "::error::negative control fixture is missing; the gate cannot prove it can go red"; exit 1 }
+          if ($n.Exists) { Write-Host "::error::negative control produced an .ex4; the artifact assertion is not measuring anything"; $failed = 1 }
+          if ($null -eq $n.Errors) { Write-Host "::error::negative control produced no parseable Result line; the log assertion is not measuring anything"; $failed = 1 }
+          elseif ($n.Errors -lt 1) { Write-Host "::error::negative control reported $($n.Errors) errors; it is supposed to fail to compile"; $failed = 1 }
+          if ($failed -eq 0) { Write-Host "Expert compiled clean, and the negative control failed to compile as designed" }
+          exit $failed
+
+      - name: Publish the .ex4 for this commit
+        uses: actions/upload-artifact@v7
+        with:
+          # Exact path, never a glob. Nothing in this workflow may upload anything from the
+          # MetaTrader install directory (straightedge#87 clause 2.2).
+          # github.sha on a pull_request event is the EPHEMERAL MERGE COMMIT, which will not
+          # exist after the merge, so an artifact named after it cannot be traced back to any
+          # commit on main. Measured on this PR: the first run published
+          # Mt4RiskBot-ex4-8ea47886..., a merge commit, while the branch head was 5fadce62.
+          # head.sha names the commit a human can check out; github.sha is correct on push.
+          name: Mt4RiskBot-ex4-${{ github.event.pull_request.head.sha || github.sha }}
+          path: mt4/Experts/Mt4RiskBot.ex4
+          if-no-files-found: error
+          retention-days: 90

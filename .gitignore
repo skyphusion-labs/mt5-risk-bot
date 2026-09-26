@@ -24,3 +24,8 @@ HALT
 agent/node_modules/
 agent/.wrangler/
 agent/.dev.vars
+
+# Compiled MQL4 binaries. CI builds these and publishes them as artifacts tied to a
+# commit sha (.github/workflows/mt4-compile.yml); a hand-compiled one in the tree is
+# untraceable and must never be committed.
+*.ex4
