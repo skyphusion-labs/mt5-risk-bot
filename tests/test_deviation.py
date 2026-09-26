@@ -29,6 +29,7 @@ NOT MEASURE from here (the rig is SSH-keyed from the lead's laptop only).
 
 from __future__ import annotations
 
+from dataclasses import replace
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -51,7 +52,7 @@ from straightedge.config import (
     parse_symbol_deviation_points,
 )
 from straightedge.engine import Engine
-from straightedge.models import Account, Signal, SignalKind, Tick
+from straightedge.models import Account, Signal, SignalKind, Tick, WorkingOrder
 from straightedge.risk import DEVIATION_BELOW_SPREAD, DEVIATION_HEADROOM_MULTIPLE, RiskManager
 from straightedge.synthetic import generate_bars
 from straightedge.telegram import TgCommand
@@ -521,3 +522,226 @@ def test_two_keys_for_one_symbol_are_refused() -> None:
     cfg.risk.symbol_deviation_points = {"XAUUSD": 150, "xauusd": 40}
     with pytest.raises(ValueError, match="two entries for the same"):
         cfg.validate()
+
+
+# --- 9. the limit/stop path carries the number the gate judged (issue #92) ---
+#
+# `risk.evaluate()` has always gated a PENDING signal on `deviation_below_spread`
+# exactly as it gates a market one. The number was then never transmitted:
+# `WorkingOrder` had no `deviation` field, `_place_pending` never called
+# `resolve_deviation`, `_working_payload` sent no `deviation` key, and the
+# Expert's pending handler passed its own `input int Slippage = 30` to
+# `SendRetry`. So the gate refused, or permitted, a limit order over a tolerance
+# that order could not carry, and the config key its refusal advises changed
+# nothing on that path.
+#
+# What the tests below can and cannot establish, stated once: they prove the
+# operator's figure now REACHES the venue (the wire assertion lives in
+# `tests/test_mt4_wire.py`, which is where wire bytes are asserted in this repo).
+# They prove nothing about whether MT4 APPLIES a slippage tolerance to a pending
+# order type; the documentation says it is ignored for pending types, that was
+# not measured on the live rig, and a unit test structurally cannot measure it.
+# Transmitting the operator's number rather than one configured on the other side
+# of the bridge does not depend on the answer.
+
+EA_PATH = Path(__file__).resolve().parents[1] / "mt4" / "Experts" / "Mt4RiskBot.mq4"
+
+#: Every Expert handler that reaches a venue call carrying a slippage argument:
+#: `OrderSend` for a market order, `OrderSend` for a pending order, and
+#: `OrderClose`. This tuple IS the denominator #92 is about. Two of these three
+#: resolved the desk's number from the request body; the pending one did not.
+EA_SEND_HANDLERS = (
+    "string CheckMarket(string id, string body, bool send)",
+    "string CheckWorking(string id, string body, bool send)",
+    "string ClosePos(string id, string body)",
+)
+
+
+def _ea_function_body(signature: str) -> str:
+    """The brace-matched body of one MQL4 function, signature included.
+
+    Matched on braces rather than by line range, because a line range silently
+    starts covering the next function the moment anything above it moves.
+    """
+    src = EA_PATH.read_text(encoding="utf-8")
+    start = src.index(signature)
+    depth = 0
+    for i in range(src.index("{", start), len(src)):
+        if src[i] == "{":
+            depth += 1
+        elif src[i] == "}":
+            depth -= 1
+            if depth == 0:
+                return src[start : i + 1]
+    raise AssertionError(f"unbalanced braces after {signature!r}")
+
+
+class _RecordingPaper(PaperBroker):
+    """A paper broker that keeps the `WorkingOrder` objects it was handed.
+
+    The engine hands the venue an OBJECT; turning that object into wire bytes is
+    the adapter's job and is asserted against the byte-exact mailbox in
+    `tests/test_mt4_wire.py`. This captures the object so the engine half can be
+    asserted without a terminal. Neither half alone is the path.
+    """
+
+    def __init__(self, **kw: object) -> None:
+        super().__init__(**kw)  # type: ignore[arg-type]
+        self.checked: list[WorkingOrder] = []
+        self.sent: list[WorkingOrder] = []
+
+    def check_working(self, order: WorkingOrder):  # type: ignore[no-untyped-def]
+        self.checked.append(order)
+        return super().check_working(order)
+
+    def working(self, order: WorkingOrder):  # type: ignore[no-untyped-def]
+        self.sent.append(order)
+        return super().working(order)
+
+
+def test_the_gate_refuses_a_pending_signal_exactly_as_it_refuses_a_market_one(
+    tmp_path: Path,
+) -> None:
+    """Half one of #92's first harm, and on its own it is not the finding.
+
+    That the gate refuses a gold LIMIT at the 20-point default is the behaviour
+    that was already there. What made it a defect is that the refused order could
+    not have carried the number being judged, which is what the next test pins.
+    A gate judging a value it does not transmit cannot be right, and the
+    remediation it prints (set `risk.symbol_deviation_points.XAUUSD`) was inert on
+    this path.
+    """
+    cfg = _cfg(tmp_path)
+    rm = RiskManager(cfg, halt_dir=tmp_path)
+    tick = gold_tick()
+    pending = replace(_gold_signal(tick=tick), pending_kind="limit")
+    assert pending.pending_kind == "limit", "the signal under test is not a pending one"
+
+    decision = _gate(rm, signal=pending, spec=gold_spec(), tick=tick)
+
+    assert not decision.allowed
+    assert decision.reason.startswith(DEVIATION_BELOW_SPREAD)
+    assert f"deviation={GLOBAL_DEVIATION_POINTS}" in decision.reason
+    assert f"spread={GOLD_SPREAD_POINTS}pt" in decision.reason
+    assert "set=risk.symbol_deviation_points.XAUUSD" in decision.reason
+
+
+def test_a_pending_send_carries_the_resolved_deviation_and_journals_it(
+    tmp_path: Path,
+) -> None:
+    """Half two: the refusal is now a true statement about the path refused.
+
+    One resolver feeds both sides. The gate reads
+    `risk.resolve_deviation(symbol)`; `_place_pending` now reads the same call and
+    puts the answer on the order, so the number the gate judges and the number the
+    send carries cannot differ. 60 is a per-symbol override rather than the global
+    default on purpose: a test that asserted the default would pass with the map
+    never consulted and with `deviation` left at the dataclass default of 20,
+    which is the exact value the pre-#92 code would have produced by accident.
+
+    The `pending` journal record carries `deviation` and `deviation_source` for
+    the reason #68 gave for `open` and `close`: a number in a journal cannot tell
+    an operator whether their override was consulted, mis-keyed, or never written.
+    Before this change that record carried NEITHER field, so a limit order's
+    tolerance was unreadable live and after the fact.
+    """
+    cfg = _cfg(tmp_path)
+    cfg.risk.max_spread_atr_frac = 10.0
+    cfg.risk.symbol_deviation_points = {"EURUSD": 60}
+    broker = _RecordingPaper(balance=100_000)
+    broker.seed_bars("EURUSD", generate_bars(120, drift=0.0004, vol=0.0002, seed=3))
+    engine = Engine(cfg, broker, halt_dir=str(tmp_path), now_fn=lambda: WED_NOON)
+    engine.start()
+    limit = round(broker.tick("EURUSD").bid - 0.0020, 5)
+    engine.handle_command(TgCommand("1", 1, f"/buy EURUSD limit={limit}", 1))
+    engine.handle_command(TgCommand("2", 2, "/confirm", 1))
+
+    placed = engine.journal.last_event("pending")
+    assert placed is not None, "no pending record; the limit order never went out"
+    assert placed["ok"] is True, f"the pending send failed: {placed}"
+    assert placed["kind"] == "limit"
+    assert placed["deviation"] == 60
+    assert placed["deviation_source"] == DEVIATION_FROM_SYMBOL
+
+    assert [o.deviation for o in broker.sent] == [60], (
+        "the WorkingOrder handed to the venue does not carry the resolved "
+        "deviation, so the gate is judging a number the send does not offer"
+    )
+    assert [o.deviation for o in broker.checked] == [60], (
+        "the pre-trade check ran on a different tolerance from the send"
+    )
+    assert cfg.risk.resolve_deviation("EURUSD").points == 60
+    engine.stop()
+
+
+def test_the_pending_expert_handler_sends_the_resolved_slippage_not_its_own_input() -> None:
+    """The shipped `.mq4`, which is the only artifact a customer installs.
+
+    MQL4 does not execute in this suite and no CI runner has a compiler, so a
+    source guard over the shipped file is the only gate available here. It is a
+    real gate on that artifact (mutate the file and this goes red) and it is NOT
+    evidence about a running terminal.
+    """
+    body = _ea_function_body("string CheckWorking(string id, string body, bool send)")
+    calls = [ln for ln in body.splitlines() if "SendRetry(" in ln]
+    assert len(calls) == 1, f"expected one SendRetry call in the pending handler: {calls}"
+    assert ", slip," in calls[0], (
+        "the pending handler does not pass the resolved slippage to SendRetry"
+    )
+    assert "Slippage" not in calls[0], (
+        "the pending handler still passes its own `input int Slippage` to the send, "
+        "so the desk's deviation never reaches OrderSend"
+    )
+
+
+def test_every_expert_send_handler_resolves_the_deviation_from_the_request() -> None:
+    """The denominator, measured on the file rather than asserted in prose.
+
+    Three handlers reach a venue call with a slippage argument. Two of them
+    resolved the desk's number and one did not, and a suite that only tested the
+    two would have been green throughout. The `<= 0` fallback is part of the
+    pattern, not decoration: it is what an older desk that sends no `deviation`
+    key at all gets, and it must be the only case that reaches the Expert's own
+    input.
+    """
+    resolved = [
+        sig
+        for sig in EA_SEND_HANDLERS
+        if 'KV(body, "deviation")' in _ea_function_body(sig)
+        and "if(slip <= 0) slip = Slippage;" in _ea_function_body(sig)
+    ]
+    missing = [sig for sig in EA_SEND_HANDLERS if sig not in resolved]
+    assert not missing, (
+        f"{len(resolved)} of {len(EA_SEND_HANDLERS)} Expert send handlers resolve the "
+        f"desk's deviation; these do not: {missing}"
+    )
+
+
+def test_a_zero_or_negative_global_deviation_is_refused() -> None:
+    """The asymmetry #92 found: the per-symbol map had this floor, the global did not.
+
+    0 does not mean "no tolerance". The Expert reads a deviation of <= 0 as "use
+    my own `input int Slippage`" (`Mt4RiskBot.mq4`, all three send handlers), so a
+    0 here moves the operator's risk figure to a number configured on the other
+    side of the bridge, where nothing on this side can read it. The message names
+    the key, because a refusal an operator cannot act on is one they switch off.
+    """
+    for value in (0, -1):
+        cfg = BotConfig()
+        cfg.risk.deviation_points = value
+        with pytest.raises(ValueError, match=r"risk\.deviation_points must be > 0"):
+            cfg.validate()
+
+
+def test_a_positive_global_deviation_still_validates() -> None:
+    """The other half of the guard above, and the half that is easy to skip.
+
+    A floor that refused every value would satisfy the test above and nothing
+    else in the suite would notice, because `validate()` raising is what that
+    test asserts. This pins that the gate can also say yes.
+    """
+    cfg = BotConfig()
+    cfg.risk.deviation_points = 1
+    cfg.validate()
+    cfg.risk.deviation_points = GLOBAL_DEVIATION_POINTS
+    cfg.validate()

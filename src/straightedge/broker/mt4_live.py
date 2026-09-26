@@ -1021,6 +1021,9 @@ class Mt4Broker:
             "tp": order.tp,
             "comment": (order.comment or "")[:31],
             "magic": order.magic or self._magic,
+            # Absent from this payload until #92, which is why the Expert had
+            # nothing to read and fell back to its own `input int Slippage`.
+            "deviation": order.deviation,
             "client_id": order.client_id or None,
         }
 

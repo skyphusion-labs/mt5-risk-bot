@@ -6,6 +6,73 @@ See README.md and docs/CONTRACT.md.
 
 ## Unreleased
 
+### The deviation gate judged a number the limit/stop path never sent (issue #92)
+
+Found while working #68, and it is the live residue of #68's fix: that fix had no
+reach on the limit/stop path at any layer. `risk.evaluate()` gates EVERY new entry
+on `deviation_below_spread`, a signal carrying a `pending_kind` included. The
+number was then never transmitted. `WorkingOrder` had no `deviation` field at all,
+so there was never a line to drop; `Engine._place_pending` never called
+`resolve_deviation`; `_working_payload` put no `deviation` key on the wire; and
+`CheckWorking` in `mt4/Experts/Mt4RiskBot.mq4` passed the Expert's own
+`input int Slippage = 30` straight to `SendRetry`, while the market and close
+handlers both resolved the desk's figure out of the request body.
+
+- **Two harms, and only one of them is certain.** Certain, and it needs no venue
+  semantics at all: the gate could REFUSE a limit order over a tolerance that
+  order would never have carried, and the remediation the refusal prints (set
+  `risk.symbol_deviation_points.<symbol>`) changed nothing on that path. A gate
+  judging a value it does not transmit cannot be right. Direction certain,
+  magnitude NOT established: the venue was offered 30 points on an instrument
+  that measured a 45-point spread, which is the exact condition #68 was filed
+  about ("trades randomly do not go through").
+- **What is still owed is a LIVE MEASUREMENT, not a code change.** MT4 documents
+  the `OrderSend` slippage parameter as IGNORED for pending order types. Nothing
+  in this repo can measure that, and nothing here tried. If it holds, the second
+  harm is nil for the initial placement and what was left was a record claiming a
+  number never offered; if it does not hold, it was a live rejection source on
+  gold. **This change must not be read as "gold rejections on limit orders are
+  fixed."** A unit test can prove the number is transmitted; it can never prove
+  the venue used it.
+- `WorkingOrder` gains `deviation: int = 20`, the field and the default
+  `MarketOrder` already carried. `_place_pending` resolves it through the same
+  `resolve_deviation` call the gate reads, so the number judged and the number
+  sent cannot drift apart, and `_working_payload` puts it on the wire.
+- The `pending` journal record now carries `deviation` and `deviation_source`, for
+  the reason #68 gave for `open` and `close`: a number in a journal cannot tell an
+  operator whether their override was consulted, mis-keyed, or never written. It
+  carried NEITHER field before, so a limit order's tolerance was unreadable both
+  live and after the fact.
+- The Expert's pending handler resolves the deviation from the request body and
+  keeps the `<= 0` fallback to its own input, the same three lines the market and
+  close handlers have. The fallback now covers exactly one case: an older desk
+  that sends no `deviation` key at all.
+- **Making the gate SKIP pending signals was considered and rejected.** It removes
+  the false refusal and leaves the venue receiving 30, which trades a loud wrong
+  answer for a silent one.
+- `risk.deviation_points` is validated `> 0`. The per-symbol map has had that floor
+  since #68 and the global default never did, and the asymmetry was not cosmetic:
+  the Expert reads <= 0 as "use my own `input int Slippage`", so a 0 did not
+  disable a tolerance, it moved the operator's risk figure to a number configured
+  on the other side of the bridge where nothing on this side can read it. The
+  entry under #68's "Not fixed here" that recorded this is now resolved.
+- **Proven on the WIRE, not on an internal call.** `tests/test_mt4_wire.py`
+  asserts the `deviation` key and its value in the `check_working` and `working`
+  requests the Expert actually reads, and counts the send ops that carry a
+  tolerance: 3 of 3, and it was 2 of 3 (`market` and `close`).
+  `tests/test_deviation.py` pins the gate refusing a pending signal, the journal
+  record, the config floor in both directions (a bad value refused AND a good one
+  accepted), and the shipped `.mq4` (no CI runner has an MQL4 compiler, so a
+  source guard over that file is the only gate available there, and it is not
+  evidence about a running terminal). Every new guard was driven RED against the
+  unpatched source before it was trusted.
+- Not changed, deliberately: the MT5 and paper adapters still leave `deviation`
+  out of a pending request. MT5's `TRADE_ACTION_PENDING` is a different venue API
+  with its own unmeasured semantics, and inventing wire content for a venue nobody
+  has measured is the defect this repo keeps finding. The field now exists on the
+  venue-neutral model, so adding it there is a one-line change the day somebody
+  can measure the answer.
+
 ### Three money-safety P0s on the MT4 send path (issue #37)
 
 Found while instrumenting the live desk on 2026-09-25 and recorded on #37 rather
@@ -462,7 +529,7 @@ Measured by Conrad on the live MT4 rig, 2026-09-24. `[risk] deviation_points` wa
 - `tests/test_refusal_reasons.py` runs most of its cases on a default tick of 20 points against the 20-point default deviation, i.e. EXACTLY at the new floor. It passes, and it is pinned by a boundary test so a later loosening to `<=` fails by name rather than turning half the suite red for no stated reason. The fixture itself is left alone.
 - The paper broker's `default_spec` has no metals branch: `default_spec("XAUUSD")` returns a 5-digit FX spec with `point` 0.00001, so paper-mode gold is not gold. Fixing it needs a contract size and tick value nobody has read off a live venue, so it is reported rather than invented.
 - No gate owns a crossed or zero-spread tick. `deviation_below_spread` abstains on one and says so, rather than absorbing a second defect quietly.
-- `deviation_points = 0` is still accepted by `validate()`, and the MT4 Expert reads <= 0 as "use my own `input int Slippage`". That silent handover to a number configured on the other side of the bridge is now CAUGHT by the deviation gate rather than by validation, which is enough to stop a send, but the config key itself is still unvalidated.
+- `deviation_points = 0` is still accepted by `validate()`, and the MT4 Expert reads <= 0 as "use my own `input int Slippage`". That silent handover to a number configured on the other side of the bridge is now CAUGHT by the deviation gate rather than by validation, which is enough to stop a send, but the config key itself is still unvalidated. RESOLVED by issue #92 above: `validate()` now refuses it and names the key.
 - Nothing here ran against the rig, which is SSH-keyed from the lead's laptop only. That the gate refuses the configuration measured rejecting is proven in the suite; that a gold send at 150 points then FILLS is COULD NOT MEASURE from here.
 
 

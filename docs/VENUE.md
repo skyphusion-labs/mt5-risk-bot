@@ -24,7 +24,8 @@ See `docs/MT4.md`.
 Fields: `symbol`, `side`, `volume`, `sl`, `tp`, `comment`, `magic`, `deviation`, `ticket`.
 
 `WorkingOrder` is a limit or a stop.
-Fields: `symbol`, `side`, `kind`, `volume`, `price`, `sl`, `tp`, `comment`, `magic`, `ticket`.
+Fields: `symbol`, `side`, `kind`, `volume`, `price`, `sl`, `tp`, `comment`, `magic`,
+`deviation`, `ticket`.
 `kind` is `"limit"` or `"stop"`.
 
 `PendingOrder` is a working order the venue holds.

@@ -55,6 +55,17 @@ class WorkingOrder:
     tp: float = 0.0
     comment: str = ""
     magic: int = 0
+    #: Maximum tolerated slippage in POINTS, same field and same default as
+    #: `MarketOrder.deviation`. It was ABSENT here until #92, while
+    #: `risk.evaluate()` gated limit and stop signals on `deviation_below_spread`
+    #: exactly as it gates a market signal: the gate judged a number this order
+    #: had no way to carry, so its refusal could not be a true statement about
+    #: the send it refused, and the config key its advice names changed nothing
+    #: on this path. Whether a venue APPLIES a slippage tolerance to a pending
+    #: order is a separate question, and one no test in this repo can answer;
+    #: transmitting the operator's figure instead of a number nobody configured
+    #: on this side does not depend on the answer.
+    deviation: int = 20
     ticket: int | None = None
     #: Same key, same reason as `MarketOrder.client_id`.
     client_id: str = ""

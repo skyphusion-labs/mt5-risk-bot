@@ -942,6 +942,13 @@ class Engine:
     ) -> OrderResult:
         side = signal.side
         assert side is not None
+        # Same resolution as `_open`, from the same call, and that sameness is
+        # the point: `risk.evaluate()` gates a pending signal on
+        # `deviation_below_spread` using `resolve_deviation`, so a pending send
+        # that resolved it any other way (or not at all, which is what #92
+        # found) makes the gate an opinion about a number the order never
+        # carried.
+        dev = self.cfg.risk.resolve_deviation(signal.symbol)
         key = client_id or new_key()
         refusal = self._unresolved(key, signal.symbol)
         if refusal is not None:
@@ -956,6 +963,7 @@ class Engine:
             tp=signal.tp,
             comment=stamped_comment(self.cfg.comment, key),
             magic=self.cfg.risk.magic,
+            deviation=dev.points,
             client_id=key,
         )
         check = self.broker.check_working(order)
@@ -991,6 +999,8 @@ class Engine:
             ok=result.ok,
             retcode=result.retcode,
             order=result.order,
+            deviation=dev.points,
+            deviation_source=dev.source,
             client_id=key,
         )
         return result

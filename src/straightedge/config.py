@@ -415,6 +415,14 @@ class BotConfig:
                 "below one full spread can only produce broker rejections, so "
                 "this gate must not be configurable below the floor it enforces"
             )
+        if int(r.deviation_points) <= 0:
+            # The per-symbol map has had this floor since #68; the global
+            # default never did (#92). The asymmetry is not cosmetic: the MT4
+            # Expert reads a deviation of <= 0 as "use my own `input int
+            # Slippage`", so a 0 here does not disable a tolerance, it moves
+            # the operator's risk figure to a number configured on the other
+            # side of the bridge, where nothing on this side can read it.
+            raise ValueError("risk.deviation_points must be > 0 points")
         seen: dict[str, str] = {}
         for name, value in r.symbol_deviation_points.items():
             key = str(name).strip()
