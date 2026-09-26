@@ -1145,3 +1145,6 @@ string CloseBy(string id, string body)
       return Fail(id, GetLastError(), "OrderCloseBy");
    return Ok(id) + "ticket=" + IntegerToString(ticket) + "\n";
 }
+
+// TEMPORARY, reverted in the next commit: drive mt4-compile red.
+int OnDeliberateBreak() { return }
