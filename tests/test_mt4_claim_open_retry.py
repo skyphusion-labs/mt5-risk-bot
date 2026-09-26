@@ -159,3 +159,87 @@ def test_the_error_is_reset_before_each_attempt() -> None:
         "GetLastError() is not cleared before the open, so a stale error from "
         "an earlier MQL4 call can be reported as the reason this one failed"
     )
+
+# ---------------------------------------------------------------------------
+# The reply side. Same transient, a sharper consequence.
+#
+# Measured 2026-09-26, 01:57:15Z to 02:21:48Z, market CLOSED, watching the
+# mailbox directory: the Expert claimed and released all 2166 requests but
+# created only 2163 `.res.tmp` files. Those three requests are exactly the three
+# `reconnect` events in journal.jsonl at 02:17:28, 02:20:34 and 02:21:15, each
+# one adapter budget after its request, and the Experts log recorded NONE of it
+# because the old code fell through an `if` without logging.
+#
+# This half matters more than the claim half. At the reply write, `Handle()` has
+# already run, so for `op=market` an undelivered reply means the order is LIVE
+# while the adapter times out and writes the trade off.
+# ---------------------------------------------------------------------------
+
+
+def _reply_block() -> str:
+    """From the reply-open declaration to the end of the delivery branches."""
+    src = _ea_source()
+    start = src.index("int w = INVALID_HANDLE;")
+    end = src.index("LockRelease(SE_MAILBOX_LOCK);", start)
+    return src[start:end]
+
+
+def test_the_reply_open_is_retried_on_the_same_budget_as_the_claim() -> None:
+    block = _reply_block()
+    assert "while(wAttempts < tries)" in block, (
+        "the reply FileOpen is not retried; a transient failure here silently "
+        "loses the result of an operation that already executed"
+    )
+    assert "Sleep(ClaimOpenRetryMs)" in block, (
+        "the reply retry does not reuse the measured, budget-bounded gap"
+    )
+    assert "if(wAttempts < tries)" in block, (
+        "the reply retry sleeps after its final attempt"
+    )
+
+
+def test_an_undelivered_reply_is_never_silent() -> None:
+    block = _reply_block()
+    # The old shape was `if(w != INVALID_HANDLE) { ... }` with NO else, so a
+    # failed open produced no reply and no log at all.
+    assert block.count("REPLY NOT DELIVERED") == 2, (
+        "both undeliverable-reply paths must log: the open failing outright, and "
+        "the publish rename failing after a successful write. Found "
+        f"{block.count('REPLY NOT DELIVERED')} of 2"
+    )
+    assert "ALREADY EXECUTED" in block, (
+        "the log does not say that the operation already ran, which is the whole "
+        "point of the message: it tells the operator an order may be live while "
+        "the desk believes the call failed"
+    )
+
+
+def test_the_publish_rename_result_is_checked() -> None:
+    block = _reply_block()
+    assert 'if(!FileMove("mt4_risk_bot.res.tmp"' in block, (
+        "the final rename that publishes the reply is a bare statement again, so "
+        "a failed publish is indistinguishable from a successful one"
+    )
+
+
+def test_a_recovered_reply_open_is_logged_but_only_when_it_retried() -> None:
+    block = _reply_block()
+    assert "reply open recovered" in block, (
+        "a reply that opened only after retrying is not logged, so the retry "
+        "hides the rate of the underlying transient"
+    )
+    assert "else if(wAttempts > 1)" in block, (
+        "the reply recovery log is not gated on having actually retried"
+    )
+
+
+def test_both_failure_sites_share_one_retry_bound() -> None:
+    """One transient, one budget. Two independent knobs would drift apart."""
+    src = _ea_source()
+    assert src.count("int tries = (ClaimOpenRetries < 1) ? 1 : ClaimOpenRetries;") == 1, (
+        "the retry bound is computed more than once, or not at all; both the "
+        "claim read and the reply write must be bounded by the same `tries`"
+    )
+    assert "while(attempts < tries)" in src and "while(wAttempts < tries)" in src, (
+        "the two retry loops no longer share the same bound"
+    )

@@ -136,11 +136,13 @@ DOCTOR_MT5_BINDING = 3
 #: 20 before the mailbox claim landed, plus 9: the Expert's claim-by-rename path and
 #: refusal log, the "One Expert, enforced" sections of docs/MT4.md and mt4/README.md,
 #: and the CHANGELOG entry that describes the claim.
-#: 29 before the claim-open retry landed. The 30th is the measured EA log line
-#: quoted in `tests/test_mt4_claim_open_retry.py`, which names
-#: `mt4_risk_bot.req.claim.<ChartID>` as the path that was claimed and then
-#: dropped. Evidence in a docstring, not a new mailbox site.
-MT4_MAILBOX = 30
+#: 29 before the claim-open retry landed, now 31, and neither addition is a new
+#: mailbox site. The 30th is the measured EA log line quoted in
+#: `tests/test_mt4_claim_open_retry.py`, naming
+#: `mt4_risk_bot.req.claim.<ChartID>` as the path that was claimed and dropped.
+#: The 31st names `mt4_risk_bot.res.tmp` in the same file, the reply staging
+#: file whose FileOpen was failing silently. Both are evidence in docstrings.
+MT4_MAILBOX = 31
 #: the LIVE Cloudflare AI Gateway id. Deliberately still the old string; see the header.
 #: 13 gateway-resource references plus 2 in the RUNBOOK LaunchAgent migration note.
 GATEWAY_ID_AND_MIGRATION_NOTE = 15
