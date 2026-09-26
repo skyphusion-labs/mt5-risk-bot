@@ -195,9 +195,30 @@ def test_sweep_every_stem_in_every_suffix_convention_matches_the_rule() -> None:
     cases = old.cases + new.cases
     bad = old.bad + new.bad
     newly = old.newly + new.newly
-    assert old.cases == SWEEP_DENOMINATOR_60
+    # Each population is floored against ITSELF. The line this replaces summed
+    # the two and compared the sum to one of the floors, which could not fire:
+    # the longer-stem half is 257,700 cases on its own, so the #60 half could
+    # lose all 257,700 and still clear the sum. Measured on issue #96, with the
+    # #60 alphabet cut to 25 letters: 781,250 cases and the assertion passed.
+    assert old.cases == SWEEP_DENOMINATOR_60, (
+        f"the #60 sweep NARROWED: {old.cases} != {SWEEP_DENOMINATOR_60}"
+    )
+    # A floor with power, because it is computed from the TABLE and not from
+    # `longer`: the longer-stem population must hold every code longer than
+    # three letters AND every code plus one letter, and the table being
+    # prefix-free (`test_the_shipped_table_is_prefix_free`) is what makes those
+    # two families disjoint, so the bound is a sum and not a max. It needs no
+    # edit when a code is added, which a pinned count would.
+    floor_longer = sum(1 for c in CURRENCY_CODES if len(c) > 3) + len(CURRENCY_CODES) * 26
+    assert len(longer) >= floor_longer, (
+        f"the longer-stem sweep NARROWED: {len(longer)} stems < {floor_longer}"
+    )
+    # A tautology, not a floor: both sides are derived from `longer` in the same
+    # expression, so it cannot observe `_longer_stems` shrinking. It is kept as
+    # a statement of the shape of the sweep. The floor above is what guards the
+    # population, together with the recognised-code count and the
+    # SWEEP_NEWLY_RESOLVED pin at the end.
     assert new.cases == len(longer) * len(SUFFIX_CONVENTIONS) * 2
-    assert cases >= SWEEP_DENOMINATOR_60, f"the sweep NARROWED: {cases} < {SWEEP_DENOMINATOR_60}"
     assert old.recognised + new.recognised == len(CURRENCY_CODES) * len(SUFFIX_CONVENTIONS) * 2
     print(
         f"#77 sweep: {cases} cases = {SWEEP_DENOMINATOR_60} from #60 "
