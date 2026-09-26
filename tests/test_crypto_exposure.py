@@ -260,15 +260,122 @@ def test_adding_crypto_codes_does_not_read_other_instruments_as_pairs() -> None:
         assert classify_symbol(symbol) == SYMBOL_NOT_FX, symbol
 
 
-def test_crypto_tickers_longer_than_three_characters_stay_not_applicable() -> None:
-    """KNOWN LIMIT, asserted so it is not mistaken for coverage.
+# --- tickers longer than three characters (issue #77) ------------------------
 
-    The resolver splits the first six alphabetic characters 3 and 3, so only a
-    three-character ticker can resolve. DOGE, AVAX, LINK, MATIC and SHIB
-    therefore remain allowed-and-recorded. Widening the split needs a
-    longest-match parse against the table, which is a separate unit; see the
-    comment in `currencies.py`.
+LONG_TICKERS = ("DOGE", "AVAX", "LINK", "MATIC", "SHIB")
+
+
+def test_crypto_tickers_longer_than_three_characters_resolve() -> None:
+    """Replaces the #66 KNOWN LIMIT pin, which asserted these stayed None.
+
+    RED before #77: the resolver split the first six alphabetic characters 3
+    and 3, so DOGEUSD read as DOG/EUS and was allowed-and-recorded as not
+    applicable. Adding DOGE to the table alone did nothing. The resolver now
+    matches variable-length codes against the table, so each of these is a
+    pair and its USD leg reaches the limit.
     """
-    for symbol in ("DOGEUSD", "AVAXUSD", "LINKUSD", "MATICUSD", "SHIBUSD"):
-        assert parse_fx(symbol) is None, symbol
-        assert classify_symbol(symbol) == SYMBOL_NOT_FX, symbol
+    for code in LONG_TICKERS:
+        assert code in CRYPTO_CODES, code
+        symbol = code + "USD"
+        assert parse_fx(symbol) == (code, "USD"), symbol
+        assert classify_symbol(symbol) == SYMBOL_FX, symbol
+
+
+def test_a_long_ticker_resolves_in_every_venue_spelling() -> None:
+    for code in LONG_TICKERS:
+        for symbol in (
+            code + "USDm", code + "USD.a", code + "/USD", code + "_USD",
+            code + "USDpro", "#" + code + "USD", code + "USDT",
+        ):
+            assert parse_fx(symbol) == (code, "USD"), symbol
+
+
+def test_a_long_ticker_resolves_in_the_quote_position_too() -> None:
+    assert parse_fx("BTCDOGE") == ("BTC", "DOGE")
+    assert parse_fx("EURMATIC") == ("EUR", "MATIC")
+    assert parse_fx("DOGEMATIC") == ("DOGE", "MATIC")
+
+
+def test_a_long_ticker_stack_reaches_the_currency_limit(tmp_path) -> None:
+    """The point of #77: four short-USD tickets, all of them now counted.
+
+    RED before: DOGEUSD, AVAXUSD and LINKUSD were excluded, the limit saw ONE
+    USD leg, and the fourth short-USD ticket was allowed.
+    """
+    decision = _evaluate(
+        tmp_path,
+        "SHIBUSD",
+        [_pos(1, "DOGEUSD"), _pos(2, "AVAXUSD"), _pos(3, "LINKUSD")],
+        max_currency_exposure=2,
+    )
+    assert not decision.allowed
+    assert decision.reason == "currency_exposure"
+    assert decision.excluded_from_currency_limit == ()
+
+
+def test_a_ticker_missing_from_the_table_stays_allowed_and_recorded(tmp_path) -> None:
+    """Resolves under no split, so the #60 contract holds: allow, record.
+
+    A control on both sides of #77. It must NOT start refusing.
+    """
+    assert parse_fx("PEPEUSD") is None
+    assert classify_symbol("PEPEUSD") == SYMBOL_NOT_FX
+    decision = _evaluate(tmp_path, "PEPEUSD", [], max_currency_exposure=2)
+    assert decision.allowed, decision.reason
+    assert decision.excluded_from_currency_limit == ("PEPEUSD",)
+
+
+# --- the ambiguity rule ------------------------------------------------------
+#
+# The shipped table is prefix-free (no code is a prefix of another), and
+# `test_the_shipped_table_is_prefix_free` pins that, so today every symbol has
+# at most one valid split. These tests inject codes the table does NOT carry so
+# the rule is exercised before the day someone adds one.
+
+def _with_codes(monkeypatch, *extra: str) -> None:
+    import straightedge.risk as risk
+
+    monkeypatch.setattr(risk, "CURRENCY_CODES", CURRENCY_CODES | frozenset(extra))
+
+
+def test_usdtry_stays_usd_try(monkeypatch) -> None:
+    """THE control that decides the rule. Passes before AND after #77.
+
+    With USDT in the table, a greedy longest-base parse takes USDT, is left
+    with RY, and either fails or (worse) is patched to read USDT/RY. Both
+    halves must be recognised codes, so USD/TRY is the only valid split.
+    """
+    assert parse_fx("USDTRY") == ("USD", "TRY")
+    _with_codes(monkeypatch, "USDT")
+    assert parse_fx("USDTRY") == ("USD", "TRY")
+    assert parse_fx("USDTHB") == ("USD", "THB")
+    assert parse_fx("USDTRYm") == ("USD", "TRY")
+
+
+def test_the_fewest_characters_win_so_a_suffix_is_never_absorbed(monkeypatch) -> None:
+    """With USDT in the table, BTCUSDT has two valid splits: BTC/USD, BTC/USDT.
+
+    The rule takes the one that consumes the fewest characters, so every
+    symbol that resolved under 3-and-3 resolves identically, and the #66
+    reading (a Tether leg is USD exposure) survives the code being added.
+    """
+    _with_codes(monkeypatch, "USDT")
+    assert parse_fx("BTCUSDT") == ("BTC", "USD")
+    assert parse_fx("USDTUSD") == ("USDT", "USD")
+
+
+def test_an_equal_length_tie_goes_to_the_longer_base(monkeypatch) -> None:
+    """ABC/DEFG and ABCD/EFG both consume seven characters. Stated, not incidental."""
+    _with_codes(monkeypatch, "ABC", "ABCD", "DEFG", "EFG")
+    assert parse_fx("ABCDEFG") == ("ABCD", "EFG")
+
+
+def test_the_shipped_table_is_prefix_free() -> None:
+    """While this holds, no real symbol can reach the ambiguity rule at all.
+
+    Not a safety property: the rule above is total either way. It is pinned so
+    that the first code which breaks it (USDT would) is a visible decision.
+    """
+    codes = sorted(CURRENCY_CODES)
+    clashes = [(a, b) for a in codes for b in codes if a != b and b.startswith(a)]
+    assert clashes == []
