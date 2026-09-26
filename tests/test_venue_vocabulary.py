@@ -116,7 +116,11 @@ CONFIG_SECTION_MT4 = 10
 #: watchdog growing a hardcoded alarm window, which is the drift this pin
 #: catches and the exact defect issue #68 measured on the price axis.
 KEY_TERMINAL_PATH = 6
-KEY_TIMEOUT_MS = 39
+#: 39 before the claim-open retry landed. The 40th is a COMMENT in
+#: `mt4/Experts/Mt4RiskBot.mq4`, which cites `mt4.timeout_ms` to show the
+#: arithmetic that bounds the retry against the adapter budget. Pinned up by
+#: one in the same commit that added it, which is what this tripwire asks for.
+KEY_TIMEOUT_MS = 40
 #: the official Windows pip package, named in the extra, the adapter import, the doctor
 #: advice and the mypy override.
 METATRADER5 = 21

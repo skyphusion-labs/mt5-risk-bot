@@ -6,6 +6,8 @@ input int Slippage = 30;
 input int ReconcileMagic = 0;   // 0 = report every position that has no stop
 input int SingletonStaleSeconds = 15;  // age at which a crashed instance's claim is taken over
 input int MailboxStaleSeconds = 60;    // age at which a wedged mailbox mutex is taken over
+input int ClaimOpenRetries = 10;       // attempts to open a claim this instance already owns
+input int ClaimOpenRetryMs = 20;       // wait between those attempts
 
 // Terminal-wide named locks. GlobalVariableSetOnCondition is the ONLY primitive
 // MQL4 documents as atomic, and it documents this exact use: "Function provides
@@ -191,21 +193,62 @@ void Process()
       return;
    }
 
+   // LAYER 1c, liveness. A TRANSIENT FileOpen failure on a claim this instance
+   // already owns is not a reason to destroy the request. Measured on the live
+   // desk on 2026-09-25: 84 requests over 10.8h were claimed by rename and then
+   // dropped right here with err=5004 (ERR_CANNOT_OPEN_FILE) on the very next
+   // statement, and each one cost the adapter a full bridge timeout. That is
+   // what every "mt4 bridge timeout" in that journal actually was.
+   //
+   // Retrying is safe for a specific reason, not an optimistic one: the claim
+   // path is private to this chart, SE_MAILBOX_LOCK is held, and NOTHING HAS
+   // BEEN EXECUTED YET, so a second open cannot duplicate an order. The desk
+   // already applies this same discipline on its own side (_retry_unlink and
+   // _atomic_write in mt4_live.py spin on PermissionError until their
+   // deadline), so this closes an asymmetry rather than inventing a policy.
+   //
+   // The budget is bounded against the ADAPTER's budget rather than guessed:
+   // mt4.timeout_ms is 5000ms and a measured steady-state round trip on this
+   // rig is about 205ms, so 10 attempts x 20ms is at most 180ms of added wait,
+   // under 4% of the adapter's budget and well inside one round trip.
+   //
+   // After the last attempt the request is STILL dropped and STILL logged, and
+   // a RECOVERY is logged too, so the rate of transient failures stays visible
+   // instead of being hidden by the retry that fixes it.
    int share = FILE_READ|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE;
-   int h = FileOpen(gClaimPath, share);
+   int tries = (ClaimOpenRetries < 1) ? 1 : ClaimOpenRetries;
+   int h = INVALID_HANDLE;
+   int attempts = 0;
+   int lastErr = 0;
+   while(attempts < tries)
+   {
+      ResetLastError();
+      h = FileOpen(gClaimPath, share);
+      attempts = attempts + 1;
+      if(h != INVALID_HANDLE)
+         break;
+      lastErr = GetLastError();
+      if(attempts < tries)
+         Sleep(ClaimOpenRetryMs);
+   }
    if(h == INVALID_HANDLE)
    {
-      // Claimed and unreadable. The request is DROPPED, never put back: the
-      // adapter times out and reports no result, which is the safe answer. A
-      // request that is replayed after a restart is a duplicate order.
+      // Claimed and unreadable after every attempt. The request is DROPPED,
+      // never put back: the adapter times out and reports no result, which is
+      // the safe answer. A request that is replayed after a restart is a
+      // duplicate order.
       Print("mt4riskbot claimed request unreadable path=", gClaimPath,
-            " err=", GetLastError(), ". Dropped, not replayed.");
+            " err=", lastErr, " attempts=", attempts, ". Dropped, not replayed.");
       FileDelete(gClaimPath, FILE_COMMON);
       LockRelease(SE_MAILBOX_LOCK);
       gHoldsMailbox = false;
       gBusy = false;
       return;
    }
+   if(attempts > 1)
+      Print("mt4riskbot claim open recovered path=", gClaimPath,
+            " attempts=", attempts, " lastErr=", lastErr,
+            ". The request was NOT lost.");
    string body = "";
    while(!FileIsEnding(h))
       body = body + FileReadString(h) + "\n";
