@@ -255,15 +255,61 @@ void Process()
    FileClose(h);
    FileDelete(gClaimPath, FILE_COMMON);
    string reply = Handle(body);
-   int w = FileOpen("mt4_risk_bot.res.tmp", FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   // LAYER 1d, DELIVERY. The reply write gets the same retry as the claim read,
+   // and for a sharper reason: by the time control reaches here, Handle() has
+   // ALREADY EXECUTED the operation. A silent failure to deliver the reply is
+   // therefore the worst failure this Expert can produce. For op=market it means
+   // the order is LIVE while the adapter is told nothing, so the adapter times
+   // out and writes the trade off. The previous code tested
+   // `if(w != INVALID_HANDLE)` and simply fell through when the open failed,
+   // writing no reply and logging NOTHING, so the fault was invisible in the
+   // Experts log and could only be seen from outside.
+   //
+   // Measured, 2026-09-26, a 24.3 minute window from 01:57:15Z to 02:21:48Z with
+   // the market CLOSED, watching the mailbox directory: the Expert claimed and
+   // released all 2166 requests but created only 2163 `.res.tmp` files. The three
+   // requests with no `.res.tmp` are exactly the three `reconnect` events in
+   // journal.jsonl at 02:17:28, 02:20:34 and 02:21:15, each one adapter budget
+   // after its request. The Experts log recorded none of it.
+   //
+   // 3/2166 is 0.139%. The claim-side rate on 2026-09-25 was 84 over roughly the
+   // same request volume, about 0.149%. Two failure sites, one underlying
+   // transient, whichever FileOpen happens to be in flight.
+   int w = INVALID_HANDLE;
+   int wAttempts = 0;
+   int wErr = 0;
+   while(wAttempts < tries)
+   {
+      ResetLastError();
+      w = FileOpen("mt4_risk_bot.res.tmp", FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+      wAttempts = wAttempts + 1;
+      if(w != INVALID_HANDLE)
+         break;
+      wErr = GetLastError();
+      if(wAttempts < tries)
+         Sleep(ClaimOpenRetryMs);
+   }
    if(w != INVALID_HANDLE)
    {
       FileWriteString(w, reply);
       FileFlush(w);
       FileClose(w);
       FileDelete("mt4_risk_bot.res", FILE_COMMON);
-      FileMove("mt4_risk_bot.res.tmp", FILE_COMMON, "mt4_risk_bot.res", FILE_COMMON);
+      // The rename was previously a bare statement, so a failed publish looked
+      // exactly like a successful one. It is the last step between an executed
+      // operation and the adapter learning about it, so it is now checked.
+      if(!FileMove("mt4_risk_bot.res.tmp", FILE_COMMON, "mt4_risk_bot.res", FILE_COMMON))
+         Print("mt4riskbot REPLY NOT DELIVERED: the operation RAN but .res.tmp could",
+               " not be renamed to .res err=", GetLastError(), ". The adapter will time",
+               " out on an operation that ALREADY EXECUTED.");
+      else if(wAttempts > 1)
+         Print("mt4riskbot reply open recovered attempts=", wAttempts,
+               " lastErr=", wErr, ". The reply WAS delivered.");
    }
+   else
+      Print("mt4riskbot REPLY NOT DELIVERED: the operation RAN but .res.tmp could not",
+            " be opened after ", wAttempts, " attempts err=", wErr, ". The adapter will",
+            " time out on an operation that ALREADY EXECUTED.");
    LockRelease(SE_MAILBOX_LOCK);
    gHoldsMailbox = false;
    gBusy = false;
