@@ -33,6 +33,7 @@ tolerance LOOSER than the sizer's own, which is why nothing could reach it.
 
 from __future__ import annotations
 
+import functools
 import math
 import os
 from datetime import datetime, timezone
@@ -63,7 +64,6 @@ from straightedge.state import (
 
 SYMBOL_FX = "fx"
 SYMBOL_NOT_FX = "not_fx"
-FX_ALPHA = 6
 
 #: Refusal reason for an effective deviation the current spread cannot fit
 #: inside. Prefix-shaped: the payload carries the measurement AND the config key
@@ -91,12 +91,52 @@ DEVIATION_HEADROOM_MULTIPLE = 3.0
 
 
 
+@functools.lru_cache(maxsize=8)
+def _code_lengths(codes: frozenset[str]) -> tuple[int, ...]:
+    return tuple(sorted({len(c) for c in codes}))
+
+
+def resolve_pair(alpha: str, codes: frozenset[str]) -> tuple[str, str] | None:
+    """The one split of `alpha` into two recognised codes, or None (issue #77).
+
+    `alpha` is upper-case alphabetic. A split is a base that is a prefix of
+    `alpha` and a quote that immediately follows it, BOTH in `codes`, at any
+    length the table carries; whatever follows the quote is a suffix and is
+    ignored. Where more than one split is valid, the rule is:
+
+    1. the split that consumes the FEWEST characters wins, so a suffix letter
+       is never absorbed into a code when a shorter reading exists. Every
+       symbol that resolved under the old 3-and-3 split therefore resolves
+       identically (six is the minimum), and with USDT in the table BTCUSDT
+       would still read BTC/USD, the #66 reading;
+    2. on an equal count, the LONGER base wins.
+
+    A greedy longest-base parse is NOT the rule: with USDT in the table it
+    would take USDT from USDTRY and be left with RY. Requiring both halves
+    first is what keeps USDTRY as USD/TRY.
+    """
+    lengths = _code_lengths(codes)
+    best: tuple[int, int, str, str] | None = None
+    for i in lengths:
+        base = alpha[:i]
+        if len(base) < i or base not in codes:
+            continue
+        for j in lengths:
+            quote = alpha[i:i + j]
+            if len(quote) < j or quote not in codes:
+                continue
+            if best is None or (i + j, -i) < (best[0], best[1]):
+                best = (i + j, -i, base, quote)
+    return None if best is None else (best[2], best[3])
+
+
 def parse_fx(symbol: str) -> tuple[str, str] | None:
     """Base and quote when the symbol is an FX pair, otherwise None.
 
-    Non-alphabetic characters are dropped, the first six alphabetic characters
-    are taken, and BOTH halves are checked against CURRENCY_CODES. The table
-    CONFIRMS a pair; it never refuses a trade.
+    Non-alphabetic characters are dropped and the rest is split into two
+    codes from CURRENCY_CODES by `resolve_pair`, which states the rule when
+    more than one split is valid. Codes may be longer than three characters
+    (DOGEUSD is DOGE/USD). The table CONFIRMS a pair; it never refuses a trade.
 
     None therefore means one thing only: the currency-exposure limit does not
     apply to this symbol. It covers an instrument that cannot be a pair (US30),
@@ -109,19 +149,14 @@ def parse_fx(symbol: str) -> tuple[str, str] | None:
     rather than by the shape.
     """
     s = "".join(ch for ch in symbol if ch.isalpha()).upper()
-    if len(s) < FX_ALPHA:
-        return None
-    base, quote = s[:3], s[3:6]
-    if base in CURRENCY_CODES and quote in CURRENCY_CODES:
-        return base, quote
-    return None
+    return resolve_pair(s, CURRENCY_CODES)
 
 
 def classify_symbol(symbol: str) -> str:
     """Say whether the currency-exposure limit applies to this symbol.
 
-    SYMBOL_FX: the first six alphabetic characters are two recognised currency
-    codes, so the limit applies.
+    SYMBOL_FX: the alphabetic characters begin with two recognised currency
+    codes (see `resolve_pair`), so the limit applies.
 
     SYMBOL_NOT_FX: everything else. The limit is NOT APPLICABLE, which is not
     the same as unmeasurable and gets the opposite answer: the caller ALLOWS

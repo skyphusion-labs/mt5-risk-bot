@@ -37,15 +37,21 @@ DECLINED, and stated so the next reader does not re-derive it:
   and an alias map would make `parse_fx` return a code the broker never used,
   which then reaches the operator in `excluded_from_currency_limit`. The bound
   is narrow and named rather than papered over.
-- Tickers longer than three characters. The resolver takes the first six
-  alphabetic characters and splits them 3 and 3, so DOGE, AVAX, LINK, MATIC and
-  SHIB cannot resolve and stay allowed-and-recorded. Widening that needs a
-  longest-match parse against the table, which changes how EVERY symbol
-  resolves, so it belongs in its own unit with its own sweep, not here.
-- Adding USDT as a code. Under the 3-and-3 split a four-character code can
-  never occupy either half, so it would be inert. `BTCUSDT` already resolves as
-  BTC/USD, which folds the Tether leg into USD. That is the intended reading:
-  for a correlation count, a USD-pegged stablecoin leg is USD exposure.
+- Adding USDT as a code. Before #77 it would have been inert (a four-character
+  code could not occupy either half). It is no longer inert, and it is still
+  declined: `BTCUSDT` resolves as BTC/USD, which folds the Tether leg into USD,
+  and that is the intended reading, because for a correlation count a
+  USD-pegged stablecoin leg is USD exposure. The resolver's fewest-characters
+  rule would keep BTCUSDT as BTC/USD even with USDT present, but USDT would
+  also make USDT a bucket of its own for USDTUSD-style symbols and would break
+  the prefix-free property `test_the_shipped_table_is_prefix_free` pins, so
+  adding it is a decision to take on purpose, not a table edit.
+
+LONGER TICKERS (issue #77). Until #77 the resolver split the first six
+alphabetic characters 3 and 3, so DOGE, AVAX, LINK, MATIC and SHIB could not
+resolve whatever this table carried. `risk.resolve_pair` now matches codes of
+any length the table holds and states the rule when more than one split is
+valid; this table is where those codes are admitted.
 """
 
 from __future__ import annotations
@@ -74,11 +80,14 @@ _CODES = (
 )
 
 # Crypto base codes. Issue #66 names BTC, ETH, LTC, XRP and BCH as the minimum;
-# the rest are the other majors a MetaTrader venue lists as spot pairs.
+# issue #77 adds AVAX, DOGE, LINK, MATIC and SHIB, which the 3-and-3 split could
+# not see; the rest are the other majors a MetaTrader venue lists as spot pairs.
 #
 # The selection rule, so extending this is a decision and not a guess:
-#   1. exactly three alphabetic characters, because that is what the resolver's
-#      3-and-3 split can see;
+#   1. alphabetic, three characters or longer (the resolver matches any length
+#      the table carries since #77), and NOT a prefix of another code and no
+#      other code a prefix of it, which `test_the_shipped_table_is_prefix_free`
+#      asserts, so no real symbol ever reaches the ambiguity rule;
 #   2. a code a venue actually quotes as the BASE of a spot pair against a
 #      fiat or metal code (not a perpetual, not a token pair);
 #   3. no collision with ISO 4217 or the metal codes, which
@@ -91,7 +100,8 @@ _CODES = (
 # as the control on that. XBT is bitcoin under the ISO-style X convention
 # (BitMEX and others); see the module docstring for why it is not aliased.
 _CRYPTO_CODES = (
-    "ADA BCH BNB BTC DOT EOS ETC ETH LTC SOL TRX XBT XLM XMR XRP XTZ ZEC"
+    "ADA AVAX BCH BNB BTC DOGE DOT EOS ETC ETH LINK LTC MATIC SHIB SOL TRX"
+    " XBT XLM XMR XRP XTZ ZEC"
 )
 
 #: ISO 4217 plus the four metal codes ISO assigns. Split out from

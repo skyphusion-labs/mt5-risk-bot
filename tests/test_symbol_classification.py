@@ -5,6 +5,7 @@ from __future__ import annotations
 import itertools
 import string
 from datetime import datetime, timezone
+from typing import NamedTuple
 
 import pytest
 
@@ -81,34 +82,135 @@ def test_existing_shapes_still_parse() -> None:
     assert parse_fx("XAUUSD") == ("XAU", "USD")
 
 
-def test_sweep_recognised_codes_parse_in_every_suffix_convention() -> None:
-    bad: list[str] = []
-    cases = 0
-    for code in sorted(CURRENCY_CODES):
-        for suf in SUFFIX_CONVENTIONS:
-            cases += 2
-            if parse_fx(code + "USD" + suf) != (code, "USD"):
-                bad.append(code + "USD" + suf)
-            if parse_fx("EUR" + code + suf) != ("EUR", code):
-                bad.append("EUR" + code + suf)
-    assert cases == len(CURRENCY_CODES) * len(SUFFIX_CONVENTIONS) * 2
-    assert bad == [], f"{len(bad)} of {cases} failed to parse, first: {bad[:5]}"
+# --- the #60 sweep, widened for variable-length codes (issue #77) -------------
+#
+# #60 swept every three-letter stem in the base and the quote position under
+# every suffix convention: 17,576 x 25 x 2 = 878,800 cases, split 9,650
+# recognised and 869,150 unrecognised. That denominator ASSUMED the 3-and-3
+# split, and its formula (17,576 minus the table size) silently assumed every
+# code is three letters. Every one of those cases is still swept below.
+#
+# What is added is every stem longer than three letters within ONE letter of a
+# code: each code longer than three, each code plus one letter, and each proper
+# prefix of a code at least four long (MATI, which a suffix letter completes:
+# MATI + "c" is MATIC). A stem shares nothing with the table otherwise only if
+# no code is a prefix of it and it is a prefix of no code, and then the
+# anchored parse cannot use it at all. Offline, EVERY four-letter stem and
+# EVERY five-letter stem (a superset of every code plus two letters) is swept,
+# 616,917,600 cases; CHANGELOG #77 has the counts. They stay out of CI because a
+# 7.66M-case version took a minute a run, and a sweep CI will not tolerate gets
+# deleted.
+#
+# Two oracles, both independent of the resolver's loop:
+# - `_reference_split` brute-forces EVERY (base, quote) length, so a bound or
+#   ordering error in the resolver disagrees with it;
+# - `_three_and_three` is the pre-#77 resolver, verbatim. Wherever it resolved,
+#   the new one must give the SAME answer. #77 may only ADD resolutions, and
+#   each one it adds must go through a code longer than three letters.
+
+SWEEP_DENOMINATOR_60 = 878_800
+#: Cases None under 3-and-3 that now resolve. Pinned, not bounded: a change
+#: here is a change in which symbols the currency limit applies to.
+SWEEP_NEWLY_RESOLVED = 3_504
 
 
-def test_sweep_unrecognised_codes_are_not_treated_as_pairs() -> None:
+def _reference_split(alpha: str) -> tuple[str, str] | None:
+    valid = [
+        (i + j, -i, alpha[:i], alpha[i:i + j])
+        for i in range(1, len(alpha) + 1)
+        for j in range(1, len(alpha) - i + 1)
+        if alpha[:i] in CURRENCY_CODES and alpha[i:i + j] in CURRENCY_CODES
+    ]
+    if not valid:
+        return None
+    best = min(valid)
+    return best[2], best[3]
+
+
+def _three_and_three(alpha: str) -> tuple[str, str] | None:
+    if len(alpha) < 6:
+        return None
+    base, quote = alpha[:3], alpha[3:6]
+    if base in CURRENCY_CODES and quote in CURRENCY_CODES:
+        return base, quote
+    return None
+
+
+def _longer_stems() -> list[str]:
+    stems: set[str] = set()
+    for code in CURRENCY_CODES:
+        if len(code) > 3:
+            stems.add(code)
+        stems.update(code + ch for ch in string.ascii_uppercase)
+        stems.update(code[:n] for n in range(4, len(code)))
+    return sorted(stems)
+
+
+class Sweep(NamedTuple):
+    cases: int
+    recognised: int
+    bad: list[str]
+    newly: list[str]
+
+
+def sweep(stems: list[str]) -> Sweep:
+    """Every stem, both positions, every suffix convention. Importable offline."""
+    reference: dict[str, tuple[str, str] | None] = {}
     bad: list[str] = []
-    cases = 0
-    for trio in itertools.product(string.ascii_uppercase, repeat=3):
-        code = "".join(trio)
-        if code in CURRENCY_CODES:
-            continue
+    newly: list[str] = []
+    cases = recognised = 0
+    for stem in stems:
+        is_code = stem in CURRENCY_CODES
+        reference.clear()
         for suf in SUFFIX_CONVENTIONS:
-            cases += 2
-            for sym in (code + "USD" + suf, "EUR" + code + suf):
-                if parse_fx(sym) is not None or classify_symbol(sym) != SYMBOL_NOT_FX:
+            for sym, want in ((stem + "USD" + suf, (stem, "USD")), ("EUR" + stem + suf, ("EUR", stem))):
+                cases += 1
+                got = parse_fx(sym)
+                alpha = "".join(ch for ch in sym if ch.isalpha()).upper()
+                if alpha not in reference:
+                    reference[alpha] = _reference_split(alpha)
+                old = _three_and_three(alpha)
+                if got != reference[alpha] or classify_symbol(sym) != (SYMBOL_FX if got else SYMBOL_NOT_FX):
                     bad.append(sym)
-    assert cases == (17_576 - len(CURRENCY_CODES)) * len(SUFFIX_CONVENTIONS) * 2
-    assert bad == [], f"{len(bad)} of {cases} wrongly read as a pair, first: {bad[:5]}"
+                elif old is not None and got != old:
+                    bad.append(sym)
+                elif is_code and got != want:
+                    bad.append(sym)
+                elif not is_code and got is not None and stem in got:
+                    bad.append(sym)
+                if is_code:
+                    recognised += 1
+                if old is None and got is not None:
+                    newly.append(sym)
+                    if max(len(got[0]), len(got[1])) <= 3:
+                        bad.append(sym)
+    return Sweep(cases, recognised, bad, newly)
+
+
+def test_sweep_every_stem_in_every_suffix_convention_matches_the_rule() -> None:
+    trios = ["".join(t) for t in itertools.product(string.ascii_uppercase, repeat=3)]
+    longer = _longer_stems()
+    old = sweep(trios)
+    new = sweep(longer)
+    cases = old.cases + new.cases
+    bad = old.bad + new.bad
+    newly = old.newly + new.newly
+    assert old.cases == SWEEP_DENOMINATOR_60
+    assert new.cases == len(longer) * len(SUFFIX_CONVENTIONS) * 2
+    assert cases >= SWEEP_DENOMINATOR_60, f"the sweep NARROWED: {cases} < {SWEEP_DENOMINATOR_60}"
+    assert old.recognised + new.recognised == len(CURRENCY_CODES) * len(SUFFIX_CONVENTIONS) * 2
+    print(
+        f"#77 sweep: {cases} cases = {SWEEP_DENOMINATOR_60} from #60 "
+        f"({len(old.bad)} failed, {len(old.newly)} newly resolved) + {new.cases} "
+        f"longer-stem ({len(new.bad)} failed, {len(new.newly)} newly resolved)"
+    )
+    assert bad == [], f"{len(bad)} of {cases} failed, first: {bad[:5]}"
+    # Of the 878,800 #60 cases, exactly these change, and only from None: the
+    # suffix letter completes DOGE, so EUR + DOG + "e" now reads EUR/DOGE and
+    # counts toward the limit instead of being recorded as not applicable.
+    assert sorted(old.newly) == ["EURDOGe", "EURDOGecn"]
+    assert len(newly) == SWEEP_NEWLY_RESOLVED, newly[:20]
+
 
 def test_too_short_to_classify_returns_none() -> None:
     assert parse_fx("US30") is None

@@ -6,6 +6,47 @@ See README.md and docs/CONTRACT.md.
 
 ## Unreleased
 
+### Tickers longer than three characters resolve as pairs (issue #77)
+
+`parse_fx` took the first six alphabetic characters and split them 3 and 3, so
+only a three-character ticker could ever resolve, whatever the table carried.
+`DOGEUSD` read as DOG/EUS and was allowed-and-recorded as
+`currency_limit_not_applicable`, the same as `US30`, so a stack of DOGE, AVAX,
+LINK and SHIB longs was four short-USD tickets the limit could not see. Adding
+the codes to the table alone was measured and changes nothing: all five still
+returned None until the split changed.
+
+- `risk.resolve_pair` matches a base and a quote of any length the table
+  carries, both recognised. **Ambiguity rule**, stated in `docs/CONTRACT.md`:
+  the split consuming the FEWEST letters wins, then the LONGER base. `USDTRY` is
+  USD/TRY and stays so with `USDT` injected into the table (a greedy
+  longest-base parse would take USDT and be left with RY). The shipped table is
+  prefix-free, pinned by a test, so no real symbol reaches the rule today.
+- `AVAX DOGE LINK MATIC SHIB` join the crypto codes. `USDT` is still declined;
+  `currencies.py` says why now that it would no longer be inert.
+- A symbol no split resolves stays allowed-and-recorded, never refused
+  (`PEPEUSD` is the control). A prefix decoration still hides the pair
+  (`mEURUSD`, `FXEURUSD`): the base is anchored at the first letter, so those
+  were never a 3-and-3 defect and #77 does not change them.
+- **The #60 sweep, re-run and widened.** Old denominator 878,800 (every
+  three-letter stem x 25 suffix conventions x base and quote position; 9,650
+  recognised, 869,150 not). Its formula also assumed every code is three
+  letters. Every one of those cases is still swept, against two oracles: an
+  independent brute force over every split length, and the pre-#77 3-and-3
+  resolver verbatim, which the new one must AGREE with wherever the old one
+  resolved. Of the 878,800, 878,800 pass, and exactly two change, both from
+  None: `EURDOGe` and `EURDOGecn` now read EUR/DOGE because the suffix letter
+  completes the code. The CI sweep adds every longer stem within one letter of a
+  code, 257,700 cases, all passing, for a new CI denominator of 1,136,500 (3,504
+  newly resolved, every one through a code longer than three letters, pinned).
+  Offline, exhaustively: every four-letter stem, 22,848,800 cases, 0 failed, 202
+  newly resolved; every five-letter stem, 594,068,800 cases, 0 failed, 2,650
+  newly resolved. Those are not in CI because a sweep nobody tolerates there
+  gets deleted (#55).
+- The pin that asserted these tickers stay None
+  (`test_crypto_tickers_longer_than_three_characters_stay_not_applicable`) is
+  replaced by `..._resolve`, asserting the new contract.
+
 ### The deviation gate judged a number the limit/stop path never sent (issue #92)
 
 Found while working #68, and it is the live residue of #68's fix: that fix had no
