@@ -116,7 +116,13 @@ CONFIG_SECTION_MT4 = 10
 #: watchdog growing a hardcoded alarm window, which is the drift this pin
 #: catches and the exact defect issue #68 measured on the price axis.
 KEY_TERMINAL_PATH = 6
-KEY_TIMEOUT_MS = 39
+#: 39 before the claim-open retry landed, now 41. Neither new site is a live
+#: config read: the 40th is a COMMENT in `mt4/Experts/Mt4RiskBot.mq4` citing
+#: `mt4.timeout_ms` to show the arithmetic that bounds the retry against the
+#: adapter budget, and the 41st is the same citation in
+#: `tests/test_mt4_claim_open_retry.py`, which pins that arithmetic. Pinned up
+#: in the same commit that added them, which is what this tripwire asks for.
+KEY_TIMEOUT_MS = 41
 #: the official Windows pip package, named in the extra, the adapter import, the doctor
 #: advice and the mypy override.
 METATRADER5 = 21
@@ -130,7 +136,11 @@ DOCTOR_MT5_BINDING = 3
 #: 20 before the mailbox claim landed, plus 9: the Expert's claim-by-rename path and
 #: refusal log, the "One Expert, enforced" sections of docs/MT4.md and mt4/README.md,
 #: and the CHANGELOG entry that describes the claim.
-MT4_MAILBOX = 29
+#: 29 before the claim-open retry landed. The 30th is the measured EA log line
+#: quoted in `tests/test_mt4_claim_open_retry.py`, which names
+#: `mt4_risk_bot.req.claim.<ChartID>` as the path that was claimed and then
+#: dropped. Evidence in a docstring, not a new mailbox site.
+MT4_MAILBOX = 30
 #: the LIVE Cloudflare AI Gateway id. Deliberately still the old string; see the header.
 #: 13 gateway-resource references plus 2 in the RUNBOOK LaunchAgent migration note.
 GATEWAY_ID_AND_MIGRATION_NOTE = 15
