@@ -17,7 +17,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, TextIO
 
-_SECRET_KEYS = frozenset({"token", "password", "api_key", "grok_key", "claude_key"})
+# `mailbox_token` is spelled out because the match is exact-key, not substring:
+# "token" alone does not redact a field called "mailbox_token". Nothing journals
+# it today; it is listed so that adding such a field cannot leak one silently.
+_SECRET_KEYS = frozenset(
+    {"token", "password", "api_key", "grok_key", "claude_key", "mailbox_token"}
+)
 _REDACTED = "[REDACTED]"
 # BotFather tokens: <id>:<secret> with 8-12 digit id and 30+ url-safe chars.
 _TG_TOKEN_RE = re.compile(r"\d{8,12}:[A-Za-z0-9_-]{30,}")

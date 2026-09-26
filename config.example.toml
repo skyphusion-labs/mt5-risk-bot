@@ -20,6 +20,18 @@ timeout_ms = 60000
 # or set MT4_FILES_DIR. %APPDATA% in this value expands.
 files_dir = ""
 timeout_ms = 5000
+# The SEND budget, for the ops that can change the book (market, working,
+# modify_*, cancel, close, close_by). Separate from timeout_ms above because the
+# two failures do not cost the same: a read that times out is retried by the next
+# step, while a send that times out is AMBIGUOUS (filled, in flight, or never
+# sent) and the desk cannot tell which. The default is DERIVED from the Expert's
+# own worst case, not chosen: 1000ms measured transport ceiling + 950ms of
+# Sleep inside the Expert's retry ladders + 360ms of claim-open retries + 19
+# broker round trips at a 250ms allowance = 7060. See constants.py and
+# docs/MT4.md. The desk REFUSES to start if this is at or below timeout_ms, or
+# inside the Expert's Sleep total, because a desk that gives up while the Expert
+# is still working is how a duplicate order becomes reachable.
+#send_timeout_ms = 7060
 # Seconds to wait for the Expert at STARTUP only, before giving up. A
 # boot-triggered task races MT4's own launch: the terminal has to start, load,
 # log in and reach the Expert's first tick, which is tens of seconds. Omit this
@@ -28,6 +40,15 @@ timeout_ms = 5000
 # files_dir is still reported instead of hanging. This does NOT change
 # timeout_ms, which is the per-command budget in steady state.
 #startup_wait_sec = 180
+# Run the desk somewhere OTHER than the MetaTrader 4 host (#73). Set this to the
+# `straightedge mt4-shim` endpoint on the MT4 box and the desk stops needing to
+# see files_dir at all; leave it empty for a co-located desk, which is still
+# fully supported. It is checked BEFORE files_dir, because on Windows files_dir
+# resolves to Common Files even when nobody set it. See docs/TRANSPORT.md.
+#mailbox_url = "https://mt4-host.example.org/mt4/call"
+# The shared bearer token has NO key here on purpose. It goes in the environment,
+# as MT4_MAILBOX_TOKEN, on the desk AND on the shim. Minimum 32 characters, and
+# there is no unauthenticated mode: this endpoint places orders.
 
 [risk]
 risk_pct = 0.005            # 0.5% of equity per trade
@@ -108,6 +129,11 @@ poll_seconds = 1            # Telegram getUpdates timeout (seconds). One loop ti
 comment = "straightedge"
 # journal.jsonl is the fill log (SSOT). journal.tg_offset is chmod 0600. Process umask 077.
 # journal.heartbeat is written each successful step_all. chmod 0600.
+# Line 1 is an ISO timestamp; then blocked=, mode=, stale_after_s= and friends.
+# Read it with `python -m straightedge watch`. Nothing else does.
+# The staleness threshold is DERIVED from poll_seconds above, the Telegram retry
+# ceiling and the venue timeout_ms below. There is deliberately no key for it:
+# an operator-set alarm window is a number nobody measured. `doctor` prints it.
 # journal.jsonl rotates to journal.jsonl.1 at 10 MiB.
 # journal.lock is exclusive (flock / msvcrt). A second run --loop on this path exits 2.
 journal_path = "journal.jsonl"

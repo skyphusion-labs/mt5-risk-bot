@@ -68,20 +68,92 @@ VENUE_SET_FORM_IN_SRC = 4
 REAL_MONEY_GATE_IN_RISK = 2
 #: the legality check in `config.py`, a different question from "is this a live venue".
 LEGAL_MODE_SET_IN_SRC = 1
-#: TOML section headers across the tracked tree. The mt4 header is 7, not 2: the two
+#: TOML section headers across the tracked tree. The mt4 header is 9, not 2: the two
 #: example configs, one inline TOML fixture in tests/test_mt4_adapter.py, the CHANGELOG
-#: line naming the `[mt4] startup_wait_sec` key, and three inline TOML fixtures in
-#: tests/test_mt4_startup_wait.py that pin set / unset / zero for that key.
-CONFIG_SECTION_MT5 = 2
-CONFIG_SECTION_MT4 = 7
+#: line naming the `[mt4] startup_wait_sec` key, three inline TOML fixtures in
+#: tests/test_mt4_startup_wait.py that pin set / unset / zero for that key, and TWO in
+#: tests/test_mt4_net_transport.py. Those last two went 7 -> 9 with the network
+#: transport (#73) and they are load-bearing rather than incidental: both write a
+#: `[mt4] mailbox_token` into a config FILE and assert the loader does not read it,
+#: because that token is environment-only and a TOML key for it would put a
+#: trade-placing secret in a file people commit.
+#:
+#: Both went up by one with the watchdog (issue #38), from ONE line of
+#: `docs/RUNBOOK.md` that names which key sets the staleness threshold: the
+#: threshold is derived from the venue's own per-command budget, so the operator
+#: reading the alarm has to be told which section that budget lives in. It is
+#: prose about the key, not a new config site.
+CONFIG_SECTION_MT5 = 3
+#: 11 after the read/send budget split (#37). The new site is
+#: `docs/RUNBOOK.md`, which names `[mt4] send_timeout_ms` beside
+#: `[mt4] timeout_ms` to say which of the two the watchdog derives its alarm from.
+#: Prose about the pair, not a new config section.
+CONFIG_SECTION_MT4 = 11
 #: the `[mt5]` section keys, and `timeout_ms` which both venue sections share.
-#: timeout_ms went 18 -> 24 with the MT4 startup wait. Only ONE of the six is a new
+#: timeout_ms went 18 -> 24 with the MT4 startup wait. Only ONE of those six was a new
 #: config site (a fixture in tests/test_mt4_startup_wait.py asserting that an absent
 #: startup_wait_sec stays unset); the other five are prose ABOUT the steady-state key:
 #: both example configs explain that startup_wait_sec is NOT timeout_ms, and docs/MT4.md
 #: plus the CHANGELOG state the budget table and the "budget plus one timeout_ms" bound.
+#:
+#: It went 24 -> 30 with the network transport (#73), and this key is the reason that
+#: change is worth reading rather than rubber-stamping: the shim REUSES `timeout_ms` as
+#: its own mailbox budget instead of introducing a second number, and the desk allows
+#: that plus a 2 second network grace so the shim is the end that gives up first. The
+#: six new sites are exactly that statement, in the places an operator or a reviewer
+#: looks: one code site (`cmd_mt4_shim` in src/straightedge/__main__.py, which computes
+#: the shim's budget from it), two in docs/TRANSPORT.md (the failure table and the
+#: budget-ordering paragraph), one in docs/CONTRACT.md, one in the CHANGELOG, and one in
+#: tests/test_mt4_net_transport.py. If this number drops back toward 24, the most likely
+#: cause is the shim growing a budget of its own, which is the drift this pin catches.
+#:
+#: It went 30 -> 39 with the watchdog (issue #38), and the reason is the same
+#: shape as the shim's: the staleness threshold REUSES this key as the venue
+#: term of its budget rather than introducing an alarm window of its own, so
+#: every new site is that statement. Attributed by file, because a total nobody
+#: can break down is not a measurement: 2 in `src/straightedge/watchdog.py` (the
+#: derivation in the module docstring, and the one `getattr` that reads it), 3 in
+#: `tests/test_watchdog.py` (the pinned MT4 and MT5 budgets, and the docstring
+#: saying that moving this default has to move them), and 1 each in
+#: `docs/RUNBOOK.md`, `docs/CONTRACT.md`, `config.example.toml` and the
+#: `CHANGELOG.md`. If this number drops toward 30, the most likely cause is the
+#: watchdog growing a hardcoded alarm window, which is the drift this pin
+#: catches and the exact defect issue #68 measured on the price axis.
 KEY_TERMINAL_PATH = 6
-KEY_TIMEOUT_MS = 24
+#: 39 before the claim-open retry landed, then 41. Neither of those two was a live
+#: config read: the 40th is a COMMENT in `mt4/Experts/Mt4RiskBot.mq4` citing
+#: `mt4.timeout_ms` to show the arithmetic that bounds the retry against the
+#: adapter budget, and the 41st is the same citation in
+#: `tests/test_mt4_claim_open_retry.py`, which pins that arithmetic.
+#:
+#: 122 after the read/send budget split (#37). The jump is large and it is real, and
+#: it is largely the SUBSTRING trap this tripwire is built out of: the new key is
+#: `send_timeout_ms`, so every one of its sites also matches `timeout_ms`, and a
+#: line that names both increments this twice. Attribution by file, counted in the
+#: same commit that added them:
+#:
+#:   23  src/straightedge/config.py            both Mt4Config fields and their
+#:                                            reasoning, the loader, and the two
+#:                                            new `validate()` refusals
+#:   21  tests/test_send_budget.py             the new gate over the derivation
+#:   11  tests/test_watchdog.py                unchanged count plus the pin that the
+#:                                            alarm derives from the READ budget
+#:    7  docs/RUNBOOK.md, docs/MT4.md, config.example.toml, CHANGELOG.md (each)
+#:    6  config.handover.toml
+#:    5  docs/TRANSPORT.md
+#:    4  src/straightedge/watchdog.py, broker/__init__.py, __main__.py (each)
+#:    3  tests/test_mt4_net_transport.py, tests/test_mt4_adapter.py,
+#:       docs/CONTRACT.md (each)
+#:    2  src/straightedge/broker/mt5_live.py
+#:    1  tests/test_mt4_startup_wait.py, tests/test_mt4_claim_open_retry.py,
+#:       src/straightedge/constants.py, src/straightedge/broker/mt4_live.py,
+#:       mt4/Experts/Mt4RiskBot.mq4 (each)
+#:
+#: There are exactly TWO live config reads across all of it, both in
+#: `config.py`'s loader: `timeout_ms` and `send_timeout_ms`. Everything else is a
+#: field declaration, a derivation, a test, or prose explaining why the two numbers
+#: are not one number.
+KEY_TIMEOUT_MS = 122
 #: the official Windows pip package, named in the extra, the adapter import, the doctor
 #: advice and the mypy override.
 METATRADER5 = 21
@@ -95,7 +167,23 @@ DOCTOR_MT5_BINDING = 3
 #: 20 before the mailbox claim landed, plus 9: the Expert's claim-by-rename path and
 #: refusal log, the "One Expert, enforced" sections of docs/MT4.md and mt4/README.md,
 #: and the CHANGELOG entry that describes the claim.
-MT4_MAILBOX = 29
+#: 29 before the claim-open retry landed, then 31, then 32, and none of those three
+#: is a new mailbox site: the 30th is the measured EA log line in
+#: `tests/test_mt4_claim_open_retry.py` naming `mt4_risk_bot.req.claim.<ChartID>`,
+#: the 31st names `mt4_risk_bot.res.tmp` in the same file (the reply staging file
+#: whose FileOpen was failing silently), and the 32nd is the `-Base` default in
+#: `mt4/tools/measure-mailbox.ps1`, parameterised so the basename appears ONCE
+#: there rather than at every filename it builds.
+#:
+#: 36 after the stale-request fence (#37). Four more, and one of them IS a new file
+#: in the mailbox directory:
+#:   2  tests/test_mt4_stale_request_fence.py, asserting the Expert stamps
+#:      `mt4_risk_bot.req` BEFORE it renames it to the claim path
+#:   2  mt4/Experts/Mt4RiskBot.mq4, where the fence reads that stamp and where
+#:      `CalibrateFileTime` writes and deletes its own `mt4_risk_bot.timeprobe`
+#: The probe is a real new mailbox file. It is created and removed inside the one
+#: function that needs it, at OnInit and never again.
+MT4_MAILBOX = 36
 #: the LIVE Cloudflare AI Gateway id. Deliberately still the old string; see the header.
 #: 13 gateway-resource references plus 2 in the RUNBOOK LaunchAgent migration note.
 GATEWAY_ID_AND_MIGRATION_NOTE = 15

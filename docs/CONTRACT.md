@@ -45,15 +45,20 @@ Auto EMA trading is off until `/auto on`.
 | Alerts | SL/TP hits and pending-order fills emit Telegram alerts even when `/auto` is off. |
 | Notify | Default notify events include `open`, `close`, `pending`, and `recap`. `flatten_incomplete` is always sent, whatever `notify_events` says. |
 | Recap | A UTC day roll sends a recap notify (`journal.tail`, equity vs `day_start`). That is not a trade. `/recap` dumps the same snapshot. |
-| Secrets | Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `AI_PROVIDER`, `ADVICE_URL`, `ADVICE_TOKEN`. |
+| Secrets | Secrets live in the environment: `MT5_LOGIN`, `MT5_PASSWORD`, `MT5_SERVER`, `TELEGRAM_BOT_TOKEN`, `TELEGRAM_CHAT_ID`, `XAI_API_KEY`, `ANTHROPIC_API_KEY`, `AI_PROVIDER`, `ADVICE_URL`, `ADVICE_TOKEN`, `MT4_MAILBOX_TOKEN`. |
+| MT4 transport | The MT4 venue has two transports and one ICD (`docs/MT4.md`, decision in `docs/TRANSPORT.md`). Unset `mt4.mailbox_url`: the desk reads MT4's Common Files mailbox itself and must run on the MetaTrader 4 host. Set: the desk speaks HTTPS to `straightedge mt4-shim` on that host and can run anywhere, while the Expert is byte-for-byte the same file and issues no `WebRequest`. `mailbox_url` is checked BEFORE `files_dir`, because `files_dir` auto-resolves on Windows and a url that lost the tie would leave a remote-configured desk reading a local mailbox. The desk is still the initiator either way, so every risk gate stays in the desk's process and on the desk's clock. |
+| MT4 transport auth | `MT4_MAILBOX_TOKEN` is required on BOTH ends, is environment-only (there is no TOML key), and must be at least 32 characters. There is no unauthenticated mode and no flag that creates one. The shim checks it BEFORE the path, the method and the body, answers every unauthenticated request with `401` whatever it asked for, and writes nothing to the mailbox when it refuses. `http.server` has no TLS, so the shim binds `127.0.0.1` and refuses a routable address without `--i-understand-plaintext`; the supported exposure is a Cloudflare Tunnel, which opens no inbound port. |
+| MT4 transport failure | The partition `Mt4Broker.startup_connect()` depends on survives the network. The shim answers `504` when the Expert did not reply and `503` when the mailbox is unwritable, and the desk turns both back into `BridgeTimeout`, which is retried at startup. Everything else (`401`, `404`, `411`, `413`, `400`, `500`, a mismatched reply id) is a live peer stating a diagnosis, is raised as `RuntimeError`, and is NEVER retried. A read gets `mt4.timeout_ms` and a send gets `mt4.send_timeout_ms`; the desk allows itself 2 seconds more than it tells the far end, so the far end gives up first and the desk learns which. A network partition means the desk cannot flatten; what protects a position in that window is the broker-side stop the Expert attaches on every entry, not the desk. |
+| MT4 send timeout | A send that produced no reply is UNRESOLVED, never "failed": the order may be filled, in flight, or never sent. The desk withdraws the request if it still can, states which of `withdrawn` / `claimed` / `locked` it achieved, reads the book once, reports what it matched, and refuses to transmit that order again. It does NOT conclude from an empty book that nothing happened. |
 | Agent billing | `AI_PROVIDER=computer` posts to the agent. The agent bills through the gateway (`CF_AIG_TOKEN`), not a provider key. |
 | Redact | Journal writes, `loop_error` stderr, and Telegram `send` redact BotFather tokens. Named secret keys in the journal become `[REDACTED]`. |
 | File mode | `journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.equity.json`, `journal.lock`, `journal.heartbeat`, and `HALT` are chmod 0600 on Unix. The bot sets umask 077. Windows has no POSIX mode bits; the lock is still exclusive. |
 | Sender lock | `TELEGRAM_ALLOW_SENDERS` (or `telegram.allow_senders`) lists the sender ids that may command the desk. Every command is checked, read-only included. A sender that cannot be read is refused. A negative (shared) chat id with an empty list refuses to start. A refusal is journaled as `command_rejected` and is not answered. |
 | Currency limit | `max_currency_exposure` (default 2) caps the net count of open positions touching any one currency. A buy of EURUSD counts +EUR and -USD. The symbol being staged counts toward the check, not just the open book. |
-| Symbol classification | The pair is the first six alphabetic characters after non-alphabetic characters are dropped, and BOTH halves must be recognised currency codes (ISO 4217 plus the metal codes ISO assigns, so `XAUUSD` parses). Every vendor suffix convention resolves (`EURUSDm`, `EURUSD.a`, `EURUSD_i`, `EURUSDmicro`), and so does a separator inside the pair (`EUR.USD`). The table CONFIRMS a pair; it never refuses a trade. |
+| Symbol classification | The pair is the first six alphabetic characters after non-alphabetic characters are dropped, and BOTH halves must be recognised currency codes (ISO 4217, plus the metal codes ISO assigns so `XAUUSD` parses, plus crypto codes so `BTCUSD` parses). Only a THREE-character ticker can resolve, because the six characters are split 3 and 3: `DOGEUSD`, `AVAXUSD` and `LINKUSD` stay not applicable. Every vendor suffix convention resolves (`EURUSDm`, `EURUSD.a`, `EURUSD_i`, `EURUSDmicro`), and so does a separator inside the pair (`EUR.USD`). The table CONFIRMS a pair; it never refuses a trade. |
 | Limit not applicable | One rule, two outcomes. If either half is not a recognised code, or six alphabetic characters do not exist, the currency limit DOES NOT APPLY: the trade is ALLOWED and the exclusion is recorded in `journal.jsonl` as `currency_limit_not_applicable` with the excluded symbols. This covers an instrument that cannot be a pair (`US30`, `USOIL`, `GER40.cash`), decoration that hides the pair (`FXEURUSD`, `mEURUSD`), and a pair whose code is missing from the table. There is no third state: cannot-tell and is-not-FX get the same treatment, because the honest answer to both is do not pretend to measure, do not block, make it visible. Not applicable is never silent; silence was the original defect. |
-| Table completeness | A currency code missing from the table degrades that symbol to allowed-and-recorded, never to refused. Completeness is desirable, not a safety property. Crypto codes are NOT in the table, so `BTCUSD` is recorded as excluded and its USD leg does not count toward the limit. |
+| Table completeness | A currency code missing from the table degrades that symbol to allowed-and-recorded, never to refused. Completeness is desirable, not a safety property. The table is ISO 4217, the four metal codes, and the crypto majors (`ADA BCH BNB BTC DOT EOS ETC ETH LTC SOL TRX XBT XLM XMR XRP XTZ ZEC`). The selection rule for adding one is written in `currencies.py`: three alphabetic characters, quoted by a venue as the base of a spot pair, and no collision with ISO 4217. Every code added widens the false-positive surface, so the code set is a decision, not a dump. |
+| Crypto exposure | Ruled on issue #66. A crypto code shares the ONE bucket per code that every other code uses: a buy of `BTCUSD` counts +BTC and -USD, so its USD leg is counted identically to the USD leg of `EURUSD` and of `XAUUSD`, and its BTC leg caps `BTCUSD` against `BTCJPY`. Crypto volatility is not FX volatility, and that does not change the answer, because `max_currency_exposure` counts TICKETS and never money: it exists so the book cannot hold several positions that are secretly the same bet, and long BTC, long gold and long EUR are all short USD. Per-unit risk is equalised by per-trade sizing and by the daily-loss and drawdown gates, which do read money. A SEPARATE crypto bucket was rejected: it would let a fourth short-USD ticket in without the FX count seeing it, which is the same silent non-application, just narrower. `BTCUSDT` resolves as BTC/USD, folding a USD-pegged stablecoin leg into USD, which is the intended reading for a correlation count. |
 | Exposure unmeasured | `currency_exposure` RAISES for a symbol that is not an FX pair, so the silent skip that was issue #10 cannot be reintroduced by a future caller. `RiskManager.evaluate` classifies first and never passes it one, so the `exposure_unmeasured` refusal is a TRIPWIRE against caller/classifier divergence and cannot fire from any broker symbol. A non-FX position contributes nothing to currency exposure, which is correct rather than an underestimate. |
 | Sizer | `RiskManager.evaluate` is the only sizer. It is not optional. |
 | Advice whitelist | A symbol the MODEL picked must be in `advice.symbols`, or in `symbols.names` when that is empty. A miss is `reject` with reason `symbol_not_allowed` and stage `advice_symbol`. It gates OPENS only: an advice `close` is never refused for the symbol, because a control that can stop you reducing exposure is not a risk control. A human `/buy` or `/sell` is NOT gated by it; the operator chose that instrument themselves. |
@@ -133,6 +138,35 @@ Remainder keeps its SL.
 Halt, daily-loss, and drawdown still refuse.
 VOL must snap to lot step.
 Remainder must be 0 or at least `volume_min`.
+
+### One staged order, at most one transmission
+
+A staged order carries a client order id, minted once at stage time, kept on the
+`confirm_stage` journal record and therefore unchanged across a `/confirm` that
+timed out and across a desk restart in between.
+
+A record of the attempt is written to `<journal stem>.inflight.json` BEFORE the
+send and is cleared only by a VERDICT: success, or a venue rejection. A send whose
+key already has an open record is REFUSED and nothing is transmitted.
+
+A timeout is not evidence the order did not reach the broker, and an empty book is
+not evidence either: the desk's budget can expire while the Expert is still inside
+its retry ladder, so the position the send is about to create is not visible yet.
+The desk therefore refuses rather than reconciling itself to a conclusion. The
+reply says nothing was transmitted and names the key; `/cancel` and re-stage is the
+operator's move, after checking the terminal.
+
+A CLOSE is not guarded this way and does not need to be: the ticket is already the
+key at the venue, so closing #N twice fails the second time. An OPEN has no
+equivalent, because nothing on the MT4 side can tell two identical `OrderSend`
+calls apart.
+
+Journal events: `send_unresolved` (a send answered nothing; carries the key, what
+the mailbox did with the request, and any position whose comment matched),
+`send_refused_unresolved` (a second send for the same key was refused),
+`confirm_unresolved` (the chat path's record of the same), `inflight_unreadable`
+(the ledger file exists and could not be parsed, which must never read as "no open
+sends"). `Engine.start()` re-announces every open record on EVERY start.
 
 ## Advice
 
@@ -216,8 +250,23 @@ Unix: `flock`. Windows: `msvcrt.locking`. Same fail (`already running`, exit 2).
 A second `run --loop` prints `already running` to stderr and exits non-zero.
 The lock is released on exit or crash.
 Each `step_all` that reaches `account` writes `journal.heartbeat`.
-The file is an ISO timestamp, chmod 0600, atomic replace.
+Line 1 is an ISO timestamp, and that has not changed since 1.0.0.
+After it, one `key=value` per line: `blocked=`, `mode=`, `stale_after_s=`,
+`tick_budget_s=`, `tick_gap_max_s=`, `over_budget=`.
+`blocked=` is the reason `RiskManager.circuit_reason` gave for the same account
+at the same instant, and it is EMPTY when the desk would trade. It is not a
+second copy of the gate; it is the gate's own answer, so a heartbeat cannot
+claim the desk is armed when a send would be refused.
+`stale_after_s` is derived from `engine.poll_seconds`, the Telegram retry
+ceiling and the venue `timeout_ms` of the mode in use. A reader that finds it
+missing or unreadable reports UNKNOWN and refuses to invent a threshold.
+`over_budget=1` means an observed gap between ticks exceeded the derived budget.
+The desk reports that and does NOT widen its own threshold.
+The file is chmod 0600, atomic replace.
 A failed reconnect does not.
+`straightedge watch` reads the file. It exits 0 for `ALIVE ARMED`, 3 for
+`ALIVE NOT TRADING` (with the gate named), 4 for `STALE`, and 5 for `UNKNOWN`.
+It never calls `getUpdates` and never takes `journal.lock`.
 Before a journal write that would exceed 10 MiB, the live file is renamed to `<name>.1`.
 That replaces any previous `.1`.
 The new live file is chmod 0600.

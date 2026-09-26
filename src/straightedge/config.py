@@ -9,7 +9,14 @@ import tomllib
 from dataclasses import dataclass, field
 from pathlib import Path
 
-from straightedge.constants import TIMEFRAME_BY_NAME, TIMEFRAME_H1
+from straightedge.constants import (
+    EA_CLAIM_RETRY_MS,
+    EA_LADDER_SLEEP_MS,
+    MAILBOX_ROUND_TRIP_CEILING_MS,
+    TIMEFRAME_BY_NAME,
+    TIMEFRAME_H1,
+    derive_send_timeout_ms,
+)
 
 
 #: Where an effective deviation came from. Reported on every send, because a
@@ -183,7 +190,40 @@ def resolve_state_path(raw: str, *, base_dir: Path) -> str:
 @dataclass
 class Mt4Config:
     files_dir: str = ""
+    #: The READ budget, in milliseconds. Applies to every op that cannot move
+    #: money: ping, account, symbol, tick, select, rates, positions, orders, and
+    #: both `check_*` dry runs. Losing one of these is cheap, so the number is
+    #: sized to notice a wedged mailbox rather than to outlast anything: measured
+    #: round trip on the live rig is 205ms p50 and 223ms max, so 5000 is a 22x
+    #: margin. It is deliberately UNCHANGED from when it covered sends too,
+    #: because it was never the defect and because `watchdog.venue_timeout_seconds`
+    #: and `tests/test_mt4_claim_open_retry.py` both derive numbers from it.
     timeout_ms: int = 5000
+    #: The SEND budget, in milliseconds, for the ops that can change the book.
+    #:
+    #: A separate number because the two failures do not cost the same. A read
+    #: that times out is retried by the next step. A send that times out is
+    #: AMBIGUOUS: the order may be filled, in flight, or never sent, and the desk
+    #: cannot tell. The budget therefore has one job -- never expire while the
+    #: Expert is still working -- and the default is DERIVED from the Expert's own
+    #: worst case rather than chosen. See `constants.derive_send_timeout_ms`.
+    send_timeout_ms: int = field(default_factory=derive_send_timeout_ms)
+    #: The `mt4-shim` endpoint on the host that runs MetaTrader 4 (#73).
+    #:
+    #: Set it and the desk speaks HTTP to that shim instead of reading the
+    #: mailbox directory itself, which is what lets the desk run off the
+    #: customer's Windows box. Empty means the co-located file mailbox, which is
+    #: still fully supported and is what a self-hoster keeps using.
+    #:
+    #: It is checked BEFORE `files_dir` in `broker_for`, and that order is
+    #: load-bearing: on Windows `files_dir` auto-resolves to Common Files even
+    #: when nobody configured it, so a url that lost the tie would leave a
+    #: remote-configured desk silently reading a LOCAL mailbox.
+    mailbox_url: str = ""
+    #: The shared bearer token for `mailbox_url`. Environment only
+    #: (`MT4_MAILBOX_TOKEN`), never read from the TOML file: `docs/CONTRACT.md`
+    #: keeps secrets in the environment, and this one can place orders.
+    mailbox_token: str = ""
     #: Seconds `Mt4Broker.startup_connect()` waits for the Expert at startup.
     #:
     #: `None` means the operator did not set it, and the adapter's own
@@ -412,6 +452,27 @@ class BotConfig:
                 "telegram.chat_id is a shared chat: set telegram.allow_senders "
                 "(or TELEGRAM_ALLOW_SENDERS) to the operator sender ids"
             )
+        if self.mt4.timeout_ms <= 0:
+            raise ValueError("mt4.timeout_ms must be > 0")
+        if self.mt4.send_timeout_ms <= self.mt4.timeout_ms:
+            # Not a style rule. A send can spend the Expert's whole retry ladder
+            # before it can possibly answer, and a read cannot; a send budget at
+            # or below the read budget means the desk is configured to give up
+            # while the Expert is still working, which is how a duplicate order
+            # and a fill after a reported failure both become reachable.
+            raise ValueError(
+                "mt4.send_timeout_ms must be greater than mt4.timeout_ms: a "
+                f"send budget of {self.mt4.send_timeout_ms}ms against a read "
+                f"budget of {self.mt4.timeout_ms}ms would have the desk abandon "
+                "orders the Expert is still executing"
+            )
+        floor = MAILBOX_ROUND_TRIP_CEILING_MS + EA_LADDER_SLEEP_MS + EA_CLAIM_RETRY_MS
+        if self.mt4.send_timeout_ms <= floor:
+            raise ValueError(
+                f"mt4.send_timeout_ms must exceed {floor}ms, the measured "
+                "transport ceiling plus everything mt4/Experts/Mt4RiskBot.mq4 "
+                "can spend on Sleep() alone before it is able to reply"
+            )
 
 
 def parse_symbol_deviation_points(raw: object) -> dict[str, int]:
@@ -593,6 +654,14 @@ def load_config(path: str | Path | None = None) -> BotConfig:
                 os.environ.get("MT4_FILES_DIR", str(mt4_s.get("files_dir", "") or ""))
             ),
             timeout_ms=int(mt4_s.get("timeout_ms", 5000)),
+            send_timeout_ms=int(
+                mt4_s.get("send_timeout_ms", derive_send_timeout_ms())
+            ),
+            mailbox_url=str(
+                os.environ.get("MT4_MAILBOX_URL", str(mt4_s.get("mailbox_url", "") or ""))
+            ).strip(),
+            # Env ONLY. There is deliberately no TOML key to read here.
+            mailbox_token=os.environ.get("MT4_MAILBOX_TOKEN", ""),
             # Absent is not zero. Zero is a real operator choice ("one ping, do
             # not wait"), so an unset key must stay None and defer to the
             # adapter rather than collapse into the same value as a configured 0.

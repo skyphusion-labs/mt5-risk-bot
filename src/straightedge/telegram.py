@@ -22,6 +22,12 @@ from straightedge.journal import redact_text
 API_ROOT = "https://api.telegram.org"
 RETRY_TRIES = 4
 RETRY_CAP_S = 60.0
+#: Added to a long-poll timeout to get the HTTP timeout, so the SERVER is the
+#: end that gives up first and a bare socket timeout does not get read as "no
+#: updates". Named because `straightedge.watchdog` derives the tick budget from
+#: it: a staleness threshold has to know how long one tick may legitimately
+#: wait, and a literal 5 copied into that module would drift from this one.
+POLL_TIMEOUT_MARGIN_S = 5.0
 
 
 class Transport(Protocol):
@@ -414,7 +420,9 @@ class TelegramClient:
             "allowed_updates": ["message"],
         }
         try:
-            data = self._post("getUpdates", payload, timeout=float(timeout + 5))
+            data = self._post(
+                "getUpdates", payload, timeout=float(timeout) + POLL_TIMEOUT_MARGIN_S
+            )
         except TelegramError:
             return []
         if not data.get("ok"):

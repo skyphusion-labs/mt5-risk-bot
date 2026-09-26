@@ -66,6 +66,7 @@ from straightedge.broker.mt4_live import (
     POS_FIELDS,
     REQ_NAME,
     RES_NAME,
+    BridgeTimeout,
     FileBridge,
     Mt4Broker,
     _mailbox_encoding,
@@ -655,19 +656,75 @@ class TestReplyMatching:
         assert res.exists()
         assert decode(res.read_text(encoding="utf-8"))["id"] == 9999
 
-    def test_the_request_stays_in_the_mailbox_after_a_timeout(self, tmp_path: Path) -> None:
-        """No cleanup on the timeout path (`mt4_live.py:237`).
+    def test_the_request_is_withdrawn_when_the_bridge_gives_up(self, tmp_path: Path) -> None:
+        """The opposite of what this test used to pin, and the reason it changed.
 
-        The request file is removed by the next call (`:221`), so a desk that
-        keeps going is fine. A desk that stops leaves the request addressed to
-        an Expert that has not read it yet. Pinned as current behaviour.
+        It used to assert the `.req` file was STILL THERE after a timeout, on the
+        reasoning that the next call removes it so "a desk that keeps going is
+        fine". That reasoning holds for a read and does not hold for `op=market`:
+        the Expert polls the shared name every 100ms and executes whatever it
+        finds, so an abandoned send could fire minutes after the operator was told
+        it had failed, and across a desk process exit nothing bounded "later" at
+        all. Measured case: a silent desk restart on the live box at
+        2026-09-26T01:56:49Z.
+
+        The withdrawal is best effort and the exception says which outcome it got,
+        because "I gave up" and "nothing can happen now" are different facts.
         """
         bridge = FileBridge(tmp_path, timeout_sec=0.2)
-        with pytest.raises(RuntimeError, match="timeout"):
+        with pytest.raises(BridgeTimeout) as caught:
             bridge.call("market", {"symbol": "EURUSD", "side": "buy", "volume": 0.17})
-        left = tmp_path / REQ_NAME
-        assert left.exists()
-        assert ea_kv(left.read_text(encoding="utf-8"), "op") == "market"
+        assert not (tmp_path / REQ_NAME).exists()
+        assert caught.value.withdrawal == "withdrawn"
+        assert caught.value.withdrawn is True
+        assert caught.value.may_still_execute is False
+        assert caught.value.op == "market"
+
+    def test_a_request_the_expert_already_claimed_is_reported_as_claimed(
+        self, tmp_path: Path
+    ) -> None:
+        """The unsafe outcome must never render as the safe one.
+
+        The Expert claims the shared name by renaming it, so by the time the
+        bridge gives up the file can be gone because the Expert HAS it. An unlink
+        that finds nothing there is not a withdrawal, and calling it one would
+        turn the ambiguous-money case into a clean bill of health.
+        """
+        with wired(tmp_path, GOLDEN, answer_limit=0):
+            bridge = FileBridge(tmp_path, timeout_sec=0.4)
+            with pytest.raises(BridgeTimeout) as caught:
+                bridge.call("market", {"symbol": "EURUSD", "side": "buy", "volume": 0.17})
+        assert caught.value.withdrawal == "claimed"
+        assert caught.value.withdrawn is False
+        assert caught.value.may_still_execute is True
+
+    def test_a_locked_request_that_cannot_be_withdrawn_says_so(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """A withdrawal that failed is reported, never assumed.
+
+        On NTFS `unlink` raises `PermissionError` while the terminal holds the
+        handle. The bridge spins for a bounded grace and then reports `locked`,
+        which leaves the Expert's own `ttl_ms` fence as the only remaining guard.
+        """
+        real = Path.unlink
+
+        def refuse(self: Path, *a: object, **kw: object) -> None:
+            # Only the WITHDRAWAL is refused. `_retry_unlink` passes
+            # `missing_ok=True` and `_withdraw` deliberately does not, which is
+            # the one caller under test here; refusing both would make the call
+            # raise PermissionError before it ever reached the timeout.
+            if self.name == REQ_NAME and "missing_ok" not in kw:
+                raise PermissionError(32, "held by the terminal")
+            real(self, *a, **kw)  # type: ignore[arg-type]
+
+        monkeypatch.setattr(Path, "unlink", refuse)
+        monkeypatch.setattr("straightedge.broker.mt4_live._WITHDRAW_GRACE_SEC", 0.05)
+        bridge = FileBridge(tmp_path, timeout_sec=0.1)
+        with pytest.raises(BridgeTimeout) as caught:
+            bridge.call("market", {"symbol": "EURUSD", "side": "buy", "volume": 0.17})
+        assert caught.value.withdrawal == "locked"
+        assert caught.value.may_still_execute is True
 
     def test_request_ids_increment_per_call(self, tmp_path: Path) -> None:
         with wired(tmp_path, GOLDEN) as ea:

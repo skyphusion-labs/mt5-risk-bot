@@ -6,6 +6,317 @@ See README.md and docs/CONTRACT.md.
 
 ## Unreleased
 
+### Three money-safety P0s on the MT4 send path (issue #37)
+
+Found while instrumenting the live desk on 2026-09-25 and recorded on #37 rather
+than patched, because rewriting order-submission semantics hours before real money
+looked like the wrong risk posture. It was the wrong call: none of the three is
+ambiguous about what correct behaviour is, and all three are reachable the first
+time gold moves.
+
+#### `/confirm` could send a DUPLICATE market order
+
+`BridgeTimeout` subclasses `RuntimeError`, `Desk.handle` catches `RuntimeError`,
+and `Desk._confirm` cleared the pending only on a definitive result. So a
+`/confirm` whose bridge call timed out returned the bare string `mt4 bridge
+timeout` to the operator with the order still staged and still confirmable.
+Reproduced before the fix, in `tests/test_idempotency_guard_can_go_red.py`: two
+identical 0.55 lot market orders on the wire, the second reporting success. There
+was no client order id, no dedupe token and no in-flight record anywhere, and
+`magic` and `comment` were identical on every send, so nothing on the MT4 side
+could have rejected the second one either.
+
+- A staged order now carries a client order id, minted once at stage time, kept on
+  the `confirm_stage` journal record, and therefore unchanged across a `/confirm`
+  that timed out AND across a desk restart in between. The observed failure was a
+  silent process restart, so an in-memory set would have been empty in exactly the
+  process that most needed to know.
+- `src/straightedge/inflight.py` records the attempt to
+  `<journal stem>.inflight.json` BEFORE the send (flush, fsync, atomic replace,
+  chmod 0600) and clears it only on a VERDICT: success, or a venue rejection. A
+  send whose key already has an open record is REFUSED, by `Engine._unresolved`
+  for every caller and by `Desk._already_attempted` on the `/confirm` path.
+- **Refusal, not reconciliation, and that is the decision this change makes.** A
+  timeout is not evidence the order did not reach the broker, and an EMPTY BOOK is
+  not evidence either: the desk's budget expires while the Expert may still be
+  inside `SendRetry`, so the position the send is about to create is not visible
+  yet. Reconciliation is attempted and reported (`Engine._after_unresolved_send`
+  reads the book once and names any position whose comment carries the key), but
+  silence is never read as "nothing happened". Refusing costs an order; sending
+  twice costs money and cannot be undone.
+- The key is prefixed into the order comment, so a position on the book is
+  attributable to one send. That is corroboration and NOT the dedupe mechanism:
+  MT4 brokers append to and overwrite `OrderComment`, so a key MISSING from the
+  book proves nothing, and a dedupe built on looking it up would fail in the
+  dangerous direction.
+- A CLOSE is deliberately not guarded this way. The ticket is already the key at
+  the venue, so closing #N twice fails the second time; an OPEN has no equivalent.
+- New journal events: `send_unresolved`, `send_refused_unresolved`,
+  `confirm_unresolved`, `inflight_unreadable`. `Engine.start()` re-announces every
+  open record on EVERY start, before the venue is touched.
+
+#### A timed-out request stayed in the mailbox and the Expert could execute it LATER
+
+`FileBridge._exchange` raised with no cleanup, leaving the `.req` file on the
+shared name addressed to an Expert that had not claimed it. The Expert polls every
+100ms and executes whatever it finds, so a trade the operator was told had FAILED
+could fire minutes afterwards, unattended. Across a desk process exit nothing
+bounded "later" at all, and a silent restart with no traceback was observed on the
+live box at 2026-09-26T01:56:49Z. The old behaviour was pinned on purpose by
+`test_the_request_stays_in_the_mailbox_after_a_timeout`, whose reasoning ("a desk
+that keeps going is fine") holds for a read and not for `op=market`; that test and
+its duplicate in the net-transport suite now pin the opposite.
+
+- The desk WITHDRAWS the request before raising, and `BridgeTimeout` states which
+  outcome it got: `withdrawn` (provably gone, cannot fire), `claimed` (the Expert
+  already has it and may be executing it now), `locked` (still there, could not be
+  removed). Best effort is never reported as a guarantee.
+- Every request carries `ttl_ms` and the Expert refuses one that is older,
+  answering `retcode=4109 error=request_expired survivor_ticket=0`. This is the
+  layer that survives the desk not being there any more, and it is the only one
+  that does. A DURATION and not a deadline: with `mt4.mailbox_url` the desk and
+  the terminal are different hosts, and a wall-clock deadline crossing that
+  boundary makes a stale request look FRESH whenever the terminal's clock runs
+  behind.
+- The Expert MEASURES the file-time offset at `OnInit` by writing its own probe
+  file, because MQL4 does not state whether `FILE_MODIFY_DATE` is local time or
+  UTC and the two wrong answers fail in opposite directions: one stops the desk
+  working, the other silently removes the fence. An UNMEASURABLE age refuses a
+  SEND and allows a READ.
+- New Expert input `FenceGraceSec = 2`, which absorbs the one-second resolution of
+  a filesystem timestamp in the direction that cannot kill a live request.
+
+#### One `timeout_ms` covered reads AND sends, and the Expert could outlast it
+
+A read that times out is cheap. A send that times out is the ambiguous case above,
+and the desk giving up while the Expert is still laddering `OrderSend` is how that
+case is reached: 6 of the 88 desk timeout events on 2026-09-25 had no Expert-side
+drop behind them.
+
+- `mt4.timeout_ms` (default 5000, UNCHANGED, and unchanged on purpose: it was
+  never the defect and `watchdog.venue_timeout_seconds` plus
+  `tests/test_mt4_claim_open_retry.py` both derive numbers from it) is now the READ
+  budget. New `mt4.send_timeout_ms` covers the ops that can change the book.
+- The default is DERIVED, not chosen, and `constants.derive_send_timeout_ms()` is
+  its only home: 1000ms transport ceiling + 950ms of `Sleep` inside the Expert's
+  three retry ladders + 360ms of claim-open retries + 19 broker round trips at a
+  250ms allowance = **7060ms**.
+- Two of those terms are worth reading twice. The transport ceiling is about 5x the
+  p50 of 205ms over 2166 requests, and NOTHING above that median is quoted: the
+  pairing used to compute latency shifts by one after every unanswered request and
+  three went unanswered, so p90 and above are unreliable and
+  `tests/live_measurements.py` says so. And the claim-open term is TWO ladders, not
+  one: #82 retried the claim read, #83 then gave the reply write the same bounded
+  retry on the same knob, and both sit between the desk's request and its reply, so
+  both spend the send budget. That term moved from 180 to 360 when #83 landed while
+  this change was in review, which is exactly the drift the test now counts the
+  loops to catch.
+- The 250ms per broker call is labelled an ALLOWANCE because no `OrderSend` latency
+  against the live OANDA account exists yet; the first market-hours window
+  measures it.
+- `cfg.validate()` refuses a send budget at or below the read budget, and one
+  inside the Expert's `Sleep` total.
+- **The requirement is now mechanical rather than documented.** The Expert's retry
+  bounds are `input` parameters, so the attached Expert can differ from this
+  repo's copy with nothing saying so. It therefore declares `ladder_ms`,
+  `broker_calls` and `fence` on every ping reply; `Mt4Broker` checks the budget
+  against the declaration and warns loudly at connect, `send_fence_report()` names
+  the verdict, and `doctor --connect` exits non-zero on `TOO SHORT`. An Expert too
+  old to declare reports `NOT MEASURED`, never `ok`.
+- Over the network the shim is never the end that gives up first:
+  `FileBridge.exchange` sizes its mailbox wait from the request's own `ttl_ms`,
+  clamped to its configured ceiling.
+
+#### What this does and does not establish
+
+MQL4 does not compile in CI or on the developer seat, so the Expert half of the
+second and third fixes is covered by SOURCE GUARDS only and has been executed
+nowhere. It must be recompiled in MetaEditor and re-attached on the terminal host
+before it is trusted. Every fix degrades safely against an un-updated Expert and
+says which half is missing: the duplicate-order fix is entirely desk-side and works
+unchanged, the stale-request fix keeps only the desk-side withdrawal, and the split
+budgets work while the declaration check reports `NOT MEASURED`.
+
+### The heartbeat has a reader, and it distinguishes three states (issue #38)
+
+`journal.heartbeat` has been written on every successful `step_all` since 1.0.0,
+`docs/RUNBOOK.md` named it as the watchdog target in two places, and NOTHING in
+this repo ever read it. A desk that died on Tuesday was discovered on Friday, and
+every indicator an operator could see read healthy in between. `docs/MT4.md`
+already said the honest half out loud: an in-process startup wait "does not cover
+MT4 taking longer than the budget, or MT4 dying later, because a process that has
+exited cannot retry anything".
+
+- `python -m straightedge watch` reads the file in a SECOND process and names the
+  state: `ALIVE ARMED` (exit 0), `ALIVE NOT TRADING` with the gate's own reason
+  (exit 3), `STALE` (exit 4), `UNKNOWN` (exit 5). `--loop` alerts the locked chat
+  on the first check and on every change after it, and `--ok-every` confirms a
+  healthy desk on a cadence so that silence becomes a signal too. It is a
+  separate process because a desk cannot report its own death, and an in-process
+  staleness check is an instrument that fails together with its subject.
+- **Three states, because two is the defect.** Live arming is per process on
+  purpose (fc34, and `Desk.restore_from_journal` refuses to re-arm from a
+  `live_on` record), so a crash restart brings the desk back ticking and
+  DISARMED. An up-or-down watchdog calls that healthy, and it is "your bot
+  silently stopped trading", which is the exact failure an unattended week
+  produces. Nothing here makes live survive a restart and no config key was added
+  that could: the reader is read-only and holds no arming path at all.
+- `blocked=` in the heartbeat is the string `RiskManager.circuit_reason` returned
+  for that same account at that same instant, so the file cannot claim the desk is
+  armed while a send would be refused. It is not a second copy of the gate.
+  `_apply_circuit` now returns the halt reason instead of a bool so the halted
+  path can name itself too; both call sites read identically.
+- **The threshold is derived from config, never chosen.** `poll_seconds`, the
+  Telegram retry ceiling (`RETRY_TRIES` attempts at `poll_seconds` plus
+  `POLL_TIMEOUT_MARGIN_S`, with gaps up to `RETRY_CAP_S`) and two venue commands
+  at the mode's own `timeout_ms`, plus `NET_GRACE_SEC` when `mt4.mailbox_url`
+  points at a remote shim. The shipped example config derives 428s on MT4 and
+  648s on MT5; one constant could not have been right for both, which is the
+  `deviation_points` finding (#68) on the time axis. There is deliberately no
+  config key for the alarm window.
+- **The one term that is not a measurement says so, and is checked.** The work
+  after `account()` scales with the book and no config value bounds it, so the
+  budget is doubled to cover it. The desk publishes `tick_gap_max_s`, the longest
+  gap it has really observed, and sets `over_budget=1` when that passes the
+  budget. It does NOT widen its own threshold: a gate that relaxes itself until it
+  stops firing can no longer go red.
+- `STALE` is not called DEAD. A desk whose venue link is down writes nothing,
+  exactly like one that exited, and separating them needs `journal.lock`. This
+  command will not take that lock even briefly, because holding it can make a
+  restart exit `already running`, which is a watchdog that can kill the desk. The
+  alert names both readings and points at `reconnect` in the journal.
+- It never calls `getUpdates`. Two pollers on one bot token steal each other's
+  commands, so the client is built with no offset path, and a test asserts that a
+  whole watch run issues zero `getUpdates` requests.
+- **The scheduled task is documented, with the half a restart cannot fix in the
+  same breath.** `docs/RUNBOOK.md` gains "Watchdog" and "Unattended (Windows
+  scheduled task)": two tasks, a repeating trigger AS the restart-on-failure
+  (Task Scheduler does not start a second instance, and `journal.lock` is the
+  second barrier), the fc34 warning restated where the task is created, and an
+  acceptance drill that has the operator kill the desk and watch the alarm fire
+  before leaving it alone for a week.
+- Heartbeat format: LINE ONE is still the bare ISO timestamp, byte for byte. The
+  `key=value` lines come after it, so every older reader and every older doc stays
+  true. `docs/CONTRACT.md` carries the format.
+- `src/straightedge/watchdog.py` ships with a per-file coverage floor. It is the
+  only thing that tells an operator the desk is alive AND armed, and it runs in a
+  process nobody else is watching.
+
+### Found on main while doing the above: the package reported the wrong version
+
+`pyproject.toml` read `version = "1.5.0"` and `src/straightedge/__init__.py` read
+`__version__ = "1.4.2"`. `pip` reports the first and `doctor` prints the second,
+so a 1.5.0 install told its operator 1.4.2, which is the number that goes into a
+handover checklist and into any bug report the end user files. No test read either
+declaration, so one of the two was always going to be missed in a release commit.
+`__init__.py` is corrected to 1.5.0 and `tests/test_version.py` pins the two
+together.
+
+### The desk comes off the MetaTrader 4 host (#73)
+
+Conrad ruled 2026-09-25 that the EA transport moves before the first paying
+customer. It has moved, and the decision record is **`docs/TRANSPORT.md`**.
+
+The desk had to run on the customer's Windows box because the only transport was
+MT4's `FILE_COMMON` mailbox, which the desk read directly. That is why the
+reboot on 2026-09-25 could kill it: two processes had to be co-resident and
+correctly ordered on a machine we do not own.
+
+**What was chosen, and what was rejected.** Three shapes were weighed, not two.
+The EA calling `WebRequest` for its own decisions is rejected outright: MQL4's
+`WebRequest` is synchronous, so it would put our risk engine and our model call
+inside a blocking call on the customer's chart thread, and it would move the
+halt, approve, auto and live gates behind their terminal's polling. A gate that
+is only enforced while the customer is polling is not a gate. Making the EA a
+dumb transport client is the right destination and is deferred: that code lands
+in the one artifact a customer installs, no CI runner has an MQL4 compiler, and
+it needs a rendezvous service and a manual per-terminal allowed-URL whitelist
+first. What shipped is the reversible, verifiable step in that direction.
+
+- **`straightedge mt4-shim`** runs on the MT4 host and serves that host's
+  mailbox over one authenticated `POST /mt4/call`. It holds no risk logic, no
+  prompts, no model keys and no journal.
+- **`mt4.mailbox_url`** on the desk switches the transport. `Mt4Broker` already
+  took a `call` seam, so this is another implementation of it: the engine, the
+  risk gates and `mt4/Experts/Mt4RiskBot.mq4` are unchanged. The Expert is
+  **byte-for-byte the same file** and still issues zero `WebRequest` calls, so
+  the synchronous-WebRequest problem is not solved here, it is not incurred.
+- **Nothing inverts.** The desk is still the initiator, so `HALT`, daily loss,
+  drawdown, currency exposure, sizing, `approve always`, `/auto` and the
+  real-money fuse all stay in the desk's process and on the desk's clock. The
+  inbound listener is on the CUSTOMER's host; the desk binds nothing.
+- **One wire format.** The HTTP body is the same `key=value` mailbox block
+  `docs/MT4.md` specifies, carried opaquely and never re-serialized, so the
+  golden transcripts still describe the bytes that cross the network and the
+  desk's request id travels end to end untranslated.
+- **Auth is `MT4_MAILBOX_TOKEN` on both ends, environment-only, minimum 32
+  characters, with no off switch.** The shim checks it before the path, before
+  the method and before the body; every unauthenticated request gets `401`
+  whatever it asked for, so the surface is not mappable, and the tests assert
+  the strong property: after a refusal the mailbox directory is EMPTY. The
+  listener binds `127.0.0.1` and refuses a routable address without
+  `--i-understand-plaintext`, because `http.server` has no TLS; the supported
+  exposure is a Cloudflare Tunnel, which opens no inbound port at all.
+- **The `startup_connect()` partition survives the hop, and the standard
+  library's default would have broken it.** `urllib.error.HTTPError` subclasses
+  `OSError`, which `startup_connect()` retries, so a `401` would have been
+  retried in silence for the whole 180 second budget: the same defect class as
+  the boot bug #74 fixed. The shim answers `504` / `503` for "the Expert has not
+  replied" and "the mailbox is not writable", the desk turns those back into
+  `BridgeTimeout`, and every other status is a `RuntimeError` that is never
+  retried. The shim's mailbox budget is `mt4.timeout_ms` and the desk allows
+  that plus 2 seconds, so the shim gives up first and the desk learns which end
+  did.
+- **Both gates were driven red on purpose.** Deleting the `HTTPError` arm makes
+  a `401` burn the full 8 second test budget across 5 retries; deleting the
+  `do_*` catch-all in the handler makes an unauthenticated `PROPFIND` leak a
+  501 page naming the method before auth runs.
+- `FileBridge` gained `exchange(body, req_id)`, the raw round trip the shim
+  serves. It returns the Expert's own bytes rather than a decoded dict, because
+  `decode` coerces types and a round trip through it is not the identity.
+- `doctor` now prints which transport the config will use and presence-checks
+  the token without printing it. `journal.py` redacts `mailbox_token` by name,
+  because the existing match is exact-key and `token` alone would not catch it.
+
+**What this does not do.** It does not remove Python from the customer's host,
+only the risk engine, the model access, the prompts, the secrets and the
+journal. It does not remove auto-logon, the Windows box or MT4, which are
+required by MT4 itself and which no transport choice changes. And off-box, a
+network partition is a new way for the desk to be unable to flatten: what
+protects a position in that window is the broker-side stop the Expert attaches
+on every entry, not the desk. `docs/TRANSPORT.md` states all of it.
+### Crypto pairs count toward the currency-exposure limit (issue #66)
+
+`max_currency_exposure` applied only when BOTH halves of a symbol resolved to a
+recognised code, and the recognised set was ISO 4217 plus the four metal codes
+ISO assigns. Crypto codes are not in ISO 4217, so `BTCUSD` did not resolve, the
+limit DID NOT APPLY, and the USD leg of a crypto position did not count. Holding
+`BTCUSD`, `ETHUSD` and `EURUSD` showed the limit one USD leg where three
+existed. Conrad ruled: add the crypto pairs.
+
+- The recognised table now carries the crypto majors
+  (`ADA BCH BNB BTC DOT EOS ETC ETH LTC SOL TRX XBT XLM XMR XRP XTZ ZEC`),
+  the same way it already carries `XAU` and `XAG`. One table, one code path.
+- **A crypto code shares the ONE bucket per code.** A buy of `BTCUSD` is +BTC
+  and -USD, so its USD leg is counted identically to that of `EURUSD` and
+  `XAUUSD`, and its BTC leg caps `BTCUSD` against `BTCJPY`. The gate counts
+  TICKETS, never money, so crypto volatility differing from FX volatility is not
+  what it compares; per-unit risk is equalised by sizing and by the daily-loss
+  and drawdown gates. A separate crypto bucket was rejected because it would let
+  a fourth short-USD ticket in unseen.
+- **Behaviour change for a crypto book.** A crypto position now consumes
+  currency exposure against FX positions, so a book that stacked several long
+  crypto pairs against USD will start seeing `currency_exposure` refusals, and
+  `currency_limit_not_applicable` is no longer journaled for a crypto symbol.
+- No venue spelling is hardcoded: `BTCUSD`, `BTCUSDT`, `XBTUSD`, `BTC/USD`,
+  `BTCUSD.m` and `#BTCUSD` all resolve through the existing first-six rule.
+  `BTCUSDT` folds the Tether leg into USD, which is the intended reading.
+- KNOWN LIMIT, documented rather than implied: the resolver splits the first six
+  alphabetic characters 3 and 3, so only a three-character ticker can resolve.
+  `DOGEUSD`, `AVAXUSD`, `LINKUSD`, `MATICUSD` and `SHIBUSD` remain
+  allowed-and-recorded. Widening the split changes how every symbol resolves and
+  belongs in its own unit.
+
 ### The desk survives a reboot (MT4 startup wait)
 
 The Windows host was rebooted for the first time since setup. MT4 came back

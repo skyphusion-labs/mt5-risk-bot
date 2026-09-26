@@ -1,4 +1,52 @@
-"""ISO 4217 currency codes, plus the metal codes ISO 4217 itself assigns."""
+"""Recognised currency codes: ISO 4217, the metal codes ISO assigns, and crypto.
+
+Three groups, ONE table, because `parse_fx` asks exactly one question of both
+halves of a symbol: is this a recognised code. A second table would be a second
+code path with its own drift.
+
+The metals are the precedent and the reason the shape already works. XAU, XAG,
+XPT and XPD are codes ISO 4217 assigns to things that are not national
+currencies, so a non-fiat leg counting toward the currency-exposure limit is
+not new. Crypto is the same move, one step further out: the codes are NOT in
+ISO 4217 at all, they are venue convention.
+
+WHAT A CRYPTO CODE COUNTS AS, and why (issue #66, ruled by Conrad: "Yes, add
+the crypto pairs"). A crypto code shares the ONE bucket per code that every
+other code uses. Buy BTCUSD and it is +BTC and -USD, so its USD leg is counted
+identically to the USD leg of EURUSD and of XAUUSD, and its BTC leg caps
+BTCUSD against BTCJPY the same way.
+
+The objection to that is real and it is answered by what the gate measures:
+crypto volatility is not FX volatility, so one unit of "USD exposure" is not
+comparable across them. But `max_currency_exposure` counts TICKETS, never
+money. It exists so the book cannot hold several positions that are secretly
+the same bet, and long BTC, long gold and long EUR are all expressions of short
+USD. Per-unit risk is equalised elsewhere, by per-trade sizing and by the
+daily-loss and drawdown gates, which read money.
+
+A SEPARATE crypto bucket was considered and rejected. It would let a fourth
+short-USD ticket in without the FX count seeing it, which is the same silent
+non-application this change closes, just narrower. Sharing the bucket is
+blunter and fails toward refusing NEW exposure, which is the direction issue
+#60 chose for this whole gate.
+
+DECLINED, and stated so the next reader does not re-derive it:
+
+- Aliasing XBT onto BTC. They are the same asset under two venue spellings, so
+  a venue listing both would split one BTC bucket in two. No venue lists both,
+  and an alias map would make `parse_fx` return a code the broker never used,
+  which then reaches the operator in `excluded_from_currency_limit`. The bound
+  is narrow and named rather than papered over.
+- Tickers longer than three characters. The resolver takes the first six
+  alphabetic characters and splits them 3 and 3, so DOGE, AVAX, LINK, MATIC and
+  SHIB cannot resolve and stay allowed-and-recorded. Widening that needs a
+  longest-match parse against the table, which changes how EVERY symbol
+  resolves, so it belongs in its own unit with its own sweep, not here.
+- Adding USDT as a code. Under the 3-and-3 split a four-character code can
+  never occupy either half, so it would be inert. `BTCUSDT` already resolves as
+  BTC/USD, which folds the Tether leg into USD. That is the intended reading:
+  for a correlation count, a USD-pegged stablecoin leg is USD exposure.
+"""
 
 from __future__ import annotations
 
@@ -25,4 +73,33 @@ _CODES = (
     " YER ZAR ZMW ZWG ZWL"
 )
 
-CURRENCY_CODES = frozenset(_CODES.split())
+# Crypto base codes. Issue #66 names BTC, ETH, LTC, XRP and BCH as the minimum;
+# the rest are the other majors a MetaTrader venue lists as spot pairs.
+#
+# The selection rule, so extending this is a decision and not a guess:
+#   1. exactly three alphabetic characters, because that is what the resolver's
+#      3-and-3 split can see;
+#   2. a code a venue actually quotes as the BASE of a spot pair against a
+#      fiat or metal code (not a perpetual, not a token pair);
+#   3. no collision with ISO 4217 or the metal codes, which
+#      `test_the_crypto_codes_are_in_the_one_table_not_a_parallel_path`
+#      asserts rather than trusts.
+#
+# Every code added widens the false-positive surface: a code that is also the
+# first three letters of an index or CFD name would start consuming a bucket.
+# `tests/test_crypto_exposure.py` keeps a list of real non-FX instrument names
+# as the control on that. XBT is bitcoin under the ISO-style X convention
+# (BitMEX and others); see the module docstring for why it is not aliased.
+_CRYPTO_CODES = (
+    "ADA BCH BNB BTC DOT EOS ETC ETH LTC SOL TRX XBT XLM XMR XRP XTZ ZEC"
+)
+
+#: ISO 4217 plus the four metal codes ISO assigns. Split out from
+#: CURRENCY_CODES only so the crypto addition is testable as an addition.
+ISO_AND_METAL_CODES = frozenset(_CODES.split())
+
+#: Venue-convention crypto codes. Not ISO 4217, deliberately recognised.
+CRYPTO_CODES = frozenset(_CRYPTO_CODES.split())
+
+#: The one table `parse_fx` checks both halves against.
+CURRENCY_CODES = ISO_AND_METAL_CODES | CRYPTO_CODES

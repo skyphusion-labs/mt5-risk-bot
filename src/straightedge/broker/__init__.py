@@ -21,22 +21,48 @@ def broker_for(cfg: BotConfig) -> Broker:
     if cfg.mode == "mt4":
         from straightedge.broker.mt4_live import (
             DEFAULT_STARTUP_WAIT_SEC,
+            Call,
             FileBridge,
             Mt4Broker,
         )
 
-        path = cfg.mt4.files_dir
-        if not path:
-            raise RuntimeError(
-                "mt4.files_dir is empty. Set it to the MT4 Common Files folder "
-                "and attach mt4/Experts/Mt4RiskBot.mq4 to a chart."
-            )
-        bridge = FileBridge(path, timeout_sec=max(1.0, cfg.mt4.timeout_ms / 1000.0))
+        timeout = max(1.0, cfg.mt4.timeout_ms / 1000.0)
+        # Two budgets, not one. `cfg.validate()` has already refused a send
+        # budget that does not clear the Expert's own worst case, so the max()
+        # here is a floor against a hand-built config, not the gate.
+        send_timeout = max(timeout, cfg.mt4.send_timeout_ms / 1000.0)
+        call: Call
+        # `mailbox_url` is checked FIRST, and the order matters: on Windows
+        # `files_dir` resolves to Common Files even when nobody set it, so a url
+        # that lost the tie would leave a desk configured for a REMOTE terminal
+        # quietly reading the LOCAL mailbox. See docs/TRANSPORT.md.
+        if cfg.mt4.mailbox_url:
+            from straightedge.broker.mt4_net import HttpBridge
+
+            call = HttpBridge(
+                cfg.mt4.mailbox_url,
+                cfg.mt4.mailbox_token,
+                timeout_sec=timeout,
+                send_timeout_sec=send_timeout,
+            ).call
+        else:
+            path = cfg.mt4.files_dir
+            if not path:
+                raise RuntimeError(
+                    "mt4.files_dir is empty. Set it to the MT4 Common Files folder "
+                    "and attach mt4/Experts/Mt4RiskBot.mq4 to a chart. For a desk "
+                    "that is NOT on the MetaTrader 4 host, set mt4.mailbox_url "
+                    "instead and run `straightedge mt4-shim` over there."
+                )
+            call = FileBridge(
+                path, timeout_sec=timeout, send_timeout_sec=send_timeout
+            ).call
         wait = cfg.mt4.startup_wait_sec
         return Mt4Broker(
-            bridge.call,
+            call,
             magic=cfg.risk.magic,
             startup_wait_sec=DEFAULT_STARTUP_WAIT_SEC if wait is None else wait,
+            send_timeout_sec=send_timeout,
         )
     from straightedge.broker.paper import PaperBroker
 

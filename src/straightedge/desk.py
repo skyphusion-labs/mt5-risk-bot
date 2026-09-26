@@ -6,9 +6,10 @@ import sys
 import time
 from dataclasses import dataclass
 
+from straightedge.inflight import new_key
 from straightedge.journal import redact_text
 from straightedge.llm import Advice, Advisor
-from straightedge.models import Signal, SignalKind
+from straightedge.models import OrderResult, Signal, SignalKind
 from straightedge.telegram import HELP, TgCommand
 
 
@@ -19,6 +20,14 @@ class Pending:
     source: str
     expires_at: float
     close_ticket: int | None = None
+    #: The idempotency key for this order, minted ONCE when it was staged.
+    #:
+    #: It is a property of the staged order rather than of the attempt, which is
+    #: the entire point: a `/confirm` whose bridge call timed out and a second
+    #: `/confirm` a minute later are two attempts at ONE order, and they carry the
+    #: same key. It rides the `confirm_stage` journal record, so it also survives
+    #: the desk process dying between the two.
+    client_id: str = ""
 
     def label(self) -> str:
         if self.close_ticket is not None and self.signal is None:
@@ -43,6 +52,7 @@ def pending_from_record(rec: dict) -> Pending | None:
         source = str(rec.get("source") or "")
         raw_ticket = rec.get("close_ticket")
         close_ticket = int(raw_ticket) if raw_ticket not in (None, "") else None
+        client_id = str(rec.get("client_id") or "")
         sig_raw = rec.get("signal")
         signal = None
         if isinstance(sig_raw, dict) and sig_raw.get("kind") in {"buy", "sell"}:
@@ -61,7 +71,14 @@ def pending_from_record(rec: dict) -> Pending | None:
             )
         if signal is None and close_ticket is None:
             return None
-        return Pending(signal, volume, source, expires_at, close_ticket=close_ticket)
+        return Pending(
+            signal,
+            volume,
+            source,
+            expires_at,
+            close_ticket=close_ticket,
+            client_id=client_id,
+        )
     except (TypeError, ValueError, KeyError):
         return None
 
@@ -135,6 +152,7 @@ class Desk:
                     "source": pending.source,
                     "expires_at": pending.expires_at,
                     "close_ticket": pending.close_ticket,
+                    "client_id": pending.client_id,
                 }
             )
             if pending.signal is not None:
@@ -296,7 +314,9 @@ class Desk:
             self._reject("stage", decision.reason, source=source, signal=sig)
             return f"refused: {decision.reason}"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
-        self._set_pending(Pending(sig, decision.volume, source, now + ttl))
+        self._set_pending(
+            Pending(sig, decision.volume, source, now + ttl, client_id=new_key())
+        )
         extra = f" {sig.pending_kind}" if sig.pending_kind else ""
         if self.approve_always:
             return self._confirm()
@@ -339,6 +359,11 @@ class Desk:
             )
             return "no such ticket"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
+        # No `client_id`: a close is already idempotent at the venue because the
+        # TICKET is the key. Closing #N twice fails the second time because #N is
+        # gone, which is the dedupe an OPEN has no equivalent of -- nothing on the
+        # MT4 side can tell two identical `OrderSend` calls apart. This asymmetry
+        # is why the ledger guards sends and not closes.
         self._set_pending(Pending(None, pos.volume, "advice", now + ttl, close_ticket=ticket))
         if self.approve_always:
             return self._confirm()
@@ -391,7 +416,32 @@ class Desk:
             if decision.halt:
                 self._clear_pending("confirm_cancel")
             return f"refused: {decision.reason}"
-        result = self.engine.submit(sig, decision.volume)
+        if self._already_attempted(pending.client_id):
+            # The SECOND of two independent controls, and it also owns the
+            # wording. `Engine._unresolved` is the first and the one that matters
+            # most, because it covers every caller including the auto leg and
+            # anything added later; each is demonstrated sufficient on its own in
+            # `tests/test_idempotency_guard_can_go_red.py`, which is also what
+            # established that this branch is load-bearing rather than cosmetic.
+            #
+            # It is here at all because the engine's refusal arrives as an
+            # `OrderResult` that is not ok, and the line below would report that
+            # as "send failed" -- telling the operator the venue rejected the
+            # order when nothing was transmitted at all. On a real-money desk
+            # those are different sentences.
+            return (
+                f"refused: unresolved send {pending.client_id}. Nothing was "
+                "transmitted this time. An earlier attempt for this order left no "
+                "verdict, so it may already be on the book: check /positions and "
+                "the terminal, then /cancel and re-stage if nothing moved."
+            )
+        result = self._submit_once(sig, decision.volume, pending)
+        if result is None:
+            return (
+                f"send unresolved: no verdict came back for {pending.client_id}. "
+                "It may already be on the book. Check /positions and the terminal; "
+                "this order will NOT be sent again."
+            )
         if not result.ok:
             self._clear_pending("confirm_cancel")
             return (
@@ -402,6 +452,52 @@ class Desk:
             f"sent {sig.kind.value} {sig.symbol} vol={decision.volume} "
             f"ok={result.ok} retcode={result.retcode}"
         )
+
+    def _already_attempted(self, client_id: str) -> bool:
+        """Has this exact staged order already been put on the wire once?"""
+        if not client_id:
+            return False
+        ledger = getattr(self.engine, "inflight", None)
+        get = getattr(ledger, "get", None)
+        if not callable(get):
+            return False
+        return get(client_id) is not None
+
+    def _submit_once(
+        self, sig: Signal, volume: float, pending: Pending
+    ) -> OrderResult | None:
+        """Send the staged order under its own key. `None` means NO VERDICT.
+
+        Two things happen here that did not before.
+
+        The key travels. `Engine.submit` refuses a key that already has an open
+        attempt against it, so a second `/confirm` after a timeout cannot put the
+        same order on the wire twice, whatever the operator does and whether or
+        not the desk restarted in between.
+
+        The exception is caught HERE rather than left to `Desk.handle`. It had to
+        be: `BridgeTimeout` subclasses `RuntimeError`, `handle` catches
+        `RuntimeError` and returns the bare message, so the operator saw
+        `mt4 bridge timeout` with no statement about what it meant for the order
+        and with the pending still staged and re-confirmable.
+
+        The pending is deliberately NOT cleared on this path. Clearing it would
+        lose the key, and the key is the only thing that makes the refusal
+        possible; it expires on its own TTL and the ledger outlives it.
+        """
+        try:
+            return self.engine.submit(sig, volume, pending.client_id)
+        except (RuntimeError, OSError) as exc:
+            self._journal_only(
+                "confirm_unresolved",
+                client_id=pending.client_id,
+                symbol=sig.symbol,
+                kind=sig.kind.value,
+                volume=volume,
+                request=getattr(exc, "withdrawal", "") or "unknown",
+                detail=redact_text(str(exc)),
+            )
+            return None
 
     def _cancel(self, args: str = "") -> str:
         token = args.split()[0] if args.strip() else ""
@@ -440,7 +536,16 @@ class Desk:
             )
             return f"refused: {decision.reason}"
         ttl = int(self.engine.cfg.telegram.confirm_seconds)
-        self._set_pending(Pending(sig, decision.volume, "telegram", now + ttl, close_ticket=ticket))
+        self._set_pending(
+            Pending(
+                sig,
+                decision.volume,
+                "telegram",
+                now + ttl,
+                close_ticket=ticket,
+                client_id=new_key(),
+            )
+        )
         if self.approve_always:
             return self._confirm()
         return (
@@ -500,7 +605,19 @@ class Desk:
             )
             self._clear_pending("confirm_cancel")
             return f"closed #{ticket}; reverse refused: {decision.reason}"
-        result = self.engine.submit(sig, decision.volume)
+        if self._already_attempted(pending.client_id):
+            return (
+                f"closed #{ticket}; refused: unresolved send {pending.client_id}. "
+                "Nothing was transmitted this time; the replacement may already be "
+                "on the book. Check /positions and the terminal."
+            )
+        result = self._submit_once(sig, decision.volume, pending)
+        if result is None:
+            return (
+                f"closed #{ticket}; send unresolved: no verdict came back for "
+                f"{pending.client_id}. The replacement may be on the book. Check "
+                "/positions and the terminal; it will NOT be sent again."
+            )
         if not result.ok:
             self._clear_pending("confirm_cancel")
             return (

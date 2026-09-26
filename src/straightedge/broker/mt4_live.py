@@ -15,6 +15,10 @@ from pathlib import Path
 from typing import Any, Callable
 
 from straightedge.constants import (
+    EA_CLAIM_RETRY_MS,
+    EA_LADDER_SLEEP_MS,
+    MAILBOX_ROUND_TRIP_CEILING_MS,
+    MAILBOX_SEND_OPS,
     RETCODE_UNKNOWN,
     TRADE_RETCODE_DONE,
     TRADE_RETCODE_INVALID_PRICE,
@@ -77,6 +81,17 @@ DEFAULT_STARTUP_WAIT_SEC = 180.0
 _STARTUP_GAP_MIN = 1.0
 _STARTUP_GAP_MAX = 5.0
 
+#: How long the bridge keeps trying to REMOVE a request it has just given up on.
+#:
+#: The budget is already spent at that point, so this is extra wall clock and it
+#: is deliberately small. It exists because the removal is the fast path of the
+#: fix: on NTFS `unlink` fails with `PermissionError` while the terminal holds the
+#: handle, and `_retry_unlink` spins at 20ms, so half a second is 25 attempts --
+#: far more than the single contended moment this is for. Letting it run longer
+#: would delay the operator's failure report to buy an outcome the Expert's own
+#: `ttl_ms` fence already covers.
+_WITHDRAW_GRACE_SEC = 0.5
+
 BAR_FIELDS = ("time", "open", "high", "low", "close", "volume")
 POS_FIELDS = (
     "ticket",
@@ -129,13 +144,40 @@ def _wire(v: Any) -> str:
     return s.encode("ascii", "replace").decode("ascii")
 
 
-def encode(op: str, payload: dict[str, Any], req_id: int) -> str:
+def encode(
+    op: str, payload: dict[str, Any], req_id: int, *, ttl_ms: int | None = None
+) -> str:
+    """One request body. `id` and `op` first, `ttl_ms` last.
+
+    `ttl_ms` is the fence the Expert honours (`docs/MT4.md`): how long this
+    request stays executable, counted from when it was written. A DURATION, not a
+    deadline, and that is the whole reason it works. The desk and the terminal can
+    be on different hosts (`mt4.mailbox_url`), so a wall-clock deadline would have
+    to survive clock skew between them, and skew in the wrong direction makes a
+    stale request look FRESH. A duration has no clock domain: the Expert measures
+    the age on the filesystem that holds the file, against its own clock.
+
+    It goes LAST because `tests/test_mt4_wire.py` pins `id` then `op` as the first
+    two lines, and because an Expert too old to know the field ignores it wherever
+    it sits. An Expert that ignores it is exactly why the desk ALSO withdraws the
+    request itself; neither layer is trusted alone.
+    """
     lines = [f"id={req_id}", f"op={op}"]
     for k, v in payload.items():
         if v is None:
             continue
         lines.append(f"{k}={_wire(v)}")
+    if ttl_ms is not None:
+        lines.append(f"ttl_ms={int(ttl_ms)}")
     return "\n".join(lines) + "\n"
+
+
+def ttl_of(body: str) -> int:
+    """The `ttl_ms` a request body declares, or 0 when it declares none."""
+    try:
+        return max(0, int(decode(body).get("ttl_ms", 0) or 0))
+    except (TypeError, ValueError):  # pragma: no cover - decode coerces
+        return 0
 
 
 def decode(text: str) -> dict[str, Any]:
@@ -298,7 +340,44 @@ class BridgeTimeout(RuntimeError):
     `except (RuntimeError, OSError, ValueError)` handlers in `engine.py` and
     `__main__.py`, and the tests matching on "timeout" -- behaves exactly as
     before.
+
+    It also carries what the bridge DID about the abandoned request, because the
+    desk's next decision depends on it and "I gave up" is not the same fact as
+    "nothing can happen now". `withdrawal` is one of:
+
+    * `withdrawn` -- the request was still on the shared name and is now gone, so
+      the Expert can never execute it;
+    * `claimed` -- the shared name was already gone, so the Expert HAS the request
+      and may be executing it right now. This is the ambiguous-money case;
+    * `locked` -- the request is still there and could not be removed. It can
+      still fire, and the Expert's own `ttl_ms` fence is the only thing left.
+
+    `op` is carried for the same reason: a timed-out `tick` and a timed-out
+    `market` are not the same event and must not read the same in a journal.
     """
+
+    def __init__(
+        self, message: str, *, op: str = "", withdrawal: str = "", req_id: int = 0
+    ) -> None:
+        super().__init__(message)
+        self.op = op
+        self.withdrawal = withdrawal
+        self.req_id = req_id
+
+    @property
+    def withdrawn(self) -> bool:
+        """True ONLY when the request is provably gone from the mailbox."""
+        return self.withdrawal == "withdrawn"
+
+    @property
+    def may_still_execute(self) -> bool:
+        """True when the request could still reach the broker after this raise.
+
+        An empty `withdrawal` means the bridge did not look, which is NOT the
+        same as looking and finding nothing; it reads as "could still execute"
+        because that is the safe direction.
+        """
+        return self.withdrawal != "withdrawn"
 
 
 class FileBridge:
@@ -308,26 +387,108 @@ class FileBridge:
     handle. Retry until timeout. Protocol lines are LF even on Windows.
     """
 
-    def __init__(self, directory: str | Path, timeout_sec: float = 5.0) -> None:
+    def __init__(
+        self,
+        directory: str | Path,
+        timeout_sec: float = 5.0,
+        *,
+        send_timeout_sec: float | None = None,
+    ) -> None:
         self.dir = Path(directory)
+        #: The READ budget. Named `timeout` still, because every caller and test
+        #: that predates the split means this one.
         self.timeout = timeout_sec
+        #: The SEND budget, for the ops in `MAILBOX_SEND_OPS`. `None` means the
+        #: caller did not split them, and then a send gets the read budget -- the
+        #: pre-split behaviour, kept so that a bridge constructed by hand in a
+        #: test is not silently given a different timing model than it asked for.
+        self.send_timeout = timeout_sec if send_timeout_sec is None else send_timeout_sec
         self._n = 0
         self._lock = threading.Lock()
 
+    def budget_for(self, op: str) -> float:
+        """The budget this op gets. A send is the expensive one to abandon."""
+        return self.send_timeout if op in MAILBOX_SEND_OPS else self.timeout
+
     def call(self, op: str, payload: dict[str, Any]) -> dict[str, Any]:
         with self._lock:
-            return self._call(op, payload)
+            self._n += 1
+            req_id = self._n
+            budget = self.budget_for(op)
+            body = encode(op, payload, req_id, ttl_ms=int(budget * 1000))
+            return decode(self._exchange(body, req_id, timeout_sec=budget, op=op))
 
-    def _call(self, op: str, payload: dict[str, Any]) -> dict[str, Any]:
+    def exchange(self, body: str, req_id: int) -> str:
+        """One mailbox round trip for a body the CALLER already encoded.
+
+        This is what `straightedge.broker.mt4_net` serves a remote desk with, and
+        it differs from `call()` in exactly two ways, both deliberate.
+
+        The request id is the CALLER's, not this bridge's. The desk that built the
+        body owns the id end to end, so the reply the desk finally reads carries
+        the id the desk sent. A shim that generated its own id would have to
+        translate the reply's id back, and a translation is a place to drift.
+
+        The RAW reply text is returned, not a decoded dict. `decode` coerces
+        types, so re-encoding a decoded reply is not the identity; returning the
+        text means the bytes the Expert wrote are the bytes the desk reads, and
+        the golden transcripts in `tests/mt4_transcripts.py` still describe what
+        crosses the network.
+
+        `self._n` is deliberately NOT advanced here. One `FileBridge` therefore
+        must not be driven through `call()` and `exchange()` at the same time, or
+        the two id spaces collide. The shim only ever uses `exchange()`.
+
+        The BUDGET comes from the body's own `ttl_ms`, clamped to this bridge's
+        configured ceiling, and falls back to the read budget when the body
+        declares none. The desk decided how long its send is allowed to take and
+        the shim must not shorten it: a shim that gave up at its own read budget
+        would abandon a request the Expert was still executing, which is the exact
+        defect the split budget exists to remove, reintroduced one hop away. The
+        clamp is there because `ttl_ms` arrives over the network, and an
+        unbounded value from the wire would let one request hold the
+        single-threaded shim open indefinitely.
+        """
+        declared = ttl_of(body) / 1000.0
+        ceiling = max(self.timeout, self.send_timeout)
+        budget = self.timeout if declared <= 0 else min(declared, ceiling)
+        with self._lock:
+            return self._exchange(
+                body, req_id, timeout_sec=budget, op=str(decode(body).get("op", ""))
+            )
+
+    def _withdraw(self, req: Path) -> str:
+        """Take back a request this bridge has given up on. Best effort, stated.
+
+        `unlink(missing_ok=False)` rather than a check-then-delete, because the
+        Expert claims the shared name by renaming it and can do so between any two
+        statements here. The exception IS the answer: `FileNotFoundError` means
+        the Expert already has it, and reporting `withdrawn` there would turn the
+        ambiguous-money case into a clean bill of health.
+        """
+        deadline = time.monotonic() + _WITHDRAW_GRACE_SEC
+        while True:
+            try:
+                req.unlink()
+                return "withdrawn"
+            except FileNotFoundError:
+                return "claimed"
+            except (PermissionError, OSError):
+                if time.monotonic() >= deadline:
+                    return "locked"
+                time.sleep(0.02)
+
+    def _exchange(
+        self, body: str, req_id: int, *, timeout_sec: float | None = None, op: str = ""
+    ) -> str:
         self.dir.mkdir(parents=True, exist_ok=True)
-        self._n += 1
-        req_id = self._n
         req = self.dir / REQ_NAME
         res = self.dir / RES_NAME
-        deadline = time.monotonic() + self.timeout
+        budget = self.timeout if timeout_sec is None else timeout_sec
+        deadline = time.monotonic() + budget
         _retry_unlink(res, deadline)
         _retry_unlink(req, deadline)
-        _atomic_write(req, encode(op, payload, req_id), deadline)
+        _atomic_write(req, body, deadline)
         enc = _mailbox_encoding()
         while time.monotonic() < deadline:
             if res.exists():
@@ -336,13 +497,26 @@ class FileBridge:
                 except OSError:
                     time.sleep(0.02)
                     continue
-                data = decode(text)
-                if int(data.get("id", 0) or 0) == req_id:
+                if int(decode(text).get("id", 0) or 0) == req_id:
                     _retry_unlink(res, deadline)
                     _retry_unlink(req, deadline)
-                    return data
+                    return text
             time.sleep(0.02)
-        raise BridgeTimeout("mt4 bridge timeout")
+        # GIVING UP IS NOT THE LAST STEP. The request is still addressed to an
+        # Expert that polls every 100ms, so before the exception is raised the
+        # bridge takes it back; without that, a trade the operator was told had
+        # failed could fire minutes later, and across a desk process exit there
+        # was nothing bounding "later" at all (observed on the live box, a silent
+        # restart at 2026-09-26T01:56:49Z). What could not be taken back is
+        # NAMED on the exception rather than assumed away.
+        withdrawal = self._withdraw(req)
+        raise BridgeTimeout(
+            f"mt4 bridge timeout after {budget:.1f}s"
+            f"{(' op=' + op) if op else ''} request={withdrawal}",
+            op=op,
+            withdrawal=withdrawal,
+            req_id=req_id,
+        )
 
 
 class Mt4Broker:
@@ -360,10 +534,23 @@ class Mt4Broker:
         *,
         magic: int = 0,
         startup_wait_sec: float = DEFAULT_STARTUP_WAIT_SEC,
+        send_timeout_sec: float = 0.0,
         log: Callable[[str], None] | None = None,
     ) -> None:
         self._call = call
         self._magic = magic
+        #: The desk's send budget, so `connect()` can compare it against what the
+        #: Expert says its own worst case is. Zero means the caller did not say,
+        #: and then no comparison is made and no verdict is claimed.
+        self._send_timeout = max(0.0, float(send_timeout_sec))
+        #: What the Expert declared about itself on the last successful ping.
+        #: `None` means it did not answer the question, which is NOT the same as
+        #: answering zero: an Expert that predates the fields cannot be judged,
+        #: and reporting it as a pass would be the defect this partition exists
+        #: to avoid. Same rule as `_survivor_ticket` above.
+        self.ea_ladder_ms: int | None = None
+        self.ea_broker_calls: int | None = None
+        self.ea_fence: bool | None = None
         #: Zero or less means one ping and no wait, which is the pre-1.4.2
         #: behaviour and a legitimate operator choice on a host where MT4 is
         #: already up before the desk starts.
@@ -388,6 +575,84 @@ class Mt4Broker:
         got = self._call("ping", {})
         if not _truthy(got.get("ok")):
             raise RuntimeError(str(got.get("error") or "mt4 ping failed"))
+        self._read_declaration(got)
+
+    def _read_declaration(self, got: dict[str, Any]) -> None:
+        """Record what the Expert says about its own worst case, and judge it.
+
+        The desk's send budget has to be strictly longer than everything the
+        Expert can spend before it is able to reply, or the desk writes off a
+        request that is still executing. `constants.py` derives that from the
+        Expert's source at the time it was written, which is a DOCUMENT, not a
+        mechanism: the Expert's ladders are `input` parameters and an operator can
+        change them in the terminal's dialog, on a box nobody is looking at.
+
+        So the Expert states its own numbers on every ping and the desk checks
+        them. That turns "the budget must clear the ladder" into something that
+        can go RED at runtime instead of a sentence in a runbook.
+
+        Absent fields mean an Expert too old to answer. The desk says so, once,
+        and does not refuse: refusing would make this fix the outage, and the
+        deployed Expert ships from this repo alongside the desk.
+        """
+        self.ea_ladder_ms = _reported_int(got, "ladder_ms")
+        self.ea_broker_calls = _reported_int(got, "broker_calls")
+        self.ea_fence = _reported_bool(got, "fence")
+        if self._send_timeout <= 0:
+            return
+        budget_ms = int(self._send_timeout * 1000)
+        if self.ea_ladder_ms is None:
+            self._log(
+                "mt4: the Expert does not declare ladder_ms, so its worst case "
+                "CANNOT be checked against this desk's "
+                f"{budget_ms}ms send budget. Update "
+                "mt4/Experts/Mt4RiskBot.mq4 on the terminal host."
+            )
+            return
+        floor = MAILBOX_ROUND_TRIP_CEILING_MS + self.ea_ladder_ms + EA_CLAIM_RETRY_MS
+        if budget_ms <= floor:
+            self._log(
+                f"mt4: WARNING send budget {budget_ms}ms does NOT clear the "
+                f"Expert's declared worst case ({floor}ms: {self.ea_ladder_ms}ms "
+                "of Sleep plus transport). The desk will give up while the "
+                "Expert is still working, which leaves orders in an unresolved "
+                "state. Raise mt4.send_timeout_ms or lower the Expert's retry "
+                "inputs."
+            )
+
+    def send_fence_report(self) -> str:
+        """One operator-facing line about the two halves of the send contract.
+
+        Read by `doctor` and by the startup log. It names the UNMEASURED case
+        explicitly, because an Expert that cannot answer renders identically to
+        one that answered well.
+        """
+        budget_ms = int(self._send_timeout * 1000)
+        if self.ea_ladder_ms is None:
+            return (
+                f"send fence: NOT MEASURED (budget {budget_ms}ms; the Expert "
+                "does not declare ladder_ms, so it is too old to be checked)"
+            )
+        floor = MAILBOX_ROUND_TRIP_CEILING_MS + self.ea_ladder_ms + EA_CLAIM_RETRY_MS
+        verdict = "ok" if budget_ms > floor else "TOO SHORT"
+        fence = {True: "yes", False: "no", None: "not stated"}[self.ea_fence]
+        return (
+            f"send fence: {verdict} (budget {budget_ms}ms vs Expert worst case "
+            f"{floor}ms, ladder {self.ea_ladder_ms}ms, "
+            f"broker calls {self.ea_broker_calls}, stale-request refusal {fence})"
+        )
+
+    #: What `constants.py` computed from the shipped Expert's source. Used only
+    #: to report a DISAGREEMENT between the .mq4 in this repo and the .mq4 that
+    #: is actually attached to the chart, which is a real and invisible state on
+    #: a box where someone edited the Expert's inputs.
+    shipped_ladder_ms = EA_LADDER_SLEEP_MS
+
+    def declaration_matches_shipped(self) -> bool | None:
+        """Does the attached Expert agree with the one in this repo? None = unknown."""
+        if self.ea_ladder_ms is None:
+            return None
+        return self.ea_ladder_ms == self.shipped_ladder_ms
 
     def startup_connect(self) -> None:
         """`connect()`, retried until the Expert answers or the budget expires.
@@ -738,6 +1003,11 @@ class Mt4Broker:
             "magic": order.magic or self._magic,
             "deviation": order.deviation,
             "ticket": order.ticket or 0,
+            # On the wire as its own field as well as inside `comment`, so the
+            # Expert's log line for a send can be joined to the desk's journal
+            # entry for the same send. After an ambiguous timeout that join is the
+            # only evidence there is about what the terminal actually did.
+            "client_id": order.client_id or None,
         }
 
     def _working_payload(self, order: WorkingOrder) -> dict[str, Any]:
@@ -751,6 +1021,7 @@ class Mt4Broker:
             "tp": order.tp,
             "comment": (order.comment or "")[:31],
             "magic": order.magic or self._magic,
+            "client_id": order.client_id or None,
         }
 
     def _require(self, op: str, payload: dict[str, Any]) -> dict[str, Any]:

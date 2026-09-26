@@ -18,6 +18,12 @@ from tempfile import TemporaryDirectory
 
 from straightedge import __version__
 from straightedge.broker import broker_for
+from straightedge.broker.mt4_net import (
+    DEFAULT_SHIM_PORT,
+    TOKEN_ENV,
+    make_shim,
+    serve,
+)
 from straightedge.broker.paper import PaperBroker
 from straightedge.config import BotConfig, load_config
 from straightedge.engine import Engine, run_backtest
@@ -27,6 +33,12 @@ from straightedge.models import Bar
 from straightedge.strategy import TrendStrategy
 from straightedge.synthetic import generate_bars, generate_ranging
 from straightedge.telegram import TelegramClient, TgCommand, offset_path_for
+from straightedge.watchdog import (
+    heartbeat_path_for,
+    stale_after_seconds,
+    tick_budget_seconds,
+    watch,
+)
 
 
 def _cfg(args: argparse.Namespace) -> BotConfig:
@@ -43,6 +55,117 @@ def _posture_line(cfg: BotConfig) -> str:
     approve = "allowed" if cfg.telegram.allow_approve_always else "disabled"
     auto = "allowed" if cfg.telegram.allow_auto else "disabled"
     return f"approve always: {approve}\nauto: {auto}"
+
+
+def mt4_transport_line(cfg: BotConfig) -> str:
+    """Which transport THIS config will use, and whether its secret is present.
+
+    Two configs can differ only in an environment variable here, and an operator
+    reading `doctor` has to be able to tell a co-located desk from a remote one
+    without inspecting the process environment by hand. `mailbox_url` wins over
+    `files_dir` in `broker_for`, so this reports the one that will actually be
+    used rather than both. The token is presence-checked and never printed.
+    """
+    budgets = (
+        f"budgets: {cfg.mt4.timeout_ms}ms read / {cfg.mt4.send_timeout_ms}ms send"
+    )
+    if cfg.mt4.mailbox_url:
+        token = "SET" if cfg.mt4.mailbox_token else "unset"
+        return (
+            f"mt4 transport: network shim {cfg.mt4.mailbox_url} "
+            f"({TOKEN_ENV}: {token}), {budgets}"
+        )
+    return (
+        f"mt4 transport: file mailbox, files_dir: "
+        f"{cfg.mt4.files_dir or 'unset'}, {budgets}"
+    )
+
+
+def cmd_mt4_shim(args: argparse.Namespace) -> int:
+    """Serve this host's MT4 mailbox to a remote desk. See docs/TRANSPORT.md.
+
+    Runs ON the MetaTrader 4 host, beside the terminal, and is the only thing of
+    ours that has to. It holds no risk logic, no prompts, no model keys and no
+    journal, so a bug fix to any of those does not touch the customer's box.
+    """
+    cfg = load_config(args.config) if args.config else load_config()
+    try:
+        server = make_shim(
+            files_dir=cfg.mt4.files_dir,
+            token=cfg.mt4.mailbox_token,
+            host=args.host,
+            port=args.port,
+            timeout_sec=max(1.0, cfg.mt4.timeout_ms / 1000.0),
+            # BOTH budgets, or the shim becomes the end that gives up first.
+            # `FileBridge.exchange` sizes its mailbox wait from the request's own
+            # `ttl_ms` CLAMPED to this ceiling, so a shim built with only the read
+            # budget clamps a 7060ms send down to 5000ms and abandons a request the
+            # Expert is still executing about 1.9s before the desk would have. That
+            # is the defect the split budget removes, reintroduced one hop away,
+            # and it is reachable only on the network transport, which is the live
+            # topology. Guarded by
+            # `tests/test_mt4_net_transport.py::test_the_shim_cli_gives_the_mailbox_the_desks_send_ceiling`.
+            send_timeout_sec=max(1.0, cfg.mt4.send_timeout_ms / 1000.0),
+            allow_plaintext_exposure=args.i_understand_plaintext,
+        )
+    except (RuntimeError, OSError) as exc:
+        print(redact_text(str(exc)), file=sys.stderr)
+        return 2
+    return serve(server)
+
+
+def watchdog_line(cfg: BotConfig) -> str:
+    """The derived staleness threshold, printed where an operator will see it.
+
+    `doctor` is the one command the runbook makes mandatory, so the number the
+    watchdog will judge this desk by is stated there rather than left to be
+    discovered from a source file.
+    """
+    line = (
+        f"watchdog: {heartbeat_path_for(cfg.journal_path)}, stale after "
+        f"{stale_after_seconds(cfg)}s (tick budget {tick_budget_seconds(cfg)}s)"
+    )
+    if not cfg.telegram.enabled:
+        # The long poll is the biggest term in the budget, and with no token
+        # there is no long poll, so this number is not the one a running desk
+        # will get. `run` refuses to start without Telegram anyway; printing the
+        # bare figure would be a measurement of a config that cannot run.
+        line += " -- telegram unset, so the poll term is missing from this figure"
+    return line
+
+
+def cmd_watch(args: argparse.Namespace) -> int:
+    """Is the desk ticking, and will it trade. See docs/RUNBOOK.md `Watchdog`.
+
+    A SEPARATE process on purpose. A desk cannot report its own death, and an
+    in-process staleness check is an instrument that fails with its subject;
+    this one shares nothing with the desk but the heartbeat file, and it never
+    takes the run lock (that could make a restarting desk exit `already
+    running`) and never calls `getUpdates` (that would steal the desk's
+    commands).
+    """
+    cfg = _cfg(args)
+    path = heartbeat_path_for(cfg.journal_path)
+    # SEND-ONLY, and the missing `offset_path=` is the load-bearing part: this
+    # client is never given a cursor because it must never poll for updates.
+    tg = TelegramClient.from_config(cfg.telegram)
+    if tg is None and args.loop:
+        print(
+            "telegram is the alarm channel: set TELEGRAM_BOT_TOKEN and "
+            "TELEGRAM_CHAT_ID, or run `watch` once and read the exit code",
+            file=sys.stderr,
+        )
+        return 2
+    if tg is None:
+        print("telegram disabled: this check prints and exits, it cannot alert")
+    print(watchdog_line(cfg))
+    return watch(
+        path,
+        cfg,
+        send=(tg.send if tg is not None else None),
+        loop=bool(args.loop),
+        ok_every=float(args.ok_every),
+    )
 
 
 def telegram_ping(cfg: BotConfig, *, transport=None) -> str:
@@ -171,7 +294,8 @@ def cmd_doctor(args: argparse.Namespace) -> int:
     print("MT4: attach mt4/Experts/Mt4RiskBot.mq4. files_dir is Common Files.")
     print("Windows default: %APPDATA%\\MetaQuotes\\Terminal\\Common\\Files")
     if cfg.mode == "mt4":
-        print(f"mt4 files_dir: {cfg.mt4.files_dir or 'unset'}")
+        print(mt4_transport_line(cfg))
+    print(watchdog_line(cfg))
     print("Homebrew has no MetaTrader cask; Python is enough for paper/backtest.")
     print("telegram token:", "SET" if os.environ.get("TELEGRAM_BOT_TOKEN") else "unset")
     print("telegram chat:", "SET" if os.environ.get("TELEGRAM_CHAT_ID") else "unset")
@@ -204,6 +328,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     f"connected venue=mt4 login={acct.login} server={acct.server} "
                     f"equity={acct.equity:.2f} {acct.currency} trade_mode={acct.trade_mode}"
                 )
+                # The two halves of the send contract, read off the LIVE Expert
+                # rather than off this repo's copy of it. The Expert's retry
+                # ladders arrive as `input` parameters, so the attached Expert can
+                # differ from the shipped one with nothing saying so. A budget
+                # that does not clear the ladder is the condition that makes a
+                # duplicate order reachable, so `doctor` goes RED on it and does
+                # not merely mention it.
+                fence = getattr(broker, "send_fence_report", None)
+                if callable(fence):
+                    line = fence()
+                    print(line)
+                    if "TOO SHORT" in line:
+                        rc = 1
                 if history_check(cfg, broker):
                     rc = 1
             except (RuntimeError, OSError, ValueError) as exc:
@@ -430,6 +567,46 @@ def build_parser() -> argparse.ArgumentParser:
         help="required to send orders on a real (trade_mode=2) account",
     )
     r.set_defaults(func=cmd_run)
+
+    s = sub.add_parser(
+        "mt4-shim",
+        help="serve THIS host's MT4 mailbox to a remote desk (run it on the MT4 box)",
+    )
+    s.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="listen address. Non-loopback needs --i-understand-plaintext",
+    )
+    s.add_argument("--port", type=int, default=DEFAULT_SHIM_PORT)
+    s.add_argument(
+        "--i-understand-plaintext",
+        action="store_true",
+        help=(
+            "bind a routable address with no TLS. The supported exposure is a "
+            "Cloudflare Tunnel, which needs no inbound port at all"
+        ),
+    )
+    s.set_defaults(func=cmd_mt4_shim)
+
+    w = sub.add_parser(
+        "watch",
+        help="is the desk ticking, and is it armed (reads journal.heartbeat)",
+    )
+    w.add_argument(
+        "--loop",
+        action="store_true",
+        help="keep watching and alert the locked chat on every state change",
+    )
+    w.add_argument(
+        "--ok-every",
+        type=float,
+        default=0.0,
+        help=(
+            "seconds between confirmations that the desk is healthy. 0 is off. "
+            "Set it and this watcher going silent becomes a signal too"
+        ),
+    )
+    w.set_defaults(func=cmd_watch)
 
     t = sub.add_parser("telegram", help="send a test message to the configured chat")
     t.add_argument("--message", default="straightedge ping")

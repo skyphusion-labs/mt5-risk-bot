@@ -206,3 +206,109 @@ FILLING_RETRY_ORDER = (
     ORDER_FILLING_IOC,
     ORDER_FILLING_RETURN,
 )
+
+
+# ---------------------------------------------------------------------------
+# MT4 mailbox budgets. A READ timing out is cheap; a SEND timing out is the
+# ambiguous-money case, so the two get different budgets and the send one is
+# DERIVED rather than chosen.
+#
+# Every term below is labelled MEASURED, COMPUTED or ALLOWANCE, the same
+# discipline `tests/live_measurements.py` keeps, and for the same reason: an
+# unlabelled number sitting next to measured ones becomes a measurement to the
+# next reader. There is exactly ONE allowance here and it is named as such.
+# ---------------------------------------------------------------------------
+
+#: MEASURED on the live Vultr desk against the MT4 host, 2026-09-26, by
+#: FileSystemWatcher on the mailbox directory (.req renamed in to .res renamed in),
+#: over a 24.3 minute window: p50 205ms across 2166 requests. That median is the
+#: ONLY trustworthy statistic from that window and `tests/live_measurements.py`
+#: says why in as many words: the naive pairing used to compute latency shifts by
+#: one after every unanswered request, and three requests went unanswered, so p90
+#: and above are unreliable.
+#:
+#: Which is exactly why this is 1000 and not a tail statistic. A ceiling that a
+#: measured tail cannot support has to come from somewhere defensible, so it is
+#: about 5x the reliable median, and the conservative direction for a budget whose
+#: failure mode is expiring early. Quoting a p90 here would be putting a number I
+#: cannot stand behind next to ones I can.
+MAILBOX_ROUND_TRIP_CEILING_MS = 1000
+
+#: COMPUTED from `mt4/Experts/Mt4RiskBot.mq4`: the unconditional `Sleep(50)`
+#: inside the Expert's three retry ladders, worst case, in ONE `Process()` call.
+#: `SendRetry` 8 attempts, `ModifyRetry` 5, `RollbackPosition` 6, every one of
+#: them 50ms apart: (8 + 5 + 6) * 50. `tests/test_send_budget.py` recomputes it
+#: from the .mq4 source, so changing a loop bound in the Expert without moving
+#: this number goes red.
+EA_LADDER_SLEEP_MS = 950
+
+#: COMPUTED from the same three ladders: the number of BROKER round trips the
+#: Expert can make while the desk waits. 8 `OrderSend` + 5 `OrderModify` + 6
+#: `OrderClose`. Local calls (`OrderSelect`, `RefreshRates`) are not counted:
+#: they read the terminal's own cache and do not leave the host.
+EA_BROKER_CALLS_WORST_CASE = 19
+
+#: COMPUTED from the Expert's inputs `ClaimOpenRetries = 10` and
+#: `ClaimOpenRetryMs = 20`: (10 - 1) * 20 per ladder, and there are TWO ladders on
+#: the same bound, so 360.
+#:
+#: The second one is why this number moved while this change was in review. #82
+#: retried the CLAIM READ; #83 then gave the REPLY WRITE the same bounded retry,
+#: deliberately on the same `tries` knob so the two cannot drift. Both sit between
+#: the desk's request and the desk's reply, so both spend the desk's send budget,
+#: and a derivation that counted only the first would under-budget a send by 180ms
+#: without anything saying so. `tests/test_send_budget.py` counts the retry loops
+#: in the .mq4 and goes red if a third appears.
+EA_CLAIM_RETRY_MS = 360
+
+#: ALLOWANCE, and the ONLY un-measured term in the derivation. No measurement of
+#: `OrderSend` latency against the live OANDA account exists yet: the box is
+#: still on the MetaQuotes demo and the gold market is shut, so the first live
+#: window is what measures this. 250ms per broker round trip is chosen against
+#: the one thing that IS measured about this instrument -- gold's 45 point spread
+#: against the shipped 20 point deviation (`tests/live_measurements.py`), which
+#: makes a requote the expected case rather than the tail, and a requote is a
+#: full round trip. It is deliberately not rounded away into the total; the
+#: total is whatever the arithmetic produces.
+BROKER_CALL_ALLOWANCE_MS = 250
+
+
+def derive_send_timeout_ms() -> int:
+    """The desk's send budget, as the sum of its named terms.
+
+    Not a chosen number. The desk has to outlast the Expert or it writes off a
+    request the Expert is still executing, which is how a duplicate order and a
+    late fill both become reachable; so the budget is the transport ceiling plus
+    everything the Expert can spend before it can possibly answer.
+
+    Kept as a function rather than a literal so that no copy of the total exists
+    anywhere: `config.py` calls it for the default and
+    `tests/test_send_budget.py` asserts the shipped default IS this call.
+    """
+    return (
+        MAILBOX_ROUND_TRIP_CEILING_MS
+        + EA_LADDER_SLEEP_MS
+        + EA_CLAIM_RETRY_MS
+        + EA_BROKER_CALLS_WORST_CASE * BROKER_CALL_ALLOWANCE_MS
+    )
+
+
+#: The ops that can CHANGE THE BOOK, and therefore the ops that get the send
+#: budget, the send TTL, and the Expert's refusal-when-stale rule.
+#:
+#: `check_market` and `check_working` are READS on purpose: the Expert returns
+#: before `SendRetry` when `send` is false, so they cannot move money and a
+#: stale one is harmless. Getting that partition wrong in the other direction
+#: would be the expensive mistake, so it is stated as a frozenset here rather
+#: than re-derived at each call site.
+MAILBOX_SEND_OPS = frozenset(
+    {
+        "market",
+        "working",
+        "modify_position",
+        "modify_working",
+        "cancel",
+        "close",
+        "close_by",
+    }
+)
