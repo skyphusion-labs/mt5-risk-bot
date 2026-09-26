@@ -38,6 +38,7 @@ printed on every one of them.
 
 from __future__ import annotations
 
+import argparse
 import socket
 import socketserver
 import threading
@@ -50,6 +51,7 @@ import pytest
 
 from mt4_transcripts import GOLDEN, TranscriptExpert, ea_ok, t_ping
 from straightedge.broker import broker_for
+from straightedge.broker import mt4_net
 from straightedge.broker.mt4_live import (
     REQ_NAME,
     BridgeTimeout,
@@ -70,6 +72,7 @@ from straightedge.broker.mt4_net import (
     require_token,
     serve,
 )
+from straightedge.__main__ import cmd_mt4_shim
 from straightedge.config import BotConfig, Mt4Config
 from straightedge.models import MarketOrder, Side
 
@@ -698,9 +701,98 @@ class TestFileBridgeExchange:
 
     def test_exchange_times_out_as_a_bridge_timeout(self, tmp_path: Path) -> None:
         bridge = FileBridge(tmp_path, timeout_sec=0.15)
-        with pytest.raises(BridgeTimeout):
+        with pytest.raises(BridgeTimeout) as caught:
             bridge.exchange(encode("ping", {}, 1), 1)
-        assert (tmp_path / REQ_NAME).exists(), "the request should be left in place"
+        # This assertion used to read "the request should be left in place". It
+        # was the shim half of the same defect: the shim gives up, answers 504,
+        # and the request it wrote is still addressed to an Expert that has not
+        # claimed it. `exchange()` goes through the same `_exchange`, so the
+        # withdrawal covers the remote desk too.
+        assert not (tmp_path / REQ_NAME).exists(), "the abandoned request is still live"
+        assert caught.value.withdrawal == "withdrawn"
+
+    def test_exchange_takes_its_budget_from_the_requests_own_ttl(
+        self, tmp_path: Path
+    ) -> None:
+        """The shim must not be the end that gives up first.
+
+        The desk sizes a send budget from the Expert's worst case and states it as
+        `ttl_ms`. A shim that waited its own READ budget instead would abandon a
+        request the Expert was still executing -- the exact defect the split
+        budget removes, reintroduced one hop away.
+        """
+        bridge = FileBridge(tmp_path, timeout_sec=0.05, send_timeout_sec=1.0)
+        started = time.monotonic()
+        with pytest.raises(BridgeTimeout):
+            bridge.exchange(encode("market", {"symbol": "XAUUSD"}, 1, ttl_ms=400), 1)
+        waited = time.monotonic() - started
+        assert 0.35 < waited < 0.9, waited
+
+    def test_the_shim_cli_gives_the_mailbox_the_desks_send_ceiling(
+        self, tmp_path: Path, monkeypatch: pytest.MonkeyPatch
+    ) -> None:
+        """The clamp must not become the thing that gives up first.
+
+        `FileBridge.exchange` sizes its wait from the request's `ttl_ms` clamped to
+        its own ceiling. If `mt4-shim` builds that bridge with only the READ budget,
+        the ceiling is 5000ms, a desk send stating 7060ms is clamped down, and the
+        shim abandons a request the Expert is still executing 1.9 seconds before the
+        desk would have. That is the exact defect the split budget removes,
+        reintroduced one hop away, and it is reachable ONLY on the network
+        transport, which is the live topology.
+
+        Found by driving the shipped `cmd_mt4_shim` and measuring what the mailbox
+        actually waited; nothing else in this suite passes `send_timeout_sec`, so
+        without this guard the gap could not go red.
+        """
+        built: dict[str, object] = {}
+        real = mt4_net.make_shim
+
+        def capture(**kw: object) -> object:
+            built.update(kw)
+            raise RuntimeError("stop before binding a socket")
+
+        monkeypatch.setattr("straightedge.__main__.make_shim", capture)
+        del real
+        cfg = BotConfig()
+        cfg.mode = "mt4"
+        cfg.mt4 = Mt4Config(
+            files_dir=str(tmp_path), mailbox_token="t" * 40, timeout_ms=5000
+        )
+        monkeypatch.setattr("straightedge.__main__.load_config", lambda *a, **k: cfg)
+        cmd_mt4_shim(
+            argparse.Namespace(
+                config=None, host="127.0.0.1", port=8730, i_understand_plaintext=False
+            )
+        )
+        assert built["timeout_sec"] == 5.0
+        assert built["send_timeout_sec"] == cfg.mt4.send_timeout_ms / 1000.0, (
+            "mt4-shim builds its mailbox with only the read budget, so a send's "
+            "ttl_ms is clamped down and the shim gives up before the desk does"
+        )
+
+    def test_the_shim_mailbox_waits_the_full_send_ttl(self, tmp_path: Path) -> None:
+        """The same thing measured rather than inspected, on the bridge itself."""
+        bridge = FileBridge(
+            tmp_path, timeout_sec=5.0, send_timeout_sec=6.88
+        )
+        started = time.monotonic()
+        with pytest.raises(BridgeTimeout):
+            bridge.exchange(encode("market", {"symbol": "X"}, 1, ttl_ms=1200), 1)
+        waited = time.monotonic() - started
+        assert 1.1 < waited < 2.0, waited
+
+    def test_a_ttl_beyond_the_shims_ceiling_is_clamped(self, tmp_path: Path) -> None:
+        """`ttl_ms` arrives over the network, so it is clamped, not trusted.
+
+        The shim is single threaded by contract, so one request holding it open
+        for an attacker-chosen duration is a denial of the mailbox.
+        """
+        bridge = FileBridge(tmp_path, timeout_sec=0.05, send_timeout_sec=0.2)
+        started = time.monotonic()
+        with pytest.raises(BridgeTimeout):
+            bridge.exchange(encode("market", {"symbol": "X"}, 1, ttl_ms=60_000), 1)
+        assert time.monotonic() - started < 1.0
 
 
 # ---------------------------------------------------------------------------

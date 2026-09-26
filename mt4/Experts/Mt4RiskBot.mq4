@@ -9,6 +9,35 @@ input int MailboxStaleSeconds = 60;    // age at which a wedged mailbox mutex is
 input int ClaimOpenRetries = 10;       // attempts to open a claim this instance already owns
 input int ClaimOpenRetryMs = 20;       // wait between those attempts
 
+// The three retry ladders, as NAMED constants rather than literals buried in the
+// loops. They are named because the desk has to know them: its send budget must
+// be strictly longer than everything this Expert can spend before it is able to
+// reply, or the desk gives up on a request that is still executing and the
+// operator is told an order failed while it is on its way to the broker. The
+// ping reply declares the arithmetic below, the desk checks it on every connect,
+// and `tests/test_send_budget.py` cross-checks that the loops really are driven
+// by these constants. A literal in a loop plus a number in a reply is two copies
+// that drift in silence.
+#define SE_SEND_TRIES      8
+#define SE_MODIFY_TRIES    5
+#define SE_ROLLBACK_TRIES  6
+#define SE_RETRY_SLEEP_MS  50
+#define SE_LADDER_SLEEP_MS ((SE_SEND_TRIES + SE_MODIFY_TRIES + SE_ROLLBACK_TRIES) * SE_RETRY_SLEEP_MS)
+#define SE_BROKER_CALLS    (SE_SEND_TRIES + SE_MODIFY_TRIES + SE_ROLLBACK_TRIES)
+
+// The stale-request fence. A request carries `ttl_ms`, the budget the desk is
+// waiting; once that has elapsed the desk has ALREADY given up and reported a
+// failure, so executing the request would fire a trade the operator was told had
+// not happened. The window used to be unbounded across a desk process exit, and
+// a silent restart was observed on the live box at 2026-09-26T01:56:49Z.
+//
+// FenceGraceSec absorbs the one-second resolution of a filesystem timestamp, in
+// the direction that cannot kill a live request: a fresh request read a moment
+// after it was written can compute an age one second too high, and refusing THAT
+// would break the desk. The fence is about a request minutes old, so a second of
+// slack costs it nothing.
+input int FenceGraceSec = 2;
+
 // Terminal-wide named locks. GlobalVariableSetOnCondition is the ONLY primitive
 // MQL4 documents as atomic, and it documents this exact use: "Function provides
 // atomic access to the global variable, so it can be used for providing of a
@@ -23,6 +52,17 @@ bool gBusy = false;
 bool gHoldsSingleton = false;
 bool gHoldsMailbox = false;
 string gClaimPath = "";
+
+// File timestamps are compared against TimeLocal(), and MQL4 does not state
+// whether FILE_MODIFY_DATE comes back in local time or in UTC. Guessing is not
+// acceptable here: guess wrong in one direction and every request looks ancient
+// (the desk stops working), guess wrong in the other and a request from hours ago
+// looks FRESH (the fence silently stops existing). So the offset is MEASURED at
+// init against a file this Expert writes itself, one line below the guess it
+// replaces. gFileTimeKnown false means it could not be measured, and an
+// unmeasurable age refuses a SEND rather than passing it.
+bool gFileTimeKnown = false;
+int  gFileTimeOffset = 0;
 
 // A lock is held as a TIMESTAMP that the holder refreshes. A lock whose stamp
 // has not moved for staleSecs is taken over with a compare-and-set against the
@@ -69,6 +109,81 @@ double LockAge(string name)
    return (double)TimeLocal() - held;
 }
 
+// Measure how this terminal reports file timestamps, by writing one and reading
+// it back. Returns true when the offset is known. The probe file is removed
+// again; if it cannot be written or read, the fence says so rather than assuming.
+bool CalibrateFileTime()
+{
+   string probe = "mt4_risk_bot.timeprobe";
+   int h = FileOpen(probe, FILE_WRITE|FILE_TXT|FILE_ANSI|FILE_COMMON|FILE_SHARE_READ|FILE_SHARE_WRITE);
+   if(h == INVALID_HANDLE)
+   {
+      Print("mt4riskbot file-time calibration FAILED to write ", probe,
+            " err=", GetLastError(),
+            ". Stale-request ages cannot be measured, so SEND requests whose age",
+            " is unknown will be REFUSED. Fix the Common Files permissions.");
+      return false;
+   }
+   FileWriteString(h, "probe\n");
+   FileFlush(h);
+   FileClose(h);
+   int now = (int)TimeLocal();
+   int stamp = (int)FileGetInteger(probe, FILE_MODIFY_DATE, true);
+   FileDelete(probe, FILE_COMMON);
+   if(stamp <= 0)
+   {
+      Print("mt4riskbot file-time calibration FAILED to read a modify date",
+            " err=", GetLastError(),
+            ". SEND requests whose age is unknown will be REFUSED.");
+      return false;
+   }
+   gFileTimeOffset = now - stamp;
+   Print("mt4riskbot file-time calibration ok: offset ", gFileTimeOffset,
+         "s between TimeLocal() and FILE_MODIFY_DATE. Stale requests will be",
+         " refused using this offset.");
+   return true;
+}
+
+// The age of a request file, in seconds, or -1 when it cannot be measured.
+// Measured against a stamp taken from the filesystem that HOLDS the file, so the
+// desk's own clock never enters this arithmetic: the desk and the terminal can be
+// on different hosts and a wall-clock deadline crossing that boundary would make
+// a stale request look fresh whenever the terminal ran behind.
+int RequestAgeSec(int stamp)
+{
+   if(!gFileTimeKnown || stamp <= 0)
+      return -1;
+   int age = (int)TimeLocal() - (stamp + gFileTimeOffset);
+   if(age < 0)
+      return -1;
+   return age;
+}
+
+// The ops that can change the book. An unmeasurable age refuses these and allows
+// the rest: a stale `tick` is harmless and refusing reads would take the desk
+// down over a permissions problem, while a stale `market` is a trade nobody wants.
+bool IsSendOp(string op)
+{
+   return op == "market" || op == "working" || op == "modify_position"
+       || op == "modify_working" || op == "cancel" || op == "close"
+       || op == "close_by";
+}
+
+// Is this request past the budget the desk said it was waiting?
+// `ttl_ms` absent (an older desk) means no fence and the request is executed, as
+// it always was; the desk's own withdrawal is the layer that covers that case.
+bool RequestExpired(string body, int stamp, int &ageOut, int &ttlOut)
+{
+   ttlOut = (int)StringToInteger(KV(body, "ttl_ms"));
+   ageOut = RequestAgeSec(stamp);
+   if(ttlOut <= 0)
+      return false;
+   int ttlSec = (ttlOut + 999) / 1000 + FenceGraceSec;
+   if(ageOut < 0)
+      return IsSendOp(KV(body, "op"));
+   return ageOut > ttlSec;
+}
+
 // Report every position that is open with no stop loss. A position that
 // predates this session is NOT adopted: this Expert only reports it, so a
 // human decides. Silence here is how an orphan from a previous session
@@ -103,6 +218,7 @@ void ReportUnmanaged()
 
 int OnInit()
 {
+   gFileTimeKnown = CalibrateFileTime();
    // LAYER 2, visibility. Exactly one straightedge Expert per terminal. A second
    // instance refuses to initialise rather than quietly competing for the
    // mailbox, because two instances would both send the same order.
@@ -182,6 +298,13 @@ void Process()
    // exists, and it returns without reading a request another instance is about
    // to execute. The old sequence read the shared name FIRST and deleted it
    // afterwards, so both readers got the whole body and both sent the order.
+   // The stamp is taken from the SHARED name, BEFORE the rename, because a
+   // rename's effect on a modification time is not documented and a rename that
+   // refreshed it would make every request look new -- the fence would pass
+   // everything while appearing to work. Read again after the claim and the OLDER
+   // of the two is used (below), so a file swapped in between these two reads
+   // cannot make an old request look young.
+   int reqStamp = (int)FileGetInteger("mt4_risk_bot.req", FILE_MODIFY_DATE, true);
    if(!FileMove("mt4_risk_bot.req", FILE_COMMON, gClaimPath, FILE_COMMON|FILE_REWRITE))
    {
       Print("mt4riskbot claim lost: mt4_risk_bot.req was gone before this instance",
@@ -249,13 +372,38 @@ void Process()
       Print("mt4riskbot claim open recovered path=", gClaimPath,
             " attempts=", attempts, " lastErr=", lastErr,
             ". The request was NOT lost.");
+   int claimStamp = (int)FileGetInteger(gClaimPath, FILE_MODIFY_DATE, true);
+   if(claimStamp > 0 && (reqStamp <= 0 || claimStamp < reqStamp))
+      reqStamp = claimStamp;
    string body = "";
    while(!FileIsEnding(h))
       body = body + FileReadString(h) + "\n";
    FileClose(h);
    FileDelete(gClaimPath, FILE_COMMON);
-   string reply = Handle(body);
-   // LAYER 1d, DELIVERY. The reply write gets the same retry as the claim read,
+
+   // LAYER 1d, the stale fence. Everything above this point is about executing
+   // the request exactly once; this is about NOT executing one that nobody wants
+   // any more. The desk removes an abandoned request itself, but it cannot do so
+   // if the desk process died, and that is the case with no bound on it at all.
+   int fenceAge = -1;
+   int fenceTtl = 0;
+   string reply;
+   if(RequestExpired(body, reqStamp, fenceAge, fenceTtl))
+   {
+      string op = KV(body, "op");
+      Print("mt4riskbot REFUSED a stale request op=", op,
+            " id=", KV(body, "id"),
+            " age=", fenceAge, "s ttl=", fenceTtl, "ms",
+            " (age -1 means it could not be measured). The desk has already",
+            " given up on this request and reported it as failed; executing it",
+            " would open a trade nobody is expecting. Nothing was sent.");
+      reply = Fail(KV(body, "id"), 4109, "request_expired")
+            + "survivor_ticket=0\n"
+            + "age_sec=" + IntegerToString(fenceAge) + "\n";
+   }
+   else
+      reply = Handle(body);
+   // LAYER 1e, DELIVERY. The reply write gets the same retry as the claim read,
    // and for a sharper reason: by the time control reaches here, Handle() has
    // ALREADY EXECUTED the operation. A silent failure to deliver the reply is
    // therefore the worst failure this Expert can produce. For op=market it means
@@ -479,7 +627,7 @@ int SendRetry(string sym, int typ, double vol, double price, int slip, string co
 {
    int ticket = -1;
    err = 0;
-   for(int i=0; i<8; i++)
+   for(int i=0; i<SE_SEND_TRIES; i++)
    {
       RefreshRates();
       if(typ == OP_BUY) price = MarketInfo(sym, MODE_ASK);
@@ -490,7 +638,7 @@ int SendRetry(string sym, int typ, double vol, double price, int slip, string co
       err = GetLastError();
       if(err != 146 && err != 128 && err != 141)
          break;
-      Sleep(50);
+      Sleep(SE_RETRY_SLEEP_MS);
    }
    return -1;
 }
@@ -501,7 +649,7 @@ int SendRetry(string sym, int typ, double vol, double price, int slip, string co
 bool ModifyRetry(int ticket, double price, double sl, double tp, int &err)
 {
    err = 0;
-   for(int i=0; i<5; i++)
+   for(int i=0; i<SE_MODIFY_TRIES; i++)
    {
       RefreshRates();
       if(!OrderSelect(ticket, SELECT_BY_TICKET))
@@ -514,7 +662,7 @@ bool ModifyRetry(int ticket, double price, double sl, double tp, int &err)
       err = GetLastError();
       if(err != 146 && err != 1)
          return false;
-      Sleep(50);
+      Sleep(SE_RETRY_SLEEP_MS);
    }
    return false;
 }
@@ -536,7 +684,7 @@ int TicketState(int ticket)
 // claim about the book, and the book is the artifact.
 bool RollbackPosition(int ticket, string sym, int slip)
 {
-   for(int i=0; i<6; i++)
+   for(int i=0; i<SE_ROLLBACK_TRIES; i++)
    {
       int state = TicketState(ticket);
       if(state == 0)
@@ -549,7 +697,7 @@ bool RollbackPosition(int ticket, string sym, int slip)
          if(!sent)
             Print("mt4riskbot rollback close failed ticket=", ticket, " err=", GetLastError());
       }
-      Sleep(50);
+      Sleep(SE_RETRY_SLEEP_MS);
    }
    return TicketState(ticket) == 0;
 }
@@ -557,7 +705,7 @@ bool RollbackPosition(int ticket, string sym, int slip)
 // Same contract for a pending order that was placed but could not be protected.
 bool RollbackPending(int ticket)
 {
-   for(int i=0; i<6; i++)
+   for(int i=0; i<SE_ROLLBACK_TRIES; i++)
    {
       int state = TicketState(ticket);
       if(state == 0)
@@ -568,7 +716,7 @@ bool RollbackPending(int ticket)
          if(!sent)
             Print("mt4riskbot rollback delete failed ticket=", ticket, " err=", GetLastError());
       }
-      Sleep(50);
+      Sleep(SE_RETRY_SLEEP_MS);
    }
    return TicketState(ticket) == 0;
 }
@@ -578,7 +726,16 @@ string Handle(string body)
    string id = KV(body, "id");
    string op = KV(body, "op");
    if(op == "ping")
-      return Ok(id) + "time=" + IntegerToString((int)TimeCurrent()) + "\n";
+      // The desk reads these three and refuses to stay quiet about a send budget
+      // that does not clear `ladder_ms`. Declared on every ping rather than
+      // documented once, because the ladder bounds are `input` parameters and an
+      // operator can change them in the terminal's dialog on a box nobody is
+      // watching; a number in a runbook cannot go red, this can.
+      return Ok(id)
+         + "time=" + IntegerToString((int)TimeCurrent()) + "\n"
+         + "ladder_ms=" + IntegerToString(SE_LADDER_SLEEP_MS) + "\n"
+         + "broker_calls=" + IntegerToString(SE_BROKER_CALLS) + "\n"
+         + "fence=" + (gFileTimeKnown ? "1" : "0") + "\n";
    if(op == "account")
       return AccountReply(id);
    if(op == "tick")
@@ -835,6 +992,13 @@ string CheckMarket(string id, string body, bool send)
       return Ok(id) + "ticket=0\nprice=" + DoubleToString(price, (int)MarketInfo(sym, MODE_DIGITS)) + "\n";
    int sendErr = 0;
    int ticket = SendRetry(sym, typ, vol, price, slip, ClipComment(KV(body, "comment")), magic, sendErr);
+   // The desk's client order id, logged on every outcome. This is what lets a
+   // post-incident reconcile join this log to the desk's journal after a send the
+   // desk never got an answer for, which is the only case where the two records
+   // disagree and the only case where it matters.
+   Print("mt4riskbot send op=market client_id=", KV(body, "client_id"),
+         " symbol=", sym, " lots=", DoubleToString(vol, 2),
+         " ticket=", ticket, " err=", sendErr);
    if(ticket < 0)
       return FailTrade(id, sendErr, "OrderSend", 0);
    if(sl > 0 || tp > 0)

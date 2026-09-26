@@ -146,6 +146,17 @@ def venue_timeout_seconds(cfg: Any) -> float:
     What that costs is that a renamed config attribute would silently read as
     zero, so `tests/test_watchdog.py` pins both venues' derived budgets against
     the real `BotConfig` instead of trusting the getattr.
+
+    It reads `timeout_ms`, the READ budget, and NOT `mt4.send_timeout_ms`. That is
+    a decision, not an oversight: the two commands `step_all` spends before it can
+    write a heartbeat are `ensure_connected` and `account`, and both are reads. A
+    send lives in the part of a tick no config value bounds, which is what
+    `UNBOUNDED_TAIL_ALLOWANCE` already doubles the budget for; the split moved that
+    tail by about 1.9s against a 214s MT4 budget, under 1%. Deriving the alarm from
+    the send budget instead would widen the staleness threshold an operator was
+    promised in `doctor` and in the runbook for a cost the allowance already
+    covers. `tests/test_watchdog.py` pins this choice so it cannot be switched
+    quietly.
     """
     section = getattr(cfg, str(getattr(cfg, "mode", "") or ""), None)
     per_call = max(0.0, float(getattr(section, "timeout_ms", 0) or 0) / 1000.0)

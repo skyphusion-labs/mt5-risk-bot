@@ -38,6 +38,18 @@ timeout_ms = 60000
 # or set MT4_FILES_DIR. %APPDATA% in this value expands.
 files_dir = ""
 timeout_ms = 5000
+# The SEND budget, for the ops that can change the book (market, working,
+# modify_*, cancel, close, close_by). Separate from timeout_ms above because the
+# two failures do not cost the same: a read that times out is retried by the next
+# step, while a send that times out is AMBIGUOUS (filled, in flight, or never
+# sent) and the desk cannot tell which. The default is DERIVED from the Expert's
+# own worst case, not chosen: 1000ms measured transport ceiling + 950ms of
+# Sleep inside the Expert's retry ladders + 360ms of claim-open retries + 19
+# broker round trips at a 250ms allowance = 7060. See constants.py and
+# docs/MT4.md. The desk REFUSES to start if this is at or below timeout_ms, or
+# inside the Expert's Sleep total, because a desk that gives up while the Expert
+# is still working is how a duplicate order becomes reachable.
+#send_timeout_ms = 7060
 # Seconds to wait for the Expert at STARTUP only, before giving up. A
 # boot-triggered task races MT4's own launch: the terminal has to start, load,
 # log in and reach the Expert's first tick, which is tens of seconds. Omit this

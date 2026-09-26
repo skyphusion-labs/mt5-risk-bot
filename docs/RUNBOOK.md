@@ -173,6 +173,18 @@ carries the failure table.
 
 `doctor --connect` is the gate (mailbox ping, `account`, `trade_mode`).
 It is non-zero if the Expert is missing, the folder is wrong, or the ping times out.
+It is also non-zero when the Expert's own numbers say the desk's send budget is
+too short (`send fence: TOO SHORT`).
+
+MT4 has two timeouts, not one.
+`mt4.timeout_ms` (default 5000) is the READ budget.
+It covers ping, account, symbol, tick, select, rates, positions, orders, and both
+`check_*` dry runs.
+`mt4.send_timeout_ms` (default 7060) is the SEND budget.
+It covers `market`, `working`, `modify_position`, `modify_working`, `cancel`,
+`close`, and `close_by`.
+`doctor` prints both (`budgets: 5000ms read / 7060ms send`).
+The send default is derived, not chosen. See `Unresolved sends` below.
 Do not start live on a traceback.
 Demo is `trade_mode=0` and does not need `--i-accept-risk`.
 
@@ -295,9 +307,16 @@ The threshold comes from your own config.
 `engine.poll_seconds` is the Telegram long poll.
 Telegram retries that poll up to 4 times.
 Telegram can ask for a 60 second wait on each retry.
-`[mt4] timeout_ms` (or `[mt5]`) is one venue command.
+`[mt4] timeout_ms` (or `[mt5]`) is one venue READ command.
+On MT4 that is the read budget of two, and it is the one the watchdog uses.
+`[mt4] send_timeout_ms` is the other, and the watchdog does NOT use it.
 The tick spends two venue commands before it writes the file.
+Both of them are reads (`ensure_connected` and `account`).
 The budget is the sum. The threshold is twice the budget.
+A send lives in the part of a tick that no config value bounds, and the doubling
+is what already covers that tail.
+Deriving the alarm from the send budget instead would widen a threshold the
+operator was promised, for about 1.9s against a 214s MT4 budget.
 A remote MT4 shim (`mt4.mailbox_url`) adds 2 seconds per command.
 
 Do not replace this with a number you like.
@@ -557,6 +576,197 @@ A `live_on` record in the journal makes `start` write `live_not_restored`.
 MT5 positions and working orders stay in the terminal.
 Paper positions and paper working orders die with the bot.
 
+## Unresolved sends
+
+A send that got no reply is not a send that did not happen.
+The order may be filled, in flight, or never transmitted.
+The desk cannot tell those apart, so it says so, and it never re-sends that order
+by itself.
+
+Every order the desk sends carries a client order id.
+Eight hex characters, minted once, when the order is STAGED.
+It rides the `confirm_stage` journal record, so it survives the desk process
+dying between two `/confirm`s.
+A second `/confirm` on the same staged order carries the SAME id.
+The auto leg mints a fresh id per signal, because each bar is a new order and not
+a retry of an old one.
+A close carries no id: the ticket is already the key, and closing #123 twice
+fails the second time.
+
+`journal.inflight.json` sits next to `journal.jsonl` and is chmod 0600.
+It holds one entry per send that left with no verdict, keyed by client order id.
+The entry is written BEFORE the send.
+It is removed only by a verdict from the venue, `ok` or a rejection.
+An exception leaves it open.
+An open entry is the desk saying it does not know whether that send moved money.
+It is not a claim that the order exists.
+
+### What you see in chat
+
+A `/confirm` whose send came back with nothing:
+
+```
+send unresolved: no verdict came back for 4f9c1ab2. It may already be on the book. Check /positions and the terminal; this order will NOT be sent again.
+```
+
+A second `/confirm` on that same staged order:
+
+```
+refused: unresolved send 4f9c1ab2. Nothing was transmitted this time. An earlier attempt for this order left no verdict, so it may already be on the book: check /positions and the terminal, then /cancel and re-stage if nothing moved.
+```
+
+`refused:` means nothing went on the wire this time.
+`send failed` means the venue answered and rejected it.
+Those are different sentences on purpose.
+
+`/reverse` says the same two things about the replacement, after the close has
+already happened:
+
+```
+closed #123; send unresolved: no verdict came back for 4f9c1ab2. The replacement may be on the book. Check /positions and the terminal; it will NOT be sent again.
+closed #123; refused: unresolved send 4f9c1ab2. Nothing was transmitted this time; the replacement may already be on the book. Check /positions and the terminal.
+```
+
+### What to do, in order
+
+1. Write down the client order id from the reply. Eight hex characters.
+2. Read `journal.inflight.json`. The entry names `symbol`, `side`, `volume`,
+   `op` (`market` or `working`), `sl` and `tp` or `price`, `at`, `last_at`, and
+   `attempts`.
+3. Look for that id in the terminal. Three records carry it, and they are the
+   join.
+   The order comment on the book is `<your comment> <client id>`, clipped to
+   MT4's 31 characters.
+   The Expert prints `mt4riskbot send op=market client_id=<id> symbol=<sym>
+   lots=<n> ticket=<n> err=<n>` on every market send.
+   The journal carries `client_id` on `open`, `pending`, `send_unresolved`,
+   `send_refused_unresolved`, and `confirm_unresolved`.
+4. A key you FIND is proof. That position or order IS this send.
+5. A key you do NOT find proves nothing.
+   Brokers append to and overwrite `OrderComment`; this repo already ships a test
+   for one rewriting a comment to `rb-1/from #123`.
+   Absence is inconclusive. It is never a licence to re-send.
+6. Read the account history too, not only the open book.
+   An order can have opened and closed while the desk was blind.
+7. If something moved, manage it in the terminal.
+   A send that never returned never had its stop confirmed either.
+   The desk journals a position it can match as `unmanaged_position` with
+   `comment=unresolved send <client id>`.
+   Set the stop by hand, or with `/sl TICKET PRICE` and `/tp TICKET PRICE`.
+8. If nothing moved, `/cancel` to drop the staged confirm, then re-stage with
+   `/buy` or `/sell`.
+   Do not re-confirm. The re-stage mints a NEW id, so it is not refused.
+9. The desk will not re-send the refused order, ever.
+   There is no command that clears an entry, on purpose: only a human with the
+   terminal in front of them can establish what happened.
+
+You do not need to touch `journal.inflight.json` to trade again.
+It only drives the startup report.
+To stop that report after you have reconciled, stop the desk, remove that key
+from the `open` object in the file, and leave the file at 0600.
+
+### The report repeats on every start
+
+`start` announces every still-open entry, on EVERY start, not once.
+It does that BEFORE it connects to the venue.
+A desk that cannot reach the terminal is exactly when you most need to know that
+an earlier order's outcome was never established.
+A standing money question that stops being announced is one that gets forgotten.
+The ledger keeps 64 open entries. Past that the OLDEST are dropped.
+
+### The journal records
+
+| Event | Written when | Money state |
+| --- | --- | --- |
+| `send_unresolved` | a send raised instead of answering, and again for every still-open entry at every start | AMBIGUOUS. `matched` lists tickets whose comment carried the id, `book_read_failed` is set when the book could not be read at all |
+| `send_refused_unresolved` | the engine refused a send whose key already had an open entry | NOTHING was transmitted. `attempts` and `first_at` describe the earlier attempt |
+| `confirm_unresolved` | the `/confirm` path caught the exception from its own send | AMBIGUOUS. Journal only; the chat got its one line and nothing else |
+| `inflight_unreadable` | the ledger file exists and could not be parsed | UNKNOWN. A corrupt ledger reads as EMPTY, so this record is the report you did NOT get |
+
+`send_unresolved` and `confirm_unresolved` carry `request=`, which is what the
+bridge did with the request it gave up on.
+
+| `request=` | What it means | What can still fire |
+| --- | --- | --- |
+| `withdrawn` | the request was still on the shared name and is now gone | Nothing. The Expert can never execute it. |
+| `claimed` | the shared name was already gone, so the Expert HAS it | It may be executing right now. A claimed request is never replayed, so its reply is lost. |
+| `locked` | it is still there and could not be removed | It can still fire. The Expert's own `ttl_ms` fence is the only thing left. |
+| `unknown` | the bridge did not report | Treat it as `claimed`. Not looking is not the same as looking and finding nothing. |
+
+### The two budgets, and where the send budget comes from
+
+`mt4.timeout_ms` is the READ budget, default 5000ms, and it is unchanged from when
+it covered sends too.
+`mt4.send_timeout_ms` is the SEND budget, default 7060ms, and it is DERIVED.
+
+| Term | ms | Kind |
+| --- | --- | --- |
+| transport ceiling | 1000 | MEASURED, indirectly: about 5x the p50 of 205ms over 2166 requests. Nothing above the median is quoted, because the pairing that produced it shifts by one after every unanswered request and three went unanswered, so p90 and above are unreliable |
+| Expert `Sleep` total | 950 | COMPUTED from `Mt4RiskBot.mq4`: (8 send + 5 modify + 6 rollback attempts) x 50ms |
+| claim-open retries | 360 | COMPUTED from `ClaimOpenRetries = 10` and `ClaimOpenRetryMs = 20`: 9 x 20ms, TWICE. The claim read and the reply write are both on that knob |
+| broker round trips | 4750 | ALLOWANCE: 19 round trips at 250ms |
+| total | 7060 | `constants.derive_send_timeout_ms()`, the only home for this arithmetic |
+
+250ms per broker round trip is an ALLOWANCE, not a measurement, and it is the only
+un-measured term.
+No `OrderSend` latency against the live OANDA account exists yet.
+The first live market-hours window is what measures it.
+Gold's measured 45 point spread against the shipped 20 point deviation makes a
+requote the expected case rather than the tail, and a requote is a full round
+trip, which is what 250ms is chosen against.
+
+`config.validate()` refuses a send budget at or below the read budget.
+It also refuses one at or below 2310ms, which is the transport ceiling plus
+everything the Expert can spend on `Sleep()` alone (1000 + 950 + 360).
+The desk must outlast the Expert, or it writes off requests the Expert is still
+executing, which is how a duplicate order becomes reachable.
+
+`doctor --connect` reads the check off the LIVE Expert and prints it:
+
+```
+send fence: ok (budget 7060ms vs Expert worst case 2310ms, ladder 950ms, broker calls 19, stale-request refusal yes)
+```
+
+`TOO SHORT` makes `doctor --connect` exit 1.
+`NOT MEASURED` means the attached Expert does not declare `ladder_ms` and is too
+old to be checked.
+The numbers come off the attached Expert and not off this repo's copy, because its
+retry ladders are `input` parameters and an operator can change them in the
+terminal's dialog on a box nobody is watching.
+The desk logs a loud WARNING on every ping whose declaration the budget does not
+clear.
+
+### The Expert MUST be recompiled before any of this is trusted
+
+MQL4 does not compile in CI and does not compile on the developer seat.
+The Expert half of the stale-request fence and of the budget declaration is
+covered by SOURCE GUARDS ONLY and has not been executed anywhere.
+Recompile `mt4/Experts/Mt4RiskBot.mq4` in MetaEditor on the terminal host, then
+re-attach it, before you trust either.
+New Expert input: `FenceGraceSec = 2`.
+
+Every fix degrades safely against an Expert that was not updated.
+
+| Fix | Against an un-updated Expert |
+| --- | --- |
+| duplicate-order refusal (the ledger and the client order id) | Works unchanged. It is entirely desk-side. |
+| stale-request fence | Only the desk-side withdrawal survives. The old Expert ignores `ttl_ms`, harmlessly, and a request it has already claimed can still fire late. |
+| split budgets | The budgets work. The declaration check reports `send fence: NOT MEASURED` instead of a verdict, so `doctor --connect` cannot go red on a short budget. |
+
+With the fence live, a request older than its `ttl_ms` plus `FenceGraceSec` is
+refused and nothing is sent:
+
+```
+ok=0 retcode=4109 error=request_expired survivor_ticket=0 age_sec=<n>
+```
+
+The Expert also prints that refusal, naming the op, the id, the age and the ttl.
+The age is measured against the filesystem that HOLDS the request, using an offset
+the Expert calibrates at `OnInit` by writing its own probe file, so no clock is
+compared across two hosts.
+`age_sec=-1` means the age could not be measured at all.
+Then a SEND is refused and a READ is allowed.
+
 ## Chat lock
 
 Only `TELEGRAM_CHAT_ID` is accepted.
@@ -804,7 +1014,7 @@ A pending fill writes `open` with `fill=true`.
 A vanished ticket writes `close` with `fill=true`.
 The venue holds the live book. It is not the fill log.
 
-JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `auto_on`, `auto_off`, `live_on`, `live_off`, `live_not_restored`, `risk_state_error`, `advice_turn`, `advice_circuit_block`, `advice_stage_failed`, `flatten`, `flatten_incomplete`, `close_failed`, `close_partial`, `cancel_failed`, `positions_read_failed`, `orders_read_failed`, `stop`.
+JSONL, one event per line: `start`, `open`, `close`, `modify`, `reject`, `halt`, `order_check_fail`, `pending`, `recap`, `reconnect`, `loop_error`, `confirm_stage`, `confirm_cancel`, `confirm_sent`, `approve_always`, `approve_off`, `auto_on`, `auto_off`, `live_on`, `live_off`, `live_not_restored`, `risk_state_error`, `advice_turn`, `advice_circuit_block`, `advice_stage_failed`, `flatten`, `flatten_incomplete`, `close_failed`, `close_partial`, `cancel_failed`, `positions_read_failed`, `orders_read_failed`, `send_unresolved`, `send_refused_unresolved`, `confirm_unresolved`, `inflight_unreadable`, `stop`.
 `reject` is written by every gate that refuses, on every path, and it is the
 record to grep when the bot will not trade.
 It carries the NAMED `reason`, plus `source` (`auto`, `telegram`, or `advice`)
@@ -839,6 +1049,9 @@ Grep `reject` if it never trades.
 `reconnect` is an MT5 IPC drop then `initialize`.
 `loop_error` is a tick that raised.
 The bot kept running.
+`journal.inflight.json` is the unresolved-send ledger (not JSONL).
+It holds the sends that left with no verdict. Read `Unresolved sends` before you
+touch it.
 `journal.tg_offset` is the Telegram `getUpdates` cursor (not JSONL).
 `journal.equity.json` is the risk state: `day_key`, `day_start_equity`, `peak_equity`.
 It is written whenever one of those three moves, not only at a halt.
@@ -860,4 +1073,4 @@ Before a write that would exceed 10 MiB, the live file is renamed to `journal.js
 That is one generation.
 The previous `.1` is replaced.
 `tail` and confirm restore read only the live file.
-`journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.equity.json`, `journal.lock`, and `journal.heartbeat` are owner-only (chmod 0600).
+`journal.jsonl`, `journal.jsonl.1`, `journal.tg_offset`, `journal.equity.json`, `journal.inflight.json`, `journal.lock`, and `journal.heartbeat` are owner-only (chmod 0600).

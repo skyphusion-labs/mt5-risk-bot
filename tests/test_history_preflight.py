@@ -611,9 +611,14 @@ class TestDoctorGate:
             history_async = True
 
             def __init__(
-                self, call, *, magic: int = 0, startup_wait_sec: float = 0.0
+                self,
+                call,
+                *,
+                magic: int = 0,
+                startup_wait_sec: float = 0.0,
+                send_timeout_sec: float = 0.0,
             ) -> None:
-                del call, magic, startup_wait_sec
+                del call, magic, startup_wait_sec, send_timeout_sec
 
             def connect(self) -> None:
                 return None
@@ -674,9 +679,14 @@ class TestDoctorGate:
 
         class Warm:
             def __init__(
-                self, call, *, magic: int = 0, startup_wait_sec: float = 0.0
+                self,
+                call,
+                *,
+                magic: int = 0,
+                startup_wait_sec: float = 0.0,
+                send_timeout_sec: float = 0.0,
             ) -> None:
-                del call, magic, startup_wait_sec
+                del call, magic, startup_wait_sec, send_timeout_sec
 
             def connect(self) -> None:
                 return None

@@ -66,13 +66,19 @@ def mt4_transport_line(cfg: BotConfig) -> str:
     `files_dir` in `broker_for`, so this reports the one that will actually be
     used rather than both. The token is presence-checked and never printed.
     """
+    budgets = (
+        f"budgets: {cfg.mt4.timeout_ms}ms read / {cfg.mt4.send_timeout_ms}ms send"
+    )
     if cfg.mt4.mailbox_url:
         token = "SET" if cfg.mt4.mailbox_token else "unset"
         return (
             f"mt4 transport: network shim {cfg.mt4.mailbox_url} "
-            f"({TOKEN_ENV}: {token})"
+            f"({TOKEN_ENV}: {token}), {budgets}"
         )
-    return f"mt4 transport: file mailbox, files_dir: {cfg.mt4.files_dir or 'unset'}"
+    return (
+        f"mt4 transport: file mailbox, files_dir: "
+        f"{cfg.mt4.files_dir or 'unset'}, {budgets}"
+    )
 
 
 def cmd_mt4_shim(args: argparse.Namespace) -> int:
@@ -90,6 +96,16 @@ def cmd_mt4_shim(args: argparse.Namespace) -> int:
             host=args.host,
             port=args.port,
             timeout_sec=max(1.0, cfg.mt4.timeout_ms / 1000.0),
+            # BOTH budgets, or the shim becomes the end that gives up first.
+            # `FileBridge.exchange` sizes its mailbox wait from the request's own
+            # `ttl_ms` CLAMPED to this ceiling, so a shim built with only the read
+            # budget clamps a 7060ms send down to 5000ms and abandons a request the
+            # Expert is still executing about 1.9s before the desk would have. That
+            # is the defect the split budget removes, reintroduced one hop away,
+            # and it is reachable only on the network transport, which is the live
+            # topology. Guarded by
+            # `tests/test_mt4_net_transport.py::test_the_shim_cli_gives_the_mailbox_the_desks_send_ceiling`.
+            send_timeout_sec=max(1.0, cfg.mt4.send_timeout_ms / 1000.0),
             allow_plaintext_exposure=args.i_understand_plaintext,
         )
     except (RuntimeError, OSError) as exc:
@@ -312,6 +328,19 @@ def cmd_doctor(args: argparse.Namespace) -> int:
                     f"connected venue=mt4 login={acct.login} server={acct.server} "
                     f"equity={acct.equity:.2f} {acct.currency} trade_mode={acct.trade_mode}"
                 )
+                # The two halves of the send contract, read off the LIVE Expert
+                # rather than off this repo's copy of it. The Expert's retry
+                # ladders arrive as `input` parameters, so the attached Expert can
+                # differ from the shipped one with nothing saying so. A budget
+                # that does not clear the ladder is the condition that makes a
+                # duplicate order reachable, so `doctor` goes RED on it and does
+                # not merely mention it.
+                fence = getattr(broker, "send_fence_report", None)
+                if callable(fence):
+                    line = fence()
+                    print(line)
+                    if "TOO SHORT" in line:
+                        rc = 1
                 if history_check(cfg, broker):
                     rc = 1
             except (RuntimeError, OSError, ValueError) as exc:
