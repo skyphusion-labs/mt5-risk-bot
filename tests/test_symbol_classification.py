@@ -187,6 +187,35 @@ def sweep(stems: list[str]) -> Sweep:
     return Sweep(cases, recognised, bad, newly)
 
 
+def test_no_code_is_shorter_than_three_letters() -> None:
+    """The precondition the whole #77 backward-compatibility claim rests on.
+
+    `resolve_pair` minimises `(i + j, -i)`, so the split consuming the fewest
+    letters wins. While every code is at least three letters, six is the
+    smallest total any split can reach AND six is reachable only as 3 + 3, so a
+    pre-#77 3-and-3 split is always the unique cheapest split and the tie-break
+    never runs on one. "Every symbol that resolved under 3-and-3 resolves
+    identically" is therefore a THEOREM resting on this bound, not an empirical
+    result the sweep happens to observe.
+
+    A code shorter than three letters voids it. Measured, with `XY` admitted to
+    the table: `EURXYZ` reads EUR/XY on five letters, and `XYUSD` resolves at
+    all where before it was too short to classify.
+
+    The sweep DOES catch that, so this is not a hole in coverage; it is a hole
+    in diagnosis. What the sweep catches it with is
+    `assert (9650 + 250) == ((199 * 25) * 2)` plus a list of symbol names, which
+    states an arithmetic mismatch and says nothing about the cause. Asserted
+    against the TABLE, the same way the longer-stem floor above is computed from
+    the table rather than from `longer`, so the failure names the precondition.
+    """
+    too_short = sorted(c for c in CURRENCY_CODES if len(c) < 3)
+    assert too_short == [], (
+        "a code shorter than three letters voids the #77 theorem that a 3-and-3 "
+        f"split is always the unique cheapest split: {too_short}"
+    )
+
+
 def test_sweep_every_stem_in_every_suffix_convention_matches_the_rule() -> None:
     trios = ["".join(t) for t in itertools.product(string.ascii_uppercase, repeat=3)]
     longer = _longer_stems()
