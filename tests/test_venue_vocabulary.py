@@ -142,7 +142,11 @@ DOCTOR_MT5_BINDING = 3
 #: `mt4_risk_bot.req.claim.<ChartID>` as the path that was claimed and dropped.
 #: The 31st names `mt4_risk_bot.res.tmp` in the same file, the reply staging
 #: file whose FileOpen was failing silently. Both are evidence in docstrings.
-MT4_MAILBOX = 31
+#: The 32nd is the `-Base` default in `mt4/tools/measure-mailbox.ps1`, the
+#: measurement instrument. It is parameterised precisely so the basename
+#: appears ONCE there rather than at every filename it builds, which is what
+#: this tripwire wants: one site to rename, not eight.
+MT4_MAILBOX = 32
 #: the LIVE Cloudflare AI Gateway id. Deliberately still the old string; see the header.
 #: 13 gateway-resource references plus 2 in the RUNBOOK LaunchAgent migration note.
 GATEWAY_ID_AND_MIGRATION_NOTE = 15

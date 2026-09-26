@@ -42,6 +42,32 @@ GOLD_ATR = 17.22
 FX_SPREAD_POINTS = 1
 #: The global default that was in force, and is the shipped default.
 GLOBAL_DEVIATION_POINTS = 20
+#: MEASURED on the live MT4 rig (Vultr `straightedge-desk`), 2026-09-26, by
+#: rollins, with a FileSystemWatcher on the mailbox directory over the window
+#: 01:57:15Z to 02:21:48Z (24.3 minutes, market CLOSED). Denominators matter here
+#: and are quoted because a rate without them is an opinion:
+#:
+#:     2166 requests published, 2166 claimed AND released by the Expert,
+#:     2163 replies published. Three requests got no reply file at all.
+#:
+#: The p50 round trip is `.req` renamed in to `.res` renamed in. The tail of that
+#: distribution is NOT recorded here: the naive pairing used to measure it shifts
+#: by one after every unanswered request, so p90 and above were unreliable and
+#: only the median is trustworthy.
+BRIDGE_ROUND_TRIP_P50_MS = 205
+#: Measured, same window: three unanswered requests out of 2166, 0.139%. Each one
+#: matched a `reconnect` in journal.jsonl exactly one adapter budget later.
+BRIDGE_SILENT_REPLY_LOSSES = 3
+BRIDGE_REQUESTS_OBSERVED = 2166
+#: Measured on 2026-09-25 from the Experts log: 84 requests were claimed and then
+#: dropped with err=5004 (ERR_CANNOT_OPEN_FILE) over 08:19:27Z to 19:08:58Z,
+#: about 0.149% of a comparable request volume. A second failure SITE at the same
+#: rate as the one above, which is why one retry bound covers both.
+BRIDGE_CLAIM_DROPS_20260925 = 84
+#: The shipped per-call mailbox budget, `Mt4Config.timeout_ms`, against which
+#: the Expert's retry ladder must stay small. Not measured, it is the default.
+ADAPTER_BUDGET_MS = 5000
+
 #: Chosen, not measured: gold's price level only has to be plausible for the
 #: stop and target distances below to be computed from the measured ATR.
 GOLD_PRICE = 4000.00

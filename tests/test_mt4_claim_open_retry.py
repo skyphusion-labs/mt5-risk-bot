@@ -37,14 +37,12 @@ from pathlib import Path
 
 EA_PATH = Path(__file__).resolve().parents[1] / "mt4" / "Experts" / "Mt4RiskBot.mq4"
 
-#: The adapter budget the retry must stay well inside. `config.py` ships
-#: `timeout_ms = 5000` and `broker/__init__.py` converts it to seconds once.
-ADAPTER_BUDGET_MS = 5000
+# The numbers these guards are bounded against are MEASURED, and
+# `tests/live_measurements.py` is where a measured number has its one home. They
+# are cited here, never restated, so the bound and the measurement cannot drift.
+from live_measurements import ADAPTER_BUDGET_MS, BRIDGE_ROUND_TRIP_P50_MS
 
-#: Measured steady-state round trip on the live rig, 2026-09-26 01:48Z, taken
-#: from a FileSystemWatcher on the mailbox directory: .req renamed in to .res
-#: renamed in, about 205ms. The retry must not exceed one round trip.
-MEASURED_ROUND_TRIP_MS = 205
+MEASURED_ROUND_TRIP_MS = BRIDGE_ROUND_TRIP_P50_MS
 
 
 def _ea_source() -> str:
