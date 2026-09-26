@@ -211,7 +211,12 @@ jobs:
         with:
           # Exact path, never a glob. Nothing in this workflow may upload anything from the
           # MetaTrader install directory (straightedge#87 clause 2.2).
-          name: Mt4RiskBot-ex4-${{ github.sha }}
+          # github.sha on a pull_request event is the EPHEMERAL MERGE COMMIT, which will not
+          # exist after the merge, so an artifact named after it cannot be traced back to any
+          # commit on main. Measured on this PR: the first run published
+          # Mt4RiskBot-ex4-8ea47886..., a merge commit, while the branch head was 5fadce62.
+          # head.sha names the commit a human can check out; github.sha is correct on push.
+          name: Mt4RiskBot-ex4-${{ github.event.pull_request.head.sha || github.sha }}
           path: mt4/Experts/Mt4RiskBot.ex4
           if-no-files-found: error
           retention-days: 90
