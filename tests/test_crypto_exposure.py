@@ -97,9 +97,9 @@ def test_crypto_pairs_resolve_as_pairs() -> None:
 def test_no_venue_spelling_is_hardcoded() -> None:
     """Every spelling reaches the same pair through the EXISTING resolver.
 
-    Non-alphabetic characters are dropped and the first six alphabetic
-    characters are taken, so the vendor suffix conventions #60 swept already
-    cover crypto. `BTCUSDT` folds the Tether leg into USD, which is the
+    Non-alphabetic characters are dropped and whatever follows the quote code
+    is ignored, so the vendor suffix conventions #60 swept already cover
+    crypto. `BTCUSDT` folds the Tether leg into USD, which is the
     intended reading: a USD-pegged stablecoin leg is USD exposure for the
     purpose of a correlation count.
     """
