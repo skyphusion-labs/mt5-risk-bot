@@ -187,6 +187,35 @@ def sweep(stems: list[str]) -> Sweep:
     return Sweep(cases, recognised, bad, newly)
 
 
+def test_no_code_is_shorter_than_three_letters() -> None:
+    """The precondition the whole #77 backward-compatibility claim rests on.
+
+    `resolve_pair` minimises `(i + j, -i)`, so the split consuming the fewest
+    letters wins. While every code is at least three letters, six is the
+    smallest total any split can reach AND six is reachable only as 3 + 3, so a
+    pre-#77 3-and-3 split is always the unique cheapest split and the tie-break
+    never runs on one. "Every symbol that resolved under 3-and-3 resolves
+    identically" is therefore a THEOREM resting on this bound, not an empirical
+    result the sweep happens to observe.
+
+    A code shorter than three letters voids it. Measured, with `XY` admitted to
+    the table: `EURXYZ` reads EUR/XY on five letters, and `XYUSD` resolves at
+    all where before it was too short to classify.
+
+    The sweep DOES catch that, so this is not a hole in coverage; it is a hole
+    in diagnosis. What the sweep catches it with is
+    `assert (9650 + 250) == ((199 * 25) * 2)` plus a list of symbol names, which
+    states an arithmetic mismatch and says nothing about the cause. Asserted
+    against the TABLE, the same way the longer-stem floor above is computed from
+    the table rather than from `longer`, so the failure names the precondition.
+    """
+    too_short = sorted(c for c in CURRENCY_CODES if len(c) < 3)
+    assert too_short == [], (
+        "a code shorter than three letters voids the #77 theorem that a 3-and-3 "
+        f"split is always the unique cheapest split: {too_short}"
+    )
+
+
 def test_sweep_every_stem_in_every_suffix_convention_matches_the_rule() -> None:
     trios = ["".join(t) for t in itertools.product(string.ascii_uppercase, repeat=3)]
     longer = _longer_stems()
@@ -195,9 +224,30 @@ def test_sweep_every_stem_in_every_suffix_convention_matches_the_rule() -> None:
     cases = old.cases + new.cases
     bad = old.bad + new.bad
     newly = old.newly + new.newly
-    assert old.cases == SWEEP_DENOMINATOR_60
+    # Each population is floored against ITSELF. The line this replaces summed
+    # the two and compared the sum to one of the floors, which could not fire:
+    # the longer-stem half is 257,700 cases on its own, so the #60 half could
+    # lose all 257,700 and still clear the sum. Measured on issue #96, with the
+    # #60 alphabet cut to 25 letters: 781,250 cases and the assertion passed.
+    assert old.cases == SWEEP_DENOMINATOR_60, (
+        f"the #60 sweep NARROWED: {old.cases} != {SWEEP_DENOMINATOR_60}"
+    )
+    # A floor with power, because it is computed from the TABLE and not from
+    # `longer`: the longer-stem population must hold every code longer than
+    # three letters AND every code plus one letter, and the table being
+    # prefix-free (`test_the_shipped_table_is_prefix_free`) is what makes those
+    # two families disjoint, so the bound is a sum and not a max. It needs no
+    # edit when a code is added, which a pinned count would.
+    floor_longer = sum(1 for c in CURRENCY_CODES if len(c) > 3) + len(CURRENCY_CODES) * 26
+    assert len(longer) >= floor_longer, (
+        f"the longer-stem sweep NARROWED: {len(longer)} stems < {floor_longer}"
+    )
+    # A tautology, not a floor: both sides are derived from `longer` in the same
+    # expression, so it cannot observe `_longer_stems` shrinking. It is kept as
+    # a statement of the shape of the sweep. The floor above is what guards the
+    # population, together with the recognised-code count and the
+    # SWEEP_NEWLY_RESOLVED pin at the end.
     assert new.cases == len(longer) * len(SUFFIX_CONVENTIONS) * 2
-    assert cases >= SWEEP_DENOMINATOR_60, f"the sweep NARROWED: {cases} < {SWEEP_DENOMINATOR_60}"
     assert old.recognised + new.recognised == len(CURRENCY_CODES) * len(SUFFIX_CONVENTIONS) * 2
     print(
         f"#77 sweep: {cases} cases = {SWEEP_DENOMINATOR_60} from #60 "
