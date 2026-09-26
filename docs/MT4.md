@@ -164,6 +164,18 @@ one send. That attribution is corroboration and NOT the dedupe mechanism -- brok
 append to and overwrite `OrderComment`, so a key MISSING from the book proves
 nothing. The guarantee is the desk-side ledger (see below).
 
+`deviation` is the maximum tolerated slippage in POINTS, resolved by the desk per
+symbol (`docs/CONTRACT.md`), and it is sent on `market`, `working` and `close`.
+The Expert falls back to its own `input int Slippage` only when the value is
+absent or <= 0, which is what an older desk produces; a 0 configured on the desk
+side is refused by `cfg.validate()` rather than handed over silently. It reached
+`working` in issue #92 and not before: until then that handler passed its own
+input to `OrderSend` while the desk was gating the same signal on the operator's
+figure. **MT4 documents the `OrderSend` slippage parameter as IGNORED for pending
+order types. That has not been measured on this rig**, so the field is
+transmitted rather than either assumed to matter or assumed not to; if it is
+ignored, what the change buys on this op is a journal record that is true.
+
 `ttl_ms` is how long this request stays executable, counted from when it was
 written. It is a DURATION and not a deadline, and that is load-bearing: with
 `mt4.mailbox_url` the desk and the terminal are on different hosts, so a

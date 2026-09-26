@@ -1037,6 +1037,13 @@ string CheckWorking(string id, string body, bool send)
    double sl = StringToDouble(KV(body, "sl"));
    double tp = StringToDouble(KV(body, "tp"));
    int magic = (int)StringToInteger(KV(body, "magic"));
+   // Same three lines as CheckMarket and ClosePos, and until #92 this handler
+   // had none of them: it passed the Expert's own Slippage input straight to
+   // SendRetry, so the desk deviation gate judged a tolerance this send never
+   // offered. The <= 0 fallback is the pre-#92 behaviour for an older desk that
+   // sends no deviation key at all, which is the only case it now covers.
+   int slip = (int)StringToInteger(KV(body, "deviation"));
+   if(slip <= 0) slip = Slippage;
    if(sym == "" || (side != "buy" && side != "sell") || (kind != "limit" && kind != "stop"))
       return FailTrade(id, 1, "symbol", 0);
    if(!IsTradeAllowed() || !IsExpertEnabled())
@@ -1050,7 +1057,7 @@ string CheckWorking(string id, string body, bool send)
    if(!send)
       return Ok(id) + "ticket=0\n";
    int sendErr = 0;
-   int ticket = SendRetry(sym, typ, vol, price, Slippage, ClipComment(KV(body, "comment")), magic, sendErr);
+   int ticket = SendRetry(sym, typ, vol, price, slip, ClipComment(KV(body, "comment")), magic, sendErr);
    if(ticket < 0)
       return FailTrade(id, sendErr, "OrderSend", 0);
    if(sl > 0 || tp > 0)

@@ -390,6 +390,92 @@ class TestGoldenRoundTrips:
         assert sent.order == 80051299
         assert sent.price == 1.095
 
+    def test_the_working_send_carries_the_deviation_on_the_wire(self, tmp_path: Path) -> None:
+        """Issue #92, and the assertion is on the REQUEST BYTES on purpose.
+
+        `WorkingOrder` had no `deviation` field and `_working_payload` sent no
+        `deviation` key, so the Expert's pending handler had nothing to read and
+        passed its own `input int Slippage = 30` to `OrderSend` while
+        `risk.evaluate()` gated the same signal on the operator's figure. An
+        internal call that received the right number proves nothing about what
+        the Expert reads; the mailbox does.
+
+        150 is the gold value `config.example.toml` seeds. Both `check_working`
+        and `working` are asserted: a pre-trade check run on a different
+        tolerance from the send is answering a different question.
+
+        What this does NOT establish: whether MT4 APPLIES slippage to a pending
+        order type. It is documented as ignored there, that was not measured on
+        the live rig, and no test in this repo can measure it. This asserts
+        transmission only.
+        """
+        order = WorkingOrder(
+            symbol="XAUUSD",
+            side=Side.BUY,
+            kind="limit",
+            volume=0.09,
+            price=1.095,
+            sl=1.093,
+            tp=1.099,
+            deviation=150,
+        )
+        with wired(tmp_path, GOLDEN) as ea:
+            br = broker(tmp_path)
+            br.check_working(order)
+            br.working(order)
+        assert ea_kv(ea.request("check_working"), "deviation") == "150"
+        assert ea_kv(ea.request("working"), "deviation") == "150"
+
+    def test_every_send_op_that_carries_a_tolerance_puts_it_on_the_wire(
+        self, tmp_path: Path
+    ) -> None:
+        """The denominator. Two of three carried it before #92.
+
+        Three request ops reach a venue call with a slippage argument: `market`
+        and `working` through `OrderSend`, `close` through `OrderClose`. 77 is a
+        value no default produces, so a payload that dropped the key and an
+        Expert that fell back to its own input cannot both read as a pass.
+        """
+        dev = 77
+        with wired(tmp_path, GOLDEN) as ea:
+            br = broker(tmp_path)
+            br.market(
+                MarketOrder(
+                    symbol="EURUSD",
+                    side=Side.BUY,
+                    volume=0.17,
+                    sl=1.09815,
+                    tp=1.10415,
+                    deviation=dev,
+                )
+            )
+            br.working(
+                WorkingOrder(
+                    symbol="EURUSD",
+                    side=Side.BUY,
+                    kind="limit",
+                    volume=0.09,
+                    price=1.095,
+                    sl=1.093,
+                    tp=1.099,
+                    deviation=dev,
+                )
+            )
+            br.close_position(
+                80051234,
+                symbol="EURUSD",
+                side="buy",
+                volume=0.17,
+                price=1.10012,
+                deviation=dev,
+            )
+        ops = ("market", "working", "close")
+        carried = [op for op in ops if ea_kv(ea.request(op), "deviation") == str(dev)]
+        assert carried == list(ops), (
+            f"{len(carried)} of {len(ops)} send ops transmit the resolved deviation; "
+            f"missing: {[op for op in ops if op not in carried]}"
+        )
+
     def test_modify_position(self, tmp_path: Path) -> None:
         with wired(tmp_path, GOLDEN) as ea:
             res = broker(tmp_path).modify_position(80051234, 1.09915, 1.10515, symbol="EURUSD")
